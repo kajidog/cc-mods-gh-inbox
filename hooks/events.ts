@@ -41,7 +41,7 @@ export const displayName = (login: string | null, nicknames: Nicknames) =>
 export function pullIds(pull: Pull): string[] {
   return [
     ...pull.comments.map(comment => comment.id),
-    ...pull.reviews.map(review => review.id),
+    ...pull.reviews.flatMap(review => [review.id, ...review.comments.map(comment => comment.id)]),
     ...pull.commits.map(commit => commit.oid),
     ...pull.checks.filter(check => check.isFailed).map(check => check.id),
     ...(pull.state === "MERGED" ? [MERGED_ID] : pull.state === "CLOSED" ? [CLOSED_ID] : []),

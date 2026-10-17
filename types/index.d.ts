@@ -1,4 +1,4 @@
-export type GhEventKind = "comment" | "review" | "commit" | "ci" | "merge" | "close"
+export type GhEventKind = "comment" | "review" | "commit" | "ci" | "merge" | "close" | "branch" | "open" | "push"
 
 /** One part of an event a later request to the model may quote: a comment, an inline comment, a commit. */
 export type GhEventItem = {
@@ -11,10 +11,10 @@ export type GhEventItem = {
 
 /** One notice, kept with what it was made from. */
 export type GhEvent = {
-  /** The id of what it came from: a comment, a review, a commit, a check run. */
+  /** The id of what it came from: a comment, a review, a commit, a check run, a repository event. */
   id: string
   kind: GhEventKind
-  /** `owner/repo#number`. */
+  /** `owner/repo#number`; `owner/repo` for a repository's event with no pull request (a push, a branch). */
   pull: string
   /** The GitHub login, or null where none applies (a CI run). */
   author: string | null
@@ -24,6 +24,13 @@ export type GhEvent = {
   text: string
   url: string
   items: GhEventItem[]
+}
+
+/** The repository whose kinds the picker pane toggles. */
+export type GhPicker = {
+  /** `host/owner/repo`. */
+  repo: string
+  kinds: string[]
 }
 
 /** The pull request being watched, or why none is. */
@@ -46,8 +53,9 @@ declare module "claude-code" {
       /** Recent notices, oldest first. */
       events: GhEvent[]
       watch: GhWatch | null
-      /** The ids this session has seen, by `host/owner/repo#number`. */
+      /** The ids this session has seen, by `host/owner/repo#number`, and by `repo:host/owner/repo` for a registered repository. */
       seen: Record<string, string[]>
+      picker: GhPicker | null
     }
   }
 }

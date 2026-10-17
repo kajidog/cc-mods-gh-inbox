@@ -91,14 +91,14 @@ export function pullArgv(ref: PullRef): string[] {
   ]
 }
 
-type Json = Record<string, unknown>
-const object = (value: unknown): Json => (typeof value === "object" && value !== null ? (value as Json) : {})
+export type Json = Record<string, unknown>
+export const object = (value: unknown): Json => (typeof value === "object" && value !== null ? (value as Json) : {})
 const nodes = (value: unknown): Json[] => {
   const list = object(value).nodes
   return Array.isArray(list) ? list.map(object) : []
 }
-const text = (value: unknown) => (typeof value === "string" ? value : "")
-const login = (value: unknown) => {
+export const text = (value: unknown) => (typeof value === "string" ? value : "")
+export const login = (value: unknown) => {
   const name = object(value).login
   return typeof name === "string" ? name : null
 }
