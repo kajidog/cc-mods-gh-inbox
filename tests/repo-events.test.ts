@@ -5,6 +5,7 @@ import type { Pull } from "../hooks/github"
 import {
   ACTIONS_PRIMED,
   canCompare,
+  isAnswerOf,
   KINDS,
   type Kind,
   newRepoEvents,
@@ -230,4 +231,17 @@ test("an edited review is not a new one", async () => {
     payload: { action, review: { id: 1, node_id: "PRR_1", state: "approved", body: null, html_url: "" }, pull_request: { number: 1 } },
   })
   expect(parseEvents(JSON.stringify([review("2", "updated"), review("1", "created")])).map(event => event.id)).toEqual(["PRR_1"])
+})
+
+test("a branch with # in its name links to the branch, not a fragment", async () => {
+  const branch: RepoEvent = { id: "event:1", type: "branch", ref: "release/#123", actor: "a", at: "" }
+  const [event] = newRepoEvents(inputWith({ kinds: ["branch"], events: [branch] }), new Set(), options)
+  expect(event?.url).toBe("https://github.com/kajidog/cc-mods-tts/tree/release/%23123")
+})
+
+test("isAnswerOf tells an answer about another repository", async () => {
+  expect(isAnswerOf(JSON.stringify([{ repo: { id: 1 } }]), 1)).toBe(true)
+  expect(isAnswerOf(JSON.stringify([{ repo: { id: 2 } }]), 1)).toBe(false)
+  expect(isAnswerOf(JSON.stringify({ workflow_runs: [{ repository: { id: 2 } }] }), 1)).toBe(false)
+  expect(isAnswerOf(JSON.stringify(EVENTS), 1)).toBe(true)
 })

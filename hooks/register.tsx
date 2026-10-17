@@ -12,6 +12,7 @@ import {
   compareArgv,
   DEFAULT_KINDS,
   eventsArgv,
+  isAnswerOf,
   isKind,
   jobsArgv,
   KIND_LABELS,
@@ -21,6 +22,7 @@ import {
   numbersNeedingTitles,
   numbersNotFound,
   PUSHES_LOOKED_UP,
+  RUNS_LOOKED_UP,
   parseCompare,
   parseEvents,
   parseJobs,
@@ -328,7 +330,8 @@ async function viewerOf($: EngineInterface, ctx: Context, host: string) {
  * than the interval (and GitHub's `X-Poll-Interval`), else asked again with
  * the ETags held, so an unchanged repository costs nothing.
  */
-async function fetchRepo($: EngineInterface, ctx: Context, ref: RepoRef, kinds: readonly Kind[], now: number): Promise<RepoCache> {
+async function fetchRepo($: EngineInterface, ctx: Context, ref: RepoRef, entry: RepoEntry, now: number): Promise<RepoCache> {
+  const { kinds, id } = entry
   const key = `${REPO_CACHE_PREFIX}${repoKey(ref)}`
   const cached = toRepoCache(await $.store.get(key))
   const isFresh = cached !== undefined && now - cached.at < Math.max(ctx.intervalSeconds, cached.poll) * 1000
@@ -343,6 +346,8 @@ async function fetchRepo($: EngineInterface, ctx: Context, ref: RepoRef, kinds: 
   if (dropsRuns) next = { ...next, runsEtag: null, runs: [] }
   if (!isFresh) {
     const answer = await ask($, eventsArgv(ref, next.etag || null))
+    if (answer.status === 200 && id !== undefined && !isAnswerOf(answer.body, id))
+      throw new Error("the name now leads to another repository: remove it and add it again")
     if (answer.status === 200) next = { ...next, etag: answer.headers.etag ?? null, events: parseEvents(answer.body) }
     next = { ...next, at: now, poll: Number(answer.headers["x-poll-interval"]) || next.poll }
   }
@@ -350,6 +355,7 @@ async function fetchRepo($: EngineInterface, ctx: Context, ref: RepoRef, kinds: 
     // Runs that cannot be read (Actions turned off, a token without `actions:read`) do not stop the events.
     try {
       const answer = await ask($, runsArgv(ref, next.runsEtag || null))
+      if (answer.status === 200 && id !== undefined && !isAnswerOf(answer.body, id)) throw new Error("the name now leads to another repository")
       if (answer.status === 200) next = { ...next, runsEtag: answer.headers.etag ?? "", runs: parseRuns(answer.body) }
     } catch (error) {
       ctx.repoErrors.set(repoKey(ref), `CI: ${error instanceof Error ? error.message : String(error)}`)
@@ -403,7 +409,7 @@ async function lookUpDetails(
     } else if (givesUp(push.id, run.stderr)) changes.set(push.id, null)
   }
   const failures = new Map<string, ReturnType<typeof parseJobs>>()
-  for (const one of runs.filter(run => run.failure === undefined)) {
+  for (const one of runs.filter(run => run.failure === undefined).slice(-RUNS_LOOKED_UP)) {
     const run = await $.process.run(jobsArgv(ref, one))
     if (run.exitCode === 0) {
       ctx.retries.delete(one.id)
@@ -453,7 +459,7 @@ async function titlesFor($: EngineInterface, ref: RepoRef, pending: ReturnType<t
 /** Checks one registered repository; its notices are returned. */
 async function checkRepo($: EngineInterface, ctx: Context, key: string, entry: RepoEntry, nicknames: Nicknames, now: number) {
   const ref = refOfKey(key)
-  let cache = await fetchRepo($, ctx, ref, entry.kinds, now)
+  let cache = await fetchRepo($, ctx, ref, entry, now)
   const seenKey = repoSeenKey(ref)
   const { value: seenByKey = {} } = await $.state.get({ plugin: "gh-inbox", key: "seen" })
   const seen = seenForRepo(seenByKey, ref)
@@ -649,11 +655,12 @@ async function repoCommand($: EngineInterface, ctx: Context, words: readonly str
       const found = await $.process.run(repoArgv(ref))
       if (found.exitCode !== 0) return `${shown} を読めませんでした: ${firstLine(found.stderr) || `gh api exited with ${found.exitCode}`}`
       // Registered as GitHub spells it, the key a pull request's URL gives, so their notices are told once.
-      const named = parseRepo(`${ref.host}/${found.stdout.trim()}`) ?? ref
+      const [id = "", fullName = ""] = found.stdout.trim().split("\n")
+      const named = parseRepo(`${ref.host}/${fullName}`) ?? ref
       const held = repos[repoKey(named)]
       if (held !== undefined) return `${repoName(named)} は登録済みです（${kindList(held.kinds)}）。種類を変えるには /inbox repo set を使います。`
       const chosen = kinds ?? [...DEFAULT_KINDS]
-      await writeRepo($, repoKey(named), () => ({ kinds: chosen }))
+      await writeRepo($, repoKey(named), () => ({ kinds: chosen, ...(Number(id) > 0 ? { id: Number(id) } : {}) }))
       // The first look takes what is there as seen, so the notices start from now.
       void check($, ctx)
       const opened = kinds === undefined && (await openPicker($, repoKey(named), chosen))
@@ -680,7 +687,11 @@ async function repoCommand($: EngineInterface, ctx: Context, words: readonly str
     }
     default: {
       const alias = words.slice(2).join(" ")
-      await writeRepo($, key, held => held && (alias === "" ? { kinds: held.kinds } : { ...held, alias }))
+      await writeRepo($, key, held => {
+        if (held === undefined) return undefined
+        const { alias: _, ...rest } = held
+        return alias === "" ? rest : { ...rest, alias }
+      })
       return alias === "" ? `${shown} の短い名前を消しました。` : `${shown} の通知は [${alias}] で始めます。`
     }
   }

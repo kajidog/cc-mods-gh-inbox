@@ -12,7 +12,12 @@ export const TITLES_PREFIX = "titles:"
 export const TITLES_KEPT = 500
 export const DEFAULT_POLL_SECONDS = 60
 
-export type RepoEntry = { kinds: Kind[]; alias?: string }
+export type RepoEntry = {
+  kinds: Kind[]
+  alias?: string
+  /** GitHub's id of the repository, which a rename keeps. */
+  id?: number
+}
 export type Repos = Record<string, RepoEntry>
 
 export type RepoCache = {
@@ -33,7 +38,11 @@ export function toRepos(value: unknown): Repos {
   for (const [key, entry] of Object.entries(value)) {
     if (!isObject(entry) || !Array.isArray(entry.kinds)) continue
     const kinds = entry.kinds.filter((kind): kind is Kind => typeof kind === "string" && isKind(kind))
-    repos[key] = typeof entry.alias === "string" && entry.alias !== "" ? { kinds, alias: entry.alias } : { kinds }
+    repos[key] = {
+      kinds,
+      ...(typeof entry.alias === "string" && entry.alias !== "" ? { alias: entry.alias } : {}),
+      ...(typeof entry.id === "number" ? { id: entry.id } : {}),
+    }
   }
 
   return repos

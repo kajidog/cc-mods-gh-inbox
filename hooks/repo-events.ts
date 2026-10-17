@@ -23,6 +23,8 @@ export const DEFAULT_KINDS: readonly Kind[] = ["pr-open", "pr-merge", "comment",
 
 // Pushes looked into (one compare each) at one check; the rest are counted in one line.
 export const PUSHES_LOOKED_UP = 5
+// Failed runs looked into (one jobs request each) at one check; the rest are told without their failed step.
+export const RUNS_LOOKED_UP = 5
 const TITLES_SHOWN = 3
 const ZERO_SHA = /^0+$/
 
@@ -60,6 +62,8 @@ export const repoName = (ref: RepoRef) => `${ref.owner}/${ref.repo}`
 /** The key of a repository's seen ids beside the pull requests' `host/owner/repo#number`. */
 export const repoSeenKey = (ref: RepoRef) => `repo:${repoKey(ref)}`
 const webUrl = (ref: RepoRef, path: string) => `https://${ref.host}/${repoName(ref)}/${path}`
+/** A branch name as a URL's path: a `#` or `?` in it is not taken for a fragment or a query. */
+const branchPath = (branch: string) => branch.split("/").map(encodeURIComponent).join("/")
 
 const ghApi = (ref: RepoRef) => ["gh", "api", ...(ref.host === "github.com" ? [] : ["--hostname", ref.host])]
 
@@ -71,7 +75,8 @@ const conditional = (ref: RepoRef, path: string, etag: string | null) => [
   path,
 ]
 
-export const repoArgv = (ref: RepoRef) => [...ghApi(ref), `repos/${repoName(ref)}`, "--jq", ".full_name"]
+/** The repository's id and its name as GitHub spells it, a line each. */
+export const repoArgv = (ref: RepoRef) => [...ghApi(ref), `repos/${repoName(ref)}`, "--jq", ".id, .full_name"]
 export const eventsArgv = (ref: RepoRef, etag: string | null) => conditional(ref, `repos/${repoName(ref)}/events?per_page=100`, etag)
 // `status` takes one conclusion only: the completed runs are asked for, the failed ones picked out by `parseRuns`.
 export const runsArgv = (ref: RepoRef, etag: string | null) =>
@@ -243,6 +248,19 @@ export function parseEvents(body: string): RepoEvent[] {
   }
 
   return events
+}
+
+/**
+ * Whether an answer of the events or the runs is about the repository with `id`:
+ * once a renamed repository's old name is taken by another, the name leads there.
+ */
+export function isAnswerOf(body: string, id: number): boolean {
+  const json: unknown = JSON.parse(body)
+  const list = Array.isArray(json) ? json : object(json).workflow_runs
+  return (Array.isArray(list) ? list.map(object) : []).every(item => {
+    const found = object(item.repo ?? item.repository).id
+    return found === undefined || found === id
+  })
 }
 
 /** Whether a compare can say what a push brought: not a new branch, not a deletion. */
@@ -460,7 +478,7 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
     const base = { id: event.id, author: event.actor, at: event.at }
     switch (event.type) {
       case "branch":
-        add({ ...base, kind: "branch", text: `${who(event.actor)}がブランチを作りました。${event.ref}`, url: webUrl(ref, `tree/${event.ref}`), items: [] })
+        add({ ...base, kind: "branch", text: `${who(event.actor)}がブランチを作りました。${event.ref}`, url: webUrl(ref, `tree/${branchPath(event.ref)}`), items: [] })
         break
       case "pull": {
         const title = titleOf(event.number)

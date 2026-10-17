@@ -170,7 +170,7 @@ test("a push whose compare fails for now is told at a later check, with its comm
 test("a repository is registered as GitHub spells it and found whatever the case typed", async ($, on) => {
   mock.store(on, {})
   mock.clock(on, { now: 1_000_000 })
-  fakeGitHub(on, [[]], argv => (argv.includes(".full_name") ? { stdout: "Owner/Repo\n" } : undefined))
+  fakeGitHub(on, [[]], argv => (argv.includes(".id, .full_name") ? { stdout: "42\nOwner/Repo\n" } : undefined))
 
   expect(await $.command.run({ ...CHECK, args: "repo add owner/repo comment" })).toEqual({ text: "Owner/Repo を登録しました（PR・Issue へのコメント）。" })
   expect(await $.command.run({ ...CHECK, args: "repo add OWNER/REPO" })).toMatchObject({ text: expect.stringContaining("Owner/Repo は登録済みです") })
@@ -242,4 +242,36 @@ test("titles are asked for in batches, so every notice has its own", async ($, o
   const queries = github.asked.filter(argv => argv.includes("graphql")).map(argv => argv.at(-1) ?? "")
   expect(queries.map(query => query.match(/pullRequest\(/g)?.length)).toEqual([50, 10])
   expect(await $.command.run({ ...CHECK, args: "log" })).toMatchObject({ text: expect.stringContaining("#60 t60") })
+})
+
+test("a repository whose name now leads to another one is not told about", async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: ["comment"], id: 1 } } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const github = fakeGitHub(on, [[], [{ ...COMMENT, repo: { id: 2, name: "o/r" } }]])
+
+  await $.command.run(CHECK)
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual([])
+  expect(await $.command.run({ ...CHECK, args: "repo" })).toMatchObject({ text: expect.stringContaining("another repository") })
+})
+
+test("the failed steps of at most a few runs are looked up at one check, the rest told without", async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: ["ci-failure"] } } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const run = (id: number) => ({ id, name: "test", head_branch: "main", head_sha: "a", html_url: "", updated_at: "", run_attempt: 1, conclusion: "failure" })
+  let runs: unknown[] = []
+  const github = fakeGitHub(on, [[]], argv => {
+    const path = argv.find(word => word.includes("/actions/runs")) ?? ""
+    if (path.endsWith("/jobs")) return { stdout: JSON.stringify({ jobs: [] }) }
+    if (path !== "") return { stdout: `HTTP/2.0 200 OK\nEtag: "r${runs.length}"\n\n${JSON.stringify({ workflow_runs: runs })}` }
+    return undefined
+  })
+
+  await $.command.run(CHECK)
+  runs = Array.from({ length: 8 }, (_, index) => run(index + 1))
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(github.asked.filter(argv => argv.some(word => word.endsWith("/jobs")))).toHaveLength(5)
+  expect((await $.command.run({ ...CHECK, args: "log" })).text?.match(/CI が失敗しました/g)).toHaveLength(8)
 })
