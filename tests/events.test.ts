@@ -1,6 +1,6 @@
 import { describe, expect, test } from "claude-code/testing"
 
-import { MERGED_ID, mergeSeen, newEvents, plain, pullIds, snippet } from "../hooks/events"
+import { MERGED_ID, mergeSeen, newEvents, plain, pullIds, SEEN_LIMIT, snippet } from "../hooks/events"
 import { type Pull, parsePull, parsePullUrl, pullArgv } from "../hooks/github"
 
 const ref = { host: "github.com", owner: "o", repo: "r", number: 7 }
@@ -54,7 +54,7 @@ describe("newEvents", () => {
   })
 
   test("reviews say what kind they are", async () => {
-    const inline = { id: "rc", path: "src/a.ts", line: 12, hunk: "@@", body: "Why **this**?", url: "" }
+    const inline = { id: "rc", author: "reviewer", at: "", path: "src/a.ts", line: 12, hunk: "@@", body: "Why **this**?", url: "" }
     const review = (id: string, state: string, body: string, comments = [inline]) => ({ id, author: "b", state, body, at: `2026-01-01T00:00:0${id}Z`, url: "", comments })
     const pull = pullWith({
       reviews: [review("1", "APPROVED", "LGTM", []), review("2", "CHANGES_REQUESTED", "Please fix"), review("3", "COMMENTED", ""), review("4", "PENDING", "")],
@@ -66,6 +66,13 @@ describe("newEvents", () => {
     ])
     const [, requested] = newEvents(pull, new Set(), options)
     expect(requested?.items.map(item => item.path ?? null)).toEqual([null, "src/a.ts"])
+  })
+
+  test("a reply that joins a review told already is told on its own", async () => {
+    const comment = (id: string, author: string) => ({ id, author, at: "2026-01-01T00:00:09Z", path: "src/a.ts", line: 3, hunk: "", body: "Agreed", url: "" })
+    const review = { id: "r", author: "b", state: "COMMENTED", body: "Look", at: "2026-01-01T00:00:00Z", url: "", comments: [comment("c1", "b")] }
+    const replied = pullWith({ reviews: [{ ...review, comments: [comment("c1", "b"), comment("c2", "c"), comment("c3", "me")] }] })
+    expect(texts(replied, ["r", "c1"])).toEqual(["cさんがコメントしました。src/a.ts:3 Agreed"])
   })
 
   test("a failed check is notified once, with its failed step", async () => {
@@ -97,6 +104,11 @@ test("plain drops control characters and bidirectional overrides", async () => {
 
 test("mergeSeen keeps each id once, newest last", async () => {
   expect(mergeSeen(["a", "b"], ["b", "c"])).toEqual(["a", "b", "c"])
+})
+
+test("mergeSeen keeps every id GitHub lists now, past the limit", async () => {
+  const ids = Array.from({ length: SEEN_LIMIT + 10 }, (_, index) => `id${index}`)
+  expect(mergeSeen(["old"], ids)).toEqual(ids)
 })
 
 test("parsePullUrl and pullArgv name another host", async () => {

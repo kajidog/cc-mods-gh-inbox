@@ -147,7 +147,7 @@ export const COMPARE = {
   deletions: 10,
 }
 
-/** `GET /repos/{owner}/{repo}/actions/runs?status=failure`. */
+/** `GET /repos/{owner}/{repo}/actions/runs?status=completed`. */
 export const RUNS = {
   total_count: 2,
   workflow_runs: [
@@ -198,5 +198,5 @@ export const TITLES = {
       pr4: null,
     },
   },
-  errors: [{ type: "NOT_FOUND", message: "Could not resolve to a PullRequest with the number of 4." }],
+  errors: [{ type: "NOT_FOUND", path: ["repository", "pr4"], message: "Could not resolve to a PullRequest with the number of 4." }],
 }

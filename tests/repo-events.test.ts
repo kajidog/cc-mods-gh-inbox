@@ -8,6 +8,7 @@ import {
   KINDS,
   type Kind,
   newRepoEvents,
+  numbersNotFound,
   parseCompare,
   parseEvents,
   parseJobs,
@@ -137,7 +138,7 @@ describe("one notice for what the pull request and the repository both see", () 
         body: "",
         at: "",
         url: "",
-        comments: [{ id: "PRRC_kwDOVDRCgM7_s8-h", path: "hooks/config.js", line: 1, hunk: "", body: "x", url: "" }],
+        comments: [{ id: "PRRC_kwDOVDRCgM7_s8-h", author: "kajidog", at: "", path: "hooks/config.js", line: 1, hunk: "", body: "x", url: "" }],
       },
     ],
     commits: [],
@@ -196,4 +197,26 @@ test("carryOver keeps what was looked up across a new answer", async () => {
 
 test("toRepos drops what is not a kind", async () => {
   expect(toRepos({ "github.com/o/r": { kinds: ["comment", "issues"], alias: "r" }, bad: 1 })).toEqual({ "github.com/o/r": { kinds: ["comment"], alias: "r" } })
+})
+
+test("parseRuns keeps the runs that failed or timed out", async () => {
+  const run = (id: number, conclusion: string) => ({ id, name: "test", head_branch: "main", html_url: "", updated_at: "", run_attempt: 1, conclusion })
+  const body = JSON.stringify({ workflow_runs: [run(3, "success"), run(2, "timed_out"), run(1, "failure")] })
+  expect(parseRuns(body).map(one => one.runId)).toEqual([1, 2])
+})
+
+test("a merge GitHub Enterprise Server tells as closed is a merge", async () => {
+  const closed = (number: number, merged: boolean) => ({
+    id: String(number),
+    type: "PullRequestEvent",
+    actor: { login: "a" },
+    created_at: "",
+    payload: { action: "closed", number, pull_request: { number, merged } },
+  })
+  expect(parseEvents(JSON.stringify([closed(2, true), closed(1, false)])).map(event => event.id)).toEqual(["closed:#1", "merged:#2"])
+})
+
+test("numbersNotFound names the numbers with no pull request, not a failure for now", async () => {
+  expect(numbersNotFound(JSON.stringify(TITLES))).toEqual([4])
+  expect(numbersNotFound(JSON.stringify({ errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded" }] }))).toEqual([])
 })

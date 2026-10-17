@@ -73,8 +73,9 @@ const conditional = (ref: RepoRef, path: string, etag: string | null) => [
 
 export const repoArgv = (ref: RepoRef) => [...ghApi(ref), `repos/${repoName(ref)}`, "--jq", ".full_name"]
 export const eventsArgv = (ref: RepoRef, etag: string | null) => conditional(ref, `repos/${repoName(ref)}/events?per_page=100`, etag)
+// `status` takes one conclusion only: the completed runs are asked for, the failed ones picked out by `parseRuns`.
 export const runsArgv = (ref: RepoRef, etag: string | null) =>
-  conditional(ref, `repos/${repoName(ref)}/actions/runs?status=failure&per_page=20`, etag)
+  conditional(ref, `repos/${repoName(ref)}/actions/runs?status=completed&per_page=50`, etag)
 export const jobsArgv = (ref: RepoRef, run: Run) => [...ghApi(ref), `repos/${repoName(ref)}/actions/runs/${run.runId}/attempts/${run.attempt}/jobs`]
 export const viewerArgv = (host: string) => [...ghApi({ host, owner: "", repo: "" }), "user", "--jq", ".login"]
 
@@ -169,7 +170,8 @@ export function parseEvents(body: string): RepoEvent[] {
         if (payload.ref_type === "branch") events.push({ ...base, id: eventId, type: "branch", ref: text(payload.ref) })
         break
       case "PullRequestEvent": {
-        const action = payload.action
+        // GitHub Enterprise Server tells a merge as `closed` with the pull request merged.
+        const action = payload.action === "closed" && pull.merged === true ? "merged" : payload.action
         const at = number(payload.number) || number(pull.number)
         if (action === "opened" || action === "merged" || action === "closed")
           events.push({ ...base, id: `${action}:#${at}`, type: "pull", action, number: at })
@@ -270,12 +272,15 @@ export type Run = {
   failure?: Failure | null
 }
 
-/** Reads `GET /repos/{owner}/{repo}/actions/runs?status=failure`, oldest first. */
+const FAILED = new Set(["failure", "timed_out", "startup_failure"])
+
+/** The failed runs of `GET /repos/{owner}/{repo}/actions/runs?status=completed`, oldest first. */
 export function parseRuns(body: string): Run[] {
   const runs = object(JSON.parse(body)).workflow_runs
   if (!Array.isArray(runs)) return []
   return runs
     .map(object)
+    .filter(run => FAILED.has(text(run.conclusion)))
     .map(run => {
       const attempt = number(run.run_attempt) || 1
       return {
@@ -290,8 +295,6 @@ export function parseRuns(body: string): Run[] {
     })
     .reverse()
 }
-
-const FAILED = new Set(["failure", "timed_out", "startup_failure"])
 
 /** The first failed job of a run and its failed step. */
 export function parseJobs(body: string): Failure | null {
@@ -318,6 +321,15 @@ export function parseTitles(answer: string): Titles {
   }
 
   return titles
+}
+
+/** The numbers `titlesArgv`'s answer says have no pull request, not those that failed for now. */
+export function numbersNotFound(answer: string): number[] {
+  const errors = object(JSON.parse(answer)).errors
+  return (Array.isArray(errors) ? errors.map(object) : []).flatMap(error => {
+    const alias = Array.isArray(error.path) ? error.path[1] : undefined
+    return error.type === "NOT_FOUND" && typeof alias === "string" && alias.startsWith("pr") ? [Number(alias.slice(2))] : []
+  })
 }
 
 /** The pull request numbers whose titles the notices of `events` show. */

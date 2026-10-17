@@ -1,6 +1,6 @@
 import type { GhEvent } from "../types"
 
-import { type Commit, type Pull, pullName } from "./github"
+import { type Commit, type Pull, pullName, type ReviewComment } from "./github"
 
 export type Nicknames = Record<string, string>
 export type EventOptions = { nicknames: Nicknames; notifySelf: boolean }
@@ -42,6 +42,9 @@ export function snippet(body: string, length = SNIPPET_LENGTH): string {
   return line.length > length ? `${line.slice(0, length - 1)}…` : line
 }
 
+/** `path:line` of a line comment. */
+const place = (comment: Pick<ReviewComment, "path" | "line">) => `${comment.path}${comment.line === null ? "" : `:${comment.line}`}`
+
 export const displayName = (login: string | null, nicknames: Nicknames) =>
   login === null ? "誰か" : (nicknames[login] ?? login)
 
@@ -82,7 +85,24 @@ export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, opt
   }
 
   for (const review of pull.reviews) {
-    if (seen.has(review.id) || isMuted(review.author)) continue
+    if (seen.has(review.id)) {
+      // A reply can join a review told already: its new comments are told one by one.
+      for (const comment of review.comments) {
+        if (seen.has(comment.id) || isMuted(comment.author)) continue
+        events.push({
+          id: comment.id,
+          kind: "comment",
+          pull: name,
+          author: comment.author,
+          at: comment.at,
+          text: `${who(comment.author)}がコメントしました。${place(comment)} ${snippet(comment.body)}`.trimEnd(),
+          url: comment.url,
+          items: [{ body: comment.body, path: comment.path, line: comment.line, hunk: comment.hunk, url: comment.url }],
+        })
+      }
+      continue
+    }
+    if (isMuted(review.author)) continue
     const count = review.comments.length
     const items = [
       ...(review.body.trim() === "" ? [] : [{ body: review.body, url: review.url }]),
@@ -104,7 +124,7 @@ export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, opt
     } else if (review.state === "COMMENTED") {
       if (summary !== "") text = `${who(review.author)}がレビューしました。${count > 0 ? `指摘${count}件 ` : ""}${summary}`
       else if (count === 1 && first !== undefined)
-        text = `${who(review.author)}がコメントしました。${first.path}${first.line === null ? "" : `:${first.line}`} ${snippet(first.body)}`
+        text = `${who(review.author)}がコメントしました。${place(first)} ${snippet(first.body)}`
       else if (count > 1) text = `${who(review.author)}が${count}件コメントしました。`
       else continue
     } else {
@@ -192,8 +212,12 @@ export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, opt
   return events.sort((a, b) => (order(a) < order(b) ? -1 : order(a) > order(b) ? 1 : 0))
 }
 
-/** `seen` with `ids` added, the newest `SEEN_LIMIT` kept. */
+/**
+ * `seen` with `ids` added, the newest `SEEN_LIMIT` kept. Every one of `ids`
+ * stays, however many: one that GitHub still lists and fell off would be told again.
+ */
 export function mergeSeen(seen: readonly string[], ids: readonly string[]): string[] {
-  const kept = seen.filter(id => !ids.includes(id))
-  return [...kept, ...ids].slice(-SEEN_LIMIT)
+  const fresh = new Set(ids)
+  const kept = seen.filter(id => !fresh.has(id))
+  return [...kept, ...fresh].slice(-Math.max(SEEN_LIMIT, fresh.size))
 }

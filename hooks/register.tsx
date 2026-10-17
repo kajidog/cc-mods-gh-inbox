@@ -19,6 +19,7 @@ import {
   type Kind,
   newRepoEvents,
   numbersNeedingTitles,
+  numbersNotFound,
   PUSHES_LOOKED_UP,
   parseCompare,
   parseEvents,
@@ -87,7 +88,15 @@ const watch = atom({ plugin: "gh-inbox", key: "watch" } as const, null as GhWatc
 const seenIds = atom({ plugin: "gh-inbox", key: "seen" } as const, {} as Record<string, string[]>)
 const picker = atom({ plugin: "gh-inbox", key: "picker" } as const, null as GhPicker | null)
 
-type Found = { branch: string; ref: PullRef | null; state: PullState | null; lookedAt: number; isDone: boolean }
+type Found = {
+  branch: string
+  ref: PullRef | null
+  state: PullState | null
+  lookedAt: number
+  isDone: boolean
+  /** The check at which the pull request was seen merged or closed. */
+  doneAt?: number
+}
 // What a module load keeps between checks; a reload starts it over.
 type Context = {
   intervalSeconds: number
@@ -97,6 +106,8 @@ type Context = {
   found: Found | undefined
   /** The check under way, if one is. */
   running: Promise<void> | undefined
+  /** How many checks have started. */
+  checks: number
   sessionId: string
   activeAt: number
   touchedAt: number
@@ -258,7 +269,10 @@ async function checkPull($: EngineInterface, ctx: Context, fresh: GhEvent[], isF
     fresh.push(...newEvents(pull, seen, { nicknames, notifySelf: ctx.notifySelf }))
     await update($, seenIds, held => ({ ...held, [key]: mergeSeen(held[key] ?? [], pullIds(pull)) }))
 
-    if (pull.state !== "OPEN") ctx.found.isDone = true
+    if (pull.state !== "OPEN") {
+      ctx.found.isDone = true
+      ctx.found.doneAt = ctx.checks
+    }
     await update($, watch, () => ({
       branch,
       pull: pullName(ref),
@@ -416,8 +430,9 @@ async function titlesFor($: EngineInterface, ref: RepoRef, pending: ReturnType<t
   const run = await $.process.run(titlesArgv(ref, asked))
   let fresh = {}
   try {
-    // A number with no pull request is kept untitled, so it is not asked for again.
-    fresh = { ...Object.fromEntries(asked.map(number => [String(number), { title: "", author: null }])), ...parseTitles(run.stdout) }
+    // A number with no pull request is kept untitled, so it is not asked for again; one failed for now is asked again.
+    const untitled = numbersNotFound(run.stdout).map(number => [String(number), { title: "", author: null }])
+    fresh = { ...Object.fromEntries(untitled), ...parseTitles(run.stdout) }
   } catch {
     $.ui.log(`gh-inbox: titles of ${repoName(ref)}: ${firstLine(run.stderr)}`, { to: "debug" })
   }
@@ -435,8 +450,9 @@ async function checkRepo($: EngineInterface, ctx: Context, key: string, entry: R
   const { value: seenByKey = {} } = await $.state.get({ plugin: "gh-inbox", key: "seen" })
   const seen = seenForRepo(seenByKey, ref)
   const watched = ctx.found
-  const watchedBranch =
-    watched?.ref != null && !watched.isDone && repoKey(watched.ref) === key ? watched.branch : null
+  // The check that sees the pull request merged or closed tells its failed checks too: their runs are not told twice.
+  const isWatched = watched !== undefined && (!watched.isDone || watched.doneAt === ctx.checks)
+  const watchedBranch = isWatched && watched.ref !== null && repoKey(watched.ref) === key ? watched.branch : null
 
   let viewer = ""
   let titles: Titles = {}
@@ -501,6 +517,7 @@ async function check($: EngineInterface, ctx: Context, isForced = false) {
 }
 
 async function runCheck($: EngineInterface, ctx: Context, isForced: boolean) {
+  ctx.checks += 1
   try {
     const fresh: GhEvent[] = []
     await checkPull($, ctx, fresh, isForced)
@@ -642,6 +659,8 @@ async function repoCommand($: EngineInterface, ctx: Context, words: readonly str
       return `${shown}: ${kindList(chosen)}`
     }
     case "remove": {
+      // A check under way would write back what is removed here.
+      while (ctx.running !== undefined) await ctx.running
       await writeRepo($, key, () => undefined)
       await $.store.delete(`${REPO_CACHE_PREFIX}${key}`)
       await $.store.delete(`${TITLES_PREFIX}${key}`)
@@ -665,6 +684,7 @@ export const register: Register = (on, options) => {
     notifySelf: options.notifySelf === true,
     found: undefined,
     running: undefined,
+    checks: 0,
     sessionId: "",
     activeAt: 0,
     touchedAt: 0,

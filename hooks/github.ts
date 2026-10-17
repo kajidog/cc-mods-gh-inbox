@@ -2,7 +2,16 @@ export type PullRef = { host: string; owner: string; repo: string; number: numbe
 export type PullState = "OPEN" | "CLOSED" | "MERGED"
 
 export type Comment = { id: string; author: string | null; body: string; at: string; url: string }
-export type ReviewComment = { id: string; path: string; line: number | null; hunk: string; body: string; url: string }
+export type ReviewComment = {
+  id: string
+  author: string | null
+  at: string
+  path: string
+  line: number | null
+  hunk: string
+  body: string
+  url: string
+}
 export type Review = {
   id: string
   author: string | null
@@ -47,7 +56,7 @@ export const PULL_QUERY = `query($owner: String!, $repo: String!, $number: Int!)
       mergedBy { login }
       comments(last: 50) { nodes { id author { login } body createdAt url } }
       reviews(last: 50) { nodes { id author { login } state body submittedAt url
-        comments(first: 50) { nodes { id path line originalLine diffHunk body url } } } }
+        comments(first: 50) { nodes { id author { login } createdAt path line originalLine diffHunk body url } } } }
       commits(last: 50) { nodes { commit { oid messageHeadline additions deletions committedDate url
         author { name user { login } } } } }
       latest: commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { __typename
@@ -181,6 +190,8 @@ export function parsePull(ref: PullRef, answer: string): Pull {
       url: text(node.url),
       comments: nodes(node.comments).map(comment => ({
         id: text(comment.id),
+        author: login(comment.author),
+        at: text(comment.createdAt),
         path: text(comment.path),
         line: typeof comment.line === "number" ? comment.line : typeof comment.originalLine === "number" ? comment.originalLine : null,
         hunk: text(comment.diffHunk),
