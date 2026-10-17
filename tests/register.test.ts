@@ -196,7 +196,7 @@ test("while the login gh uses is not known, the repository waits instead of tell
 test("choosing ci-failure again asks for the runs before taking them as seen", async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["comment", "ci-failure"] } } })
   const clock = mock.clock(on, { now: 1_000_000 })
-  const failed = { id: 39000000003, name: "test", head_branch: "main", html_url: "", updated_at: "2026-10-16T12:00:00Z", run_attempt: 1, conclusion: "failure" }
+  const failed = { id: 39000000003, name: "test", head_branch: "main", head_sha: "a12", html_url: "", updated_at: "2026-10-16T12:00:00Z", run_attempt: 1, conclusion: "failure" }
   let runs = RUNS
   const github = fakeGitHub(on, [[]], argv => {
     const path = argv.find(word => word.includes("/actions/runs")) ?? ""
@@ -217,4 +217,29 @@ test("choosing ci-failure again asks for the runs before taking them as seen", a
   await clock.advance(61_000)
   await $.command.run(CHECK)
   expect(github.toasts).toEqual([])
+})
+
+test("titles are asked for in batches, so every notice has its own", async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: ["pr-open"] } } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const opened = Array.from({ length: 60 }, (_, index) => ({
+    id: String(100 + index),
+    type: "PullRequestEvent",
+    actor: { login: "someone" },
+    created_at: `2026-10-16T00:${String(index).padStart(2, "0")}:00Z`,
+    payload: { action: "opened", number: index + 1, pull_request: { number: index + 1 } },
+  }))
+  const github = fakeGitHub(on, [[], opened.reverse()], argv => {
+    const query = argv.find(word => word.startsWith("query=")) ?? ""
+    if (!argv.includes("graphql")) return undefined
+    const numbers = [...query.matchAll(/pullRequest\(number: (\d+)\)/g)].map(match => match[1])
+    return { stdout: JSON.stringify({ data: { repository: Object.fromEntries(numbers.map(number => [`pr${number}`, { title: `t${number}`, author: null }])) } }) }
+  })
+
+  await $.command.run(CHECK)
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  const queries = github.asked.filter(argv => argv.includes("graphql")).map(argv => argv.at(-1) ?? "")
+  expect(queries.map(query => query.match(/pullRequest\(/g)?.length)).toEqual([50, 10])
+  expect(await $.command.run({ ...CHECK, args: "log" })).toMatchObject({ text: expect.stringContaining("#60 t60") })
 })

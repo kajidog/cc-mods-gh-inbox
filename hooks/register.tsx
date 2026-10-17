@@ -96,6 +96,8 @@ type Found = {
   isDone: boolean
   /** The check at which the pull request was seen merged or closed. */
   doneAt?: number
+  /** The newest commit of the pull request, whose checks its notices tell. */
+  head?: string
 }
 // What a module load keeps between checks; a reload starts it over.
 type Context = {
@@ -269,6 +271,7 @@ async function checkPull($: EngineInterface, ctx: Context, fresh: GhEvent[], isF
     fresh.push(...newEvents(pull, seen, { nicknames, notifySelf: ctx.notifySelf }))
     await update($, seenIds, held => ({ ...held, [key]: mergeSeen(held[key] ?? [], pullIds(pull)) }))
 
+    ctx.found.head = pull.commits.at(-1)?.oid
     if (pull.state !== "OPEN") {
       ctx.found.isDone = true
       ctx.found.doneAt = ctx.checks
@@ -428,16 +431,18 @@ async function titlesFor($: EngineInterface, ref: RepoRef, pending: ReturnType<t
   const held = toTitles(await $.store.get(key))
   const missing = numbersNeedingTitles(pending).filter(number => !(String(number) in held))
   if (missing.length === 0) return held
-  // A number GitHub does not know fails the request, but the answer still holds the others.
-  const asked = missing.slice(-TITLES_AT_ONCE)
-  const run = await $.process.run(titlesArgv(ref, asked))
   let fresh = {}
-  try {
-    // A number with no pull request is kept untitled, so it is not asked for again; one failed for now is asked again.
-    const untitled = numbersNotFound(run.stdout).map(number => [String(number), { title: "", author: null }])
-    fresh = { ...Object.fromEntries(untitled), ...parseTitles(run.stdout) }
-  } catch {
-    $.ui.log(`gh-inbox: titles of ${repoName(ref)}: ${firstLine(run.stderr)}`, { to: "debug" })
+  // Asked for in batches, so every notice about to be made has its title.
+  for (let start = 0; start < missing.length; start += TITLES_AT_ONCE) {
+    // A number GitHub does not know fails the request, but the answer still holds the others.
+    const run = await $.process.run(titlesArgv(ref, missing.slice(start, start + TITLES_AT_ONCE)))
+    try {
+      // A number with no pull request is kept untitled, so it is not asked for again; one failed for now is asked again.
+      const untitled = numbersNotFound(run.stdout).map(number => [String(number), { title: "", author: null }])
+      fresh = { ...fresh, ...Object.fromEntries(untitled), ...parseTitles(run.stdout) }
+    } catch {
+      $.ui.log(`gh-inbox: titles of ${repoName(ref)}: ${firstLine(run.stderr)}`, { to: "debug" })
+    }
   }
   const titles = addTitles(held, fresh)
   await $.store.set(key, titles)
@@ -455,7 +460,7 @@ async function checkRepo($: EngineInterface, ctx: Context, key: string, entry: R
   const watched = ctx.found
   // The check that sees the pull request merged or closed tells its failed checks too: their runs are not told twice.
   const isWatched = watched !== undefined && (!watched.isDone || watched.doneAt === ctx.checks)
-  const watchedBranch = isWatched && watched.ref !== null && repoKey(watched.ref) === key ? watched.branch : null
+  const watchedHead = isWatched && watched.ref !== null && repoKey(watched.ref) === key ? (watched.head ?? null) : null
 
   let viewer = ""
   let titles: Titles = {}
@@ -466,7 +471,7 @@ async function checkRepo($: EngineInterface, ctx: Context, key: string, entry: R
     if (viewer === "") throw new Error("the login gh uses is not known")
     const pending = pendingEvents({ kinds: entry.kinds, events: cache.events, viewer }, seen, ctx.notifySelf)
     const isPrimed = entry.kinds.includes("ci-failure") && seen.has(ACTIONS_PRIMED)
-    const failedRuns = isPrimed ? cache.runs.filter(run => !seen.has(run.id) && run.branch !== watchedBranch) : []
+    const failedRuns = isPrimed ? cache.runs.filter(run => !seen.has(run.id) && run.headSha !== watchedHead) : []
     ;({ cache, deferred } = await lookUpDetails($, ctx, ref, cache, pending, failedRuns))
     titles = await titlesFor($, ref, pending)
   }
@@ -474,7 +479,7 @@ async function checkRepo($: EngineInterface, ctx: Context, key: string, entry: R
   const events = cache.events.filter(event => !deferred.has(event.id))
   const runs = cache.runs.filter(run => !deferred.has(run.id))
   const fresh = newRepoEvents(
-    { ref, label: repoLabel(key, entry), kinds: entry.kinds, events, runs, titles, viewer, watchedBranch },
+    { ref, label: repoLabel(key, entry), kinds: entry.kinds, events, runs, titles, viewer, watchedHead },
     seen,
     { nicknames, notifySelf: ctx.notifySelf },
   )

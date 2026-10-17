@@ -75,6 +75,12 @@ describe("newEvents", () => {
     expect(texts(replied, ["r", "c1"])).toEqual(["cさんがコメントしました。src/a.ts:3 Agreed"])
   })
 
+  test("a reply inside a review of mine is told, my own comments not", async () => {
+    const comment = (id: string, author: string) => ({ id, author, at: "2026-01-01T00:00:09Z", path: "src/a.ts", line: 3, hunk: "", body: "Agreed", url: "" })
+    const mine = { id: "r", author: "me", state: "COMMENTED", body: "Look", at: "2026-01-01T00:00:00Z", url: "", comments: [comment("c1", "me"), comment("c2", "c")] }
+    expect(texts(pullWith({ reviews: [mine] }))).toEqual(["cさんがコメントしました。src/a.ts:3 Agreed"])
+  })
+
   test("a failed check is notified once, with its failed step", async () => {
     const pull = pullWith({
       checks: [

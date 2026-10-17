@@ -38,7 +38,7 @@ const titles = parseTitles(JSON.stringify(TITLES))
 const lookedUp = events.map(event => (event.type === "push" ? { ...event, changes: canCompare(event) ? parseCompare(JSON.stringify(COMPARE)) : null } : event))
 
 function inputWith(changes: Partial<RepoInput>): RepoInput {
-  return { ref, label: "tts", kinds: KINDS, events: lookedUp, runs: [], titles, viewer: "me", watchedBranch: null, ...changes }
+  return { ref, label: "tts", kinds: KINDS, events: lookedUp, runs: [], titles, viewer: "me", watchedHead: null, ...changes }
 }
 const texts = (input: RepoInput, seen: Iterable<string> = []) => newRepoEvents(input, new Set(seen), options).map(event => event.text)
 
@@ -99,7 +99,7 @@ describe("newRepoEvents", () => {
     expect(texts(inputWith({ kinds: ["push"] }), [COMPARE.commits[0]?.sha ?? "", "abcdef1234567890"])).toEqual([])
   })
 
-  test("a failed run is told with its job and step, not on the branch this session watches", async () => {
+  test("a failed run is told with its job and step, not on the commit this session watches", async () => {
     const failure = parseJobs(JSON.stringify(JOBS))
     const runs: Run[] = parseRuns(JSON.stringify(RUNS)).map(run => ({ ...run, failure }))
     const input = inputWith({ kinds: ["ci-failure"], runs })
@@ -107,7 +107,7 @@ describe("newRepoEvents", () => {
       "[tts] test / test (ubuntu-latest) の CI が失敗しました（main）。Run npm test",
       "[tts] test / test (ubuntu-latest) の CI が失敗しました（feat/foo）。Run npm test",
     ])
-    expect(texts({ ...input, watchedBranch: "feat/foo" }, [ACTIONS_PRIMED])).toHaveLength(1)
+    expect(texts({ ...input, watchedHead: "f00" }, [ACTIONS_PRIMED])).toEqual(["[tts] test / test (ubuntu-latest) の CI が失敗しました（main）。Run npm test"])
     // Until the runs there are taken as seen, none is told.
     expect(texts(input)).toEqual([])
     expect(runs.map(run => run.id)).toEqual(["actions:39000000001:1", "actions:39000000002:2"])

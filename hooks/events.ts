@@ -85,8 +85,8 @@ export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, opt
   }
 
   for (const review of pull.reviews) {
-    if (seen.has(review.id)) {
-      // A reply can join a review told already: its new comments are told one by one.
+    if (seen.has(review.id) || isMuted(review.author)) {
+      // A reply can join a review told already, or one of mine: its new comments are told one by one.
       for (const comment of review.comments) {
         if (seen.has(comment.id) || isMuted(comment.author)) continue
         events.push({

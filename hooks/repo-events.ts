@@ -268,6 +268,8 @@ export type Run = {
   attempt: number
   workflow: string
   branch: string
+  /** The commit it ran on. */
+  headSha: string
   url: string
   at: string
   /** Absent until looked up; null where no job says it failed. */
@@ -291,6 +293,7 @@ export function parseRuns(body: string): Run[] {
         attempt,
         workflow: text(run.name),
         branch: text(run.head_branch),
+        headSha: text(run.head_sha),
         url: text(run.html_url),
         at: text(run.updated_at),
       }
@@ -392,8 +395,11 @@ export type RepoInput = {
   runs: readonly Run[]
   titles: Titles
   viewer: string
-  /** A branch whose pull request this session watches already: its runs are notified there. */
-  watchedBranch: string | null
+  /**
+   * The newest commit of the pull request this session watches: its failed runs
+   * are notified there, while those of an older commit are not and come here.
+   */
+  watchedHead: string | null
 }
 
 export type RepoEventOptions = { nicknames: Nicknames; notifySelf: boolean }
@@ -539,7 +545,7 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
 
   if (input.kinds.includes("ci-failure") && seen.has(ACTIONS_PRIMED)) {
     for (const run of input.runs) {
-      if (seen.has(run.id) || run.branch === input.watchedBranch) continue
+      if (seen.has(run.id) || run.headSha === input.watchedHead) continue
       const name = run.failure ? `${run.workflow} / ${run.failure.job}` : run.workflow
       add({
         id: run.id,
