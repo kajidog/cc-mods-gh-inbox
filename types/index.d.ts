@@ -46,6 +46,8 @@ declare module "claude-code" {
       /** Recent notices, oldest first. */
       events: GhEvent[]
       watch: GhWatch | null
+      /** The ids this session has seen, by `host/owner/repo#number`. */
+      seen: Record<string, string[]>
     }
   }
 }
