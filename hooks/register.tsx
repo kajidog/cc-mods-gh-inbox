@@ -332,9 +332,12 @@ async function fetchRepo($: EngineInterface, ctx: Context, ref: RepoRef, kinds: 
   const wantsRuns = kinds.includes("ci-failure")
   // Runs are asked for only while `ci-failure` is chosen; chosen later, they are asked for at once.
   const needsRuns = wantsRuns && (cached === undefined || cached.runsEtag === null)
-  if (isFresh && !needsRuns) return cached
+  // Runs no longer asked for are dropped, so choosing `ci-failure` again asks for them anew before they count as seen.
+  const dropsRuns = !wantsRuns && cached !== undefined && cached.runsEtag !== null
+  if (isFresh && !needsRuns && !dropsRuns) return cached
 
   let next: RepoCache = cached ?? { at: now, etag: null, poll: DEFAULT_POLL_SECONDS, events: [], runsEtag: null, runs: [] }
+  if (dropsRuns) next = { ...next, runsEtag: null, runs: [] }
   if (!isFresh) {
     const answer = await ask($, eventsArgv(ref, next.etag || null))
     if (answer.status === 200) next = { ...next, etag: answer.headers.etag ?? null, events: parseEvents(answer.body) }
@@ -459,6 +462,8 @@ async function checkRepo($: EngineInterface, ctx: Context, key: string, entry: R
   let deferred = new Set<string>()
   if (seen !== undefined) {
     viewer = await viewerOf($, ctx, ref.host)
+    // Without it the person's own activity would pass for someone else's: the repository waits for the next check.
+    if (viewer === "") throw new Error("the login gh uses is not known")
     const pending = pendingEvents({ kinds: entry.kinds, events: cache.events, viewer }, seen, ctx.notifySelf)
     const isPrimed = entry.kinds.includes("ci-failure") && seen.has(ACTIONS_PRIMED)
     const failedRuns = isPrimed ? cache.runs.filter(run => !seen.has(run.id) && run.branch !== watchedBranch) : []

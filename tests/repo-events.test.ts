@@ -220,3 +220,14 @@ test("numbersNotFound names the numbers with no pull request, not a failure for 
   expect(numbersNotFound(JSON.stringify(TITLES))).toEqual([4])
   expect(numbersNotFound(JSON.stringify({ errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded" }] }))).toEqual([])
 })
+
+test("an edited review is not a new one", async () => {
+  const review = (id: string, action: string) => ({
+    id,
+    type: "PullRequestReviewEvent",
+    actor: { login: "a" },
+    created_at: "",
+    payload: { action, review: { id: 1, node_id: "PRR_1", state: "approved", body: null, html_url: "" }, pull_request: { number: 1 } },
+  })
+  expect(parseEvents(JSON.stringify([review("2", "updated"), review("1", "created")])).map(event => event.id)).toEqual(["PRR_1"])
+})

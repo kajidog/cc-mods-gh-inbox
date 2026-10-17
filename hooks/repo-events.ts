@@ -193,6 +193,8 @@ export function parseEvents(body: string): RepoEvent[] {
         break
       }
       case "PullRequestReviewEvent": {
+        // An edit (`updated`) or a dismissal is not a new review.
+        if (payload.action !== "created") break
         const review = object(payload.review)
         events.push({
           ...base,

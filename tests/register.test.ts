@@ -176,3 +176,45 @@ test("a repository is registered as GitHub spells it and found whatever the case
   expect(await $.command.run({ ...CHECK, args: "repo add OWNER/REPO" })).toMatchObject({ text: expect.stringContaining("Owner/Repo は登録済みです") })
   expect(await $.command.run({ ...CHECK, args: "repo remove owner/repo" })).toEqual({ text: "Owner/Repo の登録を外しました。" })
 })
+
+test("while the login gh uses is not known, the repository waits instead of telling the person's own activity", async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: ["comment"] } } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const mine = { ...COMMENT, actor: { login: "me" } }
+  let isLoggedOut = true
+  const github = fakeGitHub(on, [[], [mine]], argv => (argv.includes("user") && isLoggedOut ? { stderr: "gh: Bad credentials (HTTP 401)", exitCode: 1 } : undefined))
+
+  await $.command.run(CHECK)
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  isLoggedOut = false
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual([])
+})
+
+test("choosing ci-failure again asks for the runs before taking them as seen", async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: ["comment", "ci-failure"] } } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const failed = { id: 39000000003, name: "test", head_branch: "main", html_url: "", updated_at: "2026-10-16T12:00:00Z", run_attempt: 1, conclusion: "failure" }
+  let runs = RUNS
+  const github = fakeGitHub(on, [[]], argv => {
+    const path = argv.find(word => word.includes("/actions/runs")) ?? ""
+    if (path.endsWith("/jobs")) return { stdout: JSON.stringify({ jobs: [] }) }
+    if (path !== "") return { stdout: `HTTP/2.0 200 OK\nEtag: "r${runs.workflow_runs.length}"\n\n${JSON.stringify(runs)}` }
+    return undefined
+  })
+
+  await $.command.run(CHECK)
+  await $.command.run({ ...CHECK, args: "repo set o/r comment" })
+  await clock.advance(10_000)
+  await $.command.run(CHECK)
+  // A run fails while CI notices are off; turned on again within the interval, it is taken as there already.
+  runs = { ...RUNS, workflow_runs: [failed, ...RUNS.workflow_runs] }
+  await $.command.run({ ...CHECK, args: "repo set o/r comment,ci-failure" })
+  await clock.advance(10_000)
+  await $.command.run(CHECK)
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual([])
+})
