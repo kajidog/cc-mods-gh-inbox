@@ -1,6 +1,6 @@
 import { describe, expect, test } from "claude-code/testing"
 
-import { MERGED_ID, mergeSeen, newEvents, pullIds, snippet } from "../hooks/events"
+import { MERGED_ID, mergeSeen, newEvents, plain, pullIds, SEEN_LIMIT, snippet } from "../hooks/events"
 import { type Pull, parsePull, parsePullUrl, pullArgv } from "../hooks/github"
 
 const ref = { host: "github.com", owner: "o", repo: "r", number: 7 }
@@ -54,7 +54,7 @@ describe("newEvents", () => {
   })
 
   test("reviews say what kind they are", async () => {
-    const inline = { id: "rc", path: "src/a.ts", line: 12, hunk: "@@", body: "Why **this**?", url: "" }
+    const inline = { id: "rc", author: "reviewer", at: "", path: "src/a.ts", line: 12, hunk: "@@", body: "Why **this**?", url: "" }
     const review = (id: string, state: string, body: string, comments = [inline]) => ({ id, author: "b", state, body, at: `2026-01-01T00:00:0${id}Z`, url: "", comments })
     const pull = pullWith({
       reviews: [review("1", "APPROVED", "LGTM", []), review("2", "CHANGES_REQUESTED", "Please fix"), review("3", "COMMENTED", ""), review("4", "PENDING", "")],
@@ -66,6 +66,19 @@ describe("newEvents", () => {
     ])
     const [, requested] = newEvents(pull, new Set(), options)
     expect(requested?.items.map(item => item.path ?? null)).toEqual([null, "src/a.ts"])
+  })
+
+  test("a reply that joins a review told already is told on its own", async () => {
+    const comment = (id: string, author: string) => ({ id, author, at: "2026-01-01T00:00:09Z", path: "src/a.ts", line: 3, hunk: "", body: "Agreed", url: "" })
+    const review = { id: "r", author: "b", state: "COMMENTED", body: "Look", at: "2026-01-01T00:00:00Z", url: "", comments: [comment("c1", "b")] }
+    const replied = pullWith({ reviews: [{ ...review, comments: [comment("c1", "b"), comment("c2", "c"), comment("c3", "me")] }] })
+    expect(texts(replied, ["r", "c1"])).toEqual(["cさんがコメントしました。src/a.ts:3 Agreed"])
+  })
+
+  test("a reply inside a review of mine is told, my own comments not", async () => {
+    const comment = (id: string, author: string) => ({ id, author, at: "2026-01-01T00:00:09Z", path: "src/a.ts", line: 3, hunk: "", body: "Agreed", url: "" })
+    const mine = { id: "r", author: "me", state: "COMMENTED", body: "Look", at: "2026-01-01T00:00:00Z", url: "", comments: [comment("c1", "me"), comment("c2", "c")] }
+    expect(texts(pullWith({ reviews: [mine] }))).toEqual(["cさんがコメントしました。src/a.ts:3 Agreed"])
   })
 
   test("a failed check is notified once, with its failed step", async () => {
@@ -91,14 +104,29 @@ test("snippet cuts long lines", async () => {
   expect(snippet("```\ncode\n```\n> quoted [link](http://x)")).toBe("quoted link")
 })
 
+test("plain drops control characters and bidirectional overrides", async () => {
+  expect(plain("ok\u001b]0;title\u0007 \u202eevil\u001b[2J")).toBe("ok]0;title evil[2J")
+})
+
 test("mergeSeen keeps each id once, newest last", async () => {
   expect(mergeSeen(["a", "b"], ["b", "c"])).toEqual(["a", "b", "c"])
+})
+
+test("mergeSeen keeps every id GitHub lists now, past the limit", async () => {
+  const ids = Array.from({ length: SEEN_LIMIT + 10 }, (_, index) => `id${index}`)
+  expect(mergeSeen(["old"], ids)).toEqual(ids)
 })
 
 test("parsePullUrl and pullArgv name another host", async () => {
   const found = parsePullUrl("https://ghe.example/o/r/pull/3")
   expect(found).toEqual({ host: "ghe.example", owner: "o", repo: "r", number: 3 })
   expect(found && pullArgv(found).slice(0, 4)).toEqual(["gh", "api", "--hostname", "ghe.example"])
+})
+
+test("pullArgv sends the names as strings, so a repository named 2048 is not a number", async () => {
+  const argv = pullArgv({ host: "github.com", owner: "o", repo: "2048", number: 3 })
+  expect(argv[argv.indexOf("repo=2048") - 1]).toBe("-f")
+  expect(argv[argv.indexOf("number=3") - 1]).toBe("-F")
 })
 
 test("parsePull reads checks of the newest commit", async () => {
