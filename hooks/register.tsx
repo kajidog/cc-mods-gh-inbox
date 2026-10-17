@@ -3,7 +3,7 @@ import type { EngineInterface, Register, Timer } from "claude-code"
 
 import type { GhEvent, GhPicker, GhWatch } from "../types"
 
-import { displayName, mergeSeen, newEvents, type Nicknames, pullIds } from "./events"
+import { displayName, mergeSeen, newEvents, type Nicknames, plain, pullIds } from "./events"
 import { type PullRef, type PullState, parsePull, parsePullUrl, pullArgv, pullName } from "./github"
 import { PRESENCE_PREFIX, type Presence, pickActive, toPresence } from "./presence"
 import {
@@ -39,6 +39,7 @@ import {
   runsArgv,
   seenForPull,
   seenForRepo,
+  type Titles,
   titlesArgv,
   viewerArgv,
 } from "./repo-events"
@@ -78,6 +79,8 @@ const CACHE_KEPT_MS = 60 * 60 * 1000
 const PICKER_PANE = "gh-inbox-kinds"
 // Titles asked for in one GraphQL request at most.
 const TITLES_AT_ONCE = 50
+// A lookup that fails for now (no network, a rate limit) is tried at this many checks, its notice held meanwhile.
+const LOOKUP_TRIES = 3
 
 const events = atom({ plugin: "gh-inbox", key: "events" } as const, [] as GhEvent[])
 const watch = atom({ plugin: "gh-inbox", key: "watch" } as const, null as GhWatch | null)
@@ -92,7 +95,8 @@ type Context = {
   channel: string
   notifySelf: boolean
   found: Found | undefined
-  isChecking: boolean
+  /** The check under way, if one is. */
+  running: Promise<void> | undefined
   sessionId: string
   activeAt: number
   touchedAt: number
@@ -100,6 +104,10 @@ type Context = {
   viewers: Map<string, string>
   /** The last check's error, by `host/owner/repo`. */
   repoErrors: Map<string, string>
+  /** The failed tries of a lookup tried again, by the id of its push or run. */
+  retries: Map<string, number>
+  /** The picker's toggles, one after another. */
+  toggling: Promise<void>
 }
 
 const pullKey = (ref: PullRef) => `${ref.host}/${pullName(ref)}`
@@ -138,7 +146,7 @@ async function lookUp($: EngineInterface, branch: string, now: number): Promise<
 
 async function show($: EngineInterface, ctx: Context, list: readonly GhEvent[]) {
   const shown = list.length > SHOWN_AT_ONCE ? [...list.slice(0, SHOWN_AT_ONCE - 1)] : list
-  const lines = shown.map(event => event.text)
+  const lines = shown.map(event => plain(event.text))
   if (shown.length < list.length) lines.push(`GitHub: ほか${list.length - shown.length}件の更新があります（/inbox log）`)
   for (const line of lines) {
     if (ctx.channel === "log") $.ui.log(`GitHub: ${line}`)
@@ -261,7 +269,7 @@ async function checkPull($: EngineInterface, ctx: Context, fresh: GhEvent[], isF
       error: null,
     }))
     if (seen === undefined && pull.state === "OPEN" && (await isShowing($, ctx, now)))
-      $.ui.toast(`GitHub: #${ref.number} の通知を始めます。${pull.title}`, { timeoutMs: TOAST_MS })
+      $.ui.toast(`GitHub: #${ref.number} の通知を始めます。${plain(pull.title)}`, { timeoutMs: TOAST_MS })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     await update($, watch, held => ({
@@ -319,8 +327,13 @@ async function fetchRepo($: EngineInterface, ctx: Context, ref: RepoRef, kinds: 
     next = { ...next, at: now, poll: Number(answer.headers["x-poll-interval"]) || next.poll }
   }
   if (wantsRuns) {
-    const answer = await ask($, runsArgv(ref, next.runsEtag || null))
-    if (answer.status === 200) next = { ...next, runsEtag: answer.headers.etag ?? "", runs: parseRuns(answer.body) }
+    // Runs that cannot be read (Actions turned off, a token without `actions:read`) do not stop the events.
+    try {
+      const answer = await ask($, runsArgv(ref, next.runsEtag || null))
+      if (answer.status === 200) next = { ...next, runsEtag: answer.headers.etag ?? "", runs: parseRuns(answer.body) }
+    } catch (error) {
+      ctx.repoErrors.set(repoKey(ref), `CI: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
   next = { ...next, ...carryOver(cached, next) }
   await $.store.set(key, next)
@@ -328,8 +341,33 @@ async function fetchRepo($: EngineInterface, ctx: Context, ref: RepoRef, kinds: 
   return next
 }
 
-/** Looks up what the notices about to be made need: the commits of pushes, the failed step of runs. */
-async function lookUpDetails($: EngineInterface, ref: RepoRef, cache: RepoCache, pending: ReturnType<typeof pendingEvents>, runs: RepoCache["runs"]) {
+// GitHub saying a lookup never works: a compare across a force push, a deleted run.
+const isFinal = (stderr: string) => /\(HTTP 4(?:04|22)\)/.test(stderr)
+
+/**
+ * Looks up what the notices about to be made need: the commits of pushes, the
+ * failed step of runs. What failed for now is `deferred`, tried again at the next check.
+ */
+async function lookUpDetails(
+  $: EngineInterface,
+  ctx: Context,
+  ref: RepoRef,
+  cache: RepoCache,
+  pending: ReturnType<typeof pendingEvents>,
+  runs: RepoCache["runs"],
+): Promise<{ cache: RepoCache; deferred: Set<string> }> {
+  const deferred = new Set<string>()
+  // Whether a failed lookup is given up, its notice told without it; else it waits for the next check.
+  const givesUp = (id: string, stderr: string) => {
+    const tries = (ctx.retries.get(id) ?? 0) + 1
+    if (isFinal(stderr) || tries >= LOOKUP_TRIES) {
+      ctx.retries.delete(id)
+      return true
+    }
+    ctx.retries.set(id, tries)
+    deferred.add(id)
+    return false
+  }
   const pushes = pending.flatMap(event => (event.type === "push" && event.changes === undefined ? [event] : [])).slice(-PUSHES_LOOKED_UP)
   const changes = new Map<string, ReturnType<typeof parseCompare> | null>()
   for (const push of pushes) {
@@ -337,16 +375,22 @@ async function lookUpDetails($: EngineInterface, ref: RepoRef, cache: RepoCache,
       changes.set(push.id, null)
       continue
     }
-    const run = await $.process.run(compareArgv(ref, push))
     // A force push leaves `before` out of the history: the compare fails, and the head alone is told.
-    changes.set(push.id, run.exitCode === 0 ? parseCompare(run.stdout) : null)
+    const run = await $.process.run(compareArgv(ref, push))
+    if (run.exitCode === 0) {
+      ctx.retries.delete(push.id)
+      changes.set(push.id, parseCompare(run.stdout))
+    } else if (givesUp(push.id, run.stderr)) changes.set(push.id, null)
   }
   const failures = new Map<string, ReturnType<typeof parseJobs>>()
   for (const one of runs.filter(run => run.failure === undefined)) {
     const run = await $.process.run(jobsArgv(ref, one))
-    failures.set(one.id, run.exitCode === 0 ? parseJobs(run.stdout) : null)
+    if (run.exitCode === 0) {
+      ctx.retries.delete(one.id)
+      failures.set(one.id, parseJobs(run.stdout))
+    } else if (givesUp(one.id, run.stderr)) failures.set(one.id, null)
   }
-  if (changes.size === 0 && failures.size === 0) return cache
+  if (changes.size === 0 && failures.size === 0) return { cache, deferred }
 
   const looked: RepoCache = {
     ...cache,
@@ -358,7 +402,7 @@ async function lookUpDetails($: EngineInterface, ref: RepoRef, cache: RepoCache,
   const latest = toRepoCache(await $.store.get(key)) ?? looked
   await $.store.set(key, { ...latest, ...carryOver(looked, latest) })
 
-  return looked
+  return { cache: looked, deferred }
 }
 
 /** The titles the notices need, asked for once in one GraphQL request and kept in the store. */
@@ -394,23 +438,28 @@ async function checkRepo($: EngineInterface, ctx: Context, key: string, entry: R
   const watchedBranch =
     watched?.ref != null && !watched.isDone && repoKey(watched.ref) === key ? watched.branch : null
 
-  let fresh: GhEvent[] = []
+  let viewer = ""
+  let titles: Titles = {}
+  let deferred = new Set<string>()
   if (seen !== undefined) {
-    const viewer = await viewerOf($, ctx, ref.host)
+    viewer = await viewerOf($, ctx, ref.host)
     const pending = pendingEvents({ kinds: entry.kinds, events: cache.events, viewer }, seen, ctx.notifySelf)
     const isPrimed = entry.kinds.includes("ci-failure") && seen.has(ACTIONS_PRIMED)
-    const runs = isPrimed ? cache.runs.filter(run => !seen.has(run.id) && run.branch !== watchedBranch) : []
-    cache = await lookUpDetails($, ref, cache, pending, runs)
-    const titles = await titlesFor($, ref, pending)
-    fresh = newRepoEvents(
-      { ref, label: repoLabel(key, entry), kinds: entry.kinds, events: cache.events, runs: cache.runs, titles, viewer, watchedBranch },
-      seen,
-      { nicknames, notifySelf: ctx.notifySelf },
-    )
+    const failedRuns = isPrimed ? cache.runs.filter(run => !seen.has(run.id) && run.branch !== watchedBranch) : []
+    ;({ cache, deferred } = await lookUpDetails($, ctx, ref, cache, pending, failedRuns))
+    titles = await titlesFor($, ref, pending)
   }
+  // What waits for a lookup is neither notified nor taken as seen yet.
+  const events = cache.events.filter(event => !deferred.has(event.id))
+  const runs = cache.runs.filter(run => !deferred.has(run.id))
+  const fresh = newRepoEvents(
+    { ref, label: repoLabel(key, entry), kinds: entry.kinds, events, runs, titles, viewer, watchedBranch },
+    seen,
+    { nicknames, notifySelf: ctx.notifySelf },
+  )
   // Ids of every kind are kept, so a kind chosen later does not bring back old events.
   const wantsRuns = entry.kinds.includes("ci-failure") && cache.runsEtag !== null
-  const ids = repoIds(cache.events, cache.runs, wantsRuns)
+  const ids = repoIds(events, runs, wantsRuns)
   await update($, seenIds, held => ({
     ...held,
     // Not choosing `ci-failure` drops the mark, so choosing it again starts from the runs there by then.
@@ -427,9 +476,14 @@ async function checkRepos($: EngineInterface, ctx: Context, fresh: GhEvent[]) {
   const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
   const now = await $.clock.now()
   for (const [key, entry] of repos) {
+    ctx.repoErrors.delete(key)
+    // With no kind chosen GitHub is not asked; chosen again, the repository starts over from a first look.
+    if (entry.kinds.length === 0) {
+      await update($, seenIds, ({ [repoSeenKey(refOfKey(key))]: _, ...others }) => others)
+      continue
+    }
     try {
       fresh.push(...(await checkRepo($, ctx, key, entry, nicknames, now)))
-      ctx.repoErrors.delete(key)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       ctx.repoErrors.set(key, message)
@@ -438,9 +492,15 @@ async function checkRepos($: EngineInterface, ctx: Context, fresh: GhEvent[]) {
   }
 }
 
+/** Checks now; a forced check waits for one under way and checks again after it, the timer's is skipped. */
 async function check($: EngineInterface, ctx: Context, isForced = false) {
-  if (ctx.isChecking) return
-  ctx.isChecking = true
+  if (ctx.running !== undefined && !isForced) return
+  while (ctx.running !== undefined) await ctx.running
+  ctx.running = runCheck($, ctx, isForced)
+  await ctx.running
+}
+
+async function runCheck($: EngineInterface, ctx: Context, isForced: boolean) {
   try {
     const fresh: GhEvent[] = []
     await checkPull($, ctx, fresh, isForced)
@@ -453,7 +513,7 @@ async function check($: EngineInterface, ctx: Context, isForced = false) {
   } catch (error) {
     $.ui.log(`gh-inbox: ${error instanceof Error ? error.message : String(error)}`, { to: "debug" })
   } finally {
-    ctx.isChecking = false
+    ctx.running = undefined
   }
 }
 
@@ -470,7 +530,7 @@ async function status($: EngineInterface, ctx: Context) {
   if (repos > 0) lines.push(`登録したリポジトリ: ${repos}件（/inbox repo）`)
   lines.push((await isShowing($, ctx, now)) ? "通知はこの窓に出します。" : "通知は最後に操作した別の窓に出します（/inbox log で一覧を見られます）。")
 
-  return lines.join("\n")
+  return lines.map(plain).join("\n")
 }
 
 const kindList = (kinds: readonly Kind[]) => (kinds.length === 0 ? "なし" : kinds.map(kind => KIND_LABELS[kind]).join("、"))
@@ -525,19 +585,25 @@ async function repoCommand($: EngineInterface, ctx: Context, words: readonly str
     for (const [index, [key, entry]] of entries.entries()) {
       const cache = toRepoCache(await $.store.get(`${REPO_CACHE_PREFIX}${key}`))
       const label = entry.alias === undefined ? "" : ` [${entry.alias}]`
-      const paused = index >= ctx.maxRepos ? `（上限${ctx.maxRepos}件を超えたため確認しません）` : ""
+      const paused =
+        index >= ctx.maxRepos
+          ? `（上限${ctx.maxRepos}件を超えたため確認しません）`
+          : entry.kinds.length === 0
+            ? "（種類を選ぶまで確認しません）"
+            : ""
       lines.push(`${repoName(refOfKey(key))}${label}: ${kindList(entry.kinds)}${paused}`)
       if (cache !== undefined) lines.push(`  最後の確認: ${ago(now - cache.at)}`)
       const error = ctx.repoErrors.get(key)
-      if (error !== undefined) lines.push(`  エラー: ${error}`)
+      if (error !== undefined) lines.push(`  エラー: ${plain(error)}`)
     }
     return lines.join("\n")
   }
   if (!["add", "set", "remove", "alias"].includes(action)) return REPO_USAGE
   const ref = name === undefined ? null : parseRepo(name)
   if (ref === null) return `リポジトリは owner/repo の形で指定します。\n${REPO_USAGE}`
-  const key = repoKey(ref)
-  const shown = repoName(ref)
+  // GitHub tells names apart without case: the repository registered is found whatever the case typed.
+  const key = Object.keys(repos).find(one => one.toLowerCase() === repoKey(ref).toLowerCase()) ?? repoKey(ref)
+  const shown = repoName(refOfKey(key))
   const entry = repos[key]
   if (action !== "add" && entry === undefined) return `${shown} は登録されていません。`
 
@@ -555,12 +621,16 @@ async function repoCommand($: EngineInterface, ctx: Context, words: readonly str
         return `登録できるのは${ctx.maxRepos}件までです（/config の「GitHub: Repositories checked」で変えられます）。`
       const found = await $.process.run(repoArgv(ref))
       if (found.exitCode !== 0) return `${shown} を読めませんでした: ${firstLine(found.stderr) || `gh api exited with ${found.exitCode}`}`
+      // Registered as GitHub spells it, the key a pull request's URL gives, so their notices are told once.
+      const named = parseRepo(`${ref.host}/${found.stdout.trim()}`) ?? ref
+      const held = repos[repoKey(named)]
+      if (held !== undefined) return `${repoName(named)} は登録済みです（${kindList(held.kinds)}）。種類を変えるには /inbox repo set を使います。`
       const chosen = kinds ?? [...DEFAULT_KINDS]
-      await writeRepo($, key, () => ({ kinds: chosen }))
+      await writeRepo($, repoKey(named), () => ({ kinds: chosen }))
       // The first look takes what is there as seen, so the notices start from now.
       void check($, ctx)
-      const opened = kinds === undefined && (await openPicker($, key, chosen))
-      return `${shown} を登録しました（${kindList(chosen)}）。${opened ? "ペインで種類を選べます。" : ""}`
+      const opened = kinds === undefined && (await openPicker($, repoKey(named), chosen))
+      return `${repoName(named)} を登録しました（${kindList(chosen)}）。${opened ? "ペインで種類を選べます。" : ""}`
     }
     case "set": {
       if (kinds === undefined) {
@@ -575,7 +645,7 @@ async function repoCommand($: EngineInterface, ctx: Context, words: readonly str
       await writeRepo($, key, () => undefined)
       await $.store.delete(`${REPO_CACHE_PREFIX}${key}`)
       await $.store.delete(`${TITLES_PREFIX}${key}`)
-      await update($, seenIds, ({ [repoSeenKey(ref)]: _, ...others }) => others)
+      await update($, seenIds, ({ [repoSeenKey(refOfKey(key))]: _, ...others }) => others)
       ctx.repoErrors.delete(key)
       return `${shown} の登録を外しました。`
     }
@@ -594,12 +664,14 @@ export const register: Register = (on, options) => {
     channel: String(options.channel),
     notifySelf: options.notifySelf === true,
     found: undefined,
-    isChecking: false,
+    running: undefined,
     sessionId: "",
     activeAt: 0,
     touchedAt: 0,
     viewers: new Map(),
     repoErrors: new Map(),
+    retries: new Map(),
+    toggling: Promise.resolve(),
   }
   let timer: Timer | undefined
 
@@ -657,7 +729,7 @@ export const register: Register = (on, options) => {
       case "log": {
         const { value: list = [] } = await $.state.get({ plugin: "gh-inbox", key: "events" })
         if (list.length === 0) return { text: "このセッションの通知はまだありません。" }
-        return { text: list.slice(-20).map(event => `${event.text}\n  ${event.url}`).join("\n") }
+        return { text: list.slice(-20).map(event => `${plain(event.text)}\n  ${plain(event.url)}`).join("\n") }
       }
       case "repo":
         return { text: await repoCommand($, ctx, rest) }
@@ -699,7 +771,10 @@ export const register: Register = (on, options) => {
             hotkey={String(index + 1)}
             plain
             label={`[${kinds.includes(kind) ? "x" : " "}] ${KIND_LABELS[kind]}（${kind}）`}
-            onPress={() => void toggleKind($, kind)}
+            onPress={() => {
+              // Keys pressed in a row each read what the one before saved.
+              ctx.toggling = ctx.toggling.then(() => toggleKind($, kind)).catch(() => undefined)
+            }}
           />
         ))}
         <Button label="閉じる" onPress={() => void $.ui.close({ id: PICKER_PANE })} />

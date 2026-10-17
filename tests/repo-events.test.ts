@@ -174,6 +174,7 @@ test("parseRepo reads a name, a host and a URL", async () => {
   expect(parseRepo("kajidog/cc-mods-tts")).toEqual(ref)
   expect(parseRepo("https://github.com/kajidog/cc-mods-tts.git")).toEqual(ref)
   expect(parseRepo("ghe.example/o/r")).toEqual({ host: "ghe.example", owner: "o", repo: "r" })
+  expect(parseRepo("GitHub.com/o/r")).toEqual({ host: "github.com", owner: "o", repo: "r" })
   expect(parseRepo("nope")).toBeNull()
 })
 

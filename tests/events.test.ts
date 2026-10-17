@@ -1,6 +1,6 @@
 import { describe, expect, test } from "claude-code/testing"
 
-import { MERGED_ID, mergeSeen, newEvents, pullIds, snippet } from "../hooks/events"
+import { MERGED_ID, mergeSeen, newEvents, plain, pullIds, snippet } from "../hooks/events"
 import { type Pull, parsePull, parsePullUrl, pullArgv } from "../hooks/github"
 
 const ref = { host: "github.com", owner: "o", repo: "r", number: 7 }
@@ -91,6 +91,10 @@ test("snippet cuts long lines", async () => {
   expect(snippet("```\ncode\n```\n> quoted [link](http://x)")).toBe("quoted link")
 })
 
+test("plain drops control characters and bidirectional overrides", async () => {
+  expect(plain("ok\u001b]0;title\u0007 \u202eevil\u001b[2J")).toBe("ok]0;title evil[2J")
+})
+
 test("mergeSeen keeps each id once, newest last", async () => {
   expect(mergeSeen(["a", "b"], ["b", "c"])).toEqual(["a", "b", "c"])
 })
@@ -99,6 +103,12 @@ test("parsePullUrl and pullArgv name another host", async () => {
   const found = parsePullUrl("https://ghe.example/o/r/pull/3")
   expect(found).toEqual({ host: "ghe.example", owner: "o", repo: "r", number: 3 })
   expect(found && pullArgv(found).slice(0, 4)).toEqual(["gh", "api", "--hostname", "ghe.example"])
+})
+
+test("pullArgv sends the names as strings, so a repository named 2048 is not a number", async () => {
+  const argv = pullArgv({ host: "github.com", owner: "o", repo: "2048", number: 3 })
+  expect(argv[argv.indexOf("repo=2048") - 1]).toBe("-f")
+  expect(argv[argv.indexOf("number=3") - 1]).toBe("-F")
 })
 
 test("parsePull reads checks of the newest commit", async () => {

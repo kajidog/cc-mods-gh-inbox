@@ -51,7 +51,7 @@ export function parseRepo(value: string): RepoRef | null {
   if (words.length < 2 || words.length > 3 || host === undefined || owner === undefined || repo === undefined) return null
   if (![owner, repo].every(word => /^[\w.-]+$/.test(word))) return null
 
-  return { host, owner, repo }
+  return { host: host.toLowerCase(), owner, repo }
 }
 
 /** `host/owner/repo`: the key a repository is registered and cached under. */
@@ -94,9 +94,9 @@ export function titlesArgv(ref: RepoRef, numbers: readonly number[]): string[] {
   return [
     ...ghApi(ref),
     "graphql",
-    "-F",
+    "-f",
     `owner=${ref.owner}`,
-    "-F",
+    "-f",
     `repo=${ref.repo}`,
     "-f",
     `query=query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) { ${fields} } }`,

@@ -13,6 +13,14 @@ export const SEEN_LIMIT = 1000
 export const MERGED_ID = "state:merged"
 export const CLOSED_ID = "state:closed"
 
+// Control characters (an escape sequence among them) and bidirectional overrides:
+// what anyone can write into a comment must not drive the terminal.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
+const UNSAFE = /[\u0000-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/g
+
+/** `text` with no control characters, safe to show as one line. */
+export const plain = (text: string) => text.replace(UNSAFE, "")
+
 /** The first readable line of a Markdown body, cut to a toast's length. */
 export function snippet(body: string, length = SNIPPET_LENGTH): string {
   const line =
