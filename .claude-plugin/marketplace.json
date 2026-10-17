@@ -1,0 +1,13 @@
+{
+  "name": "cc-mods-gh-inbox",
+  "description": "Claude Code mods by kajidog: gh-inbox shows GitHub events on your pull request and hands the ones you pick to Claude. Read-only.",
+  "owner": {
+    "name": "kajidog"
+  },
+  "plugins": [
+    {
+      "name": "gh-inbox",
+      "source": "./"
+    }
+  ]
+}

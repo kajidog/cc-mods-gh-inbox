@@ -1,0 +1,30 @@
+{
+  "name": "gh-inbox",
+  "version": "0.1.0",
+  "description": "Shows GitHub events (comments, reviews, commits, CI failures, merges) for the checked-out branch's pull request, to read and hand to Claude. Read-only: it never writes to GitHub.",
+  "author": {
+    "name": "kajidog"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "intervalSeconds": {
+      "type": "number",
+      "title": "GitHub: Check interval (seconds)",
+      "description": "How often the pull request of the checked-out branch is checked. Values under 30 are raised to 30.",
+      "default": 60
+    },
+    "channel": {
+      "type": "string",
+      "title": "GitHub: Where notices show",
+      "description": "toast: a toast over the transcript. log: a dim line in the transcript. notify: a desktop notification through your notification channel.",
+      "default": "toast",
+      "options": ["toast", "log", "notify"]
+    },
+    "notifySelf": {
+      "type": "boolean",
+      "title": "GitHub: Notify my own activity",
+      "description": "Also notify comments, reviews, commits and closes made by the account gh is logged in as.",
+      "default": false
+    }
+  }
+}
