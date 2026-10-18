@@ -30,6 +30,16 @@
       "description": "How many repositories /inbox repo add can register. Each one is asked about once per check (an unchanged one costs nothing); keep it small enough that the checks fit GitHub's rate limit.",
       "default": 20
     },
+    "language": {
+      "type": "string",
+      "title": "GitHub: Language",
+      "description": "The language of notices, commands and panes, and of what is handed to Claude with a prompt. en: English. ja: Japanese.",
+      "default": "en",
+      "options": [
+        "en",
+        "ja"
+      ]
+    },
     "notifySelf": {
       "type": "boolean",
       "title": "GitHub: Notify my own activity",

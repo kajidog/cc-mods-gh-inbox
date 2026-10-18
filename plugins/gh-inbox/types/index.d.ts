@@ -132,7 +132,7 @@ export type Inbox = {
   notify: (notice: InboxNotice) => Promise<InboxNotice>
   /**
    * Once every hook on `inbox.notify` has answered: each notice none refused, as it shows, the ones
-   * counted in the "ほか N 件" line too. A hook on `inbox.notified` acts on what the person sees
+   * counted in the "N more updates" line too. A hook on `inbox.notified` acts on what the person sees
    * (reads it aloud, sends it elsewhere); its answer changes nothing.
    */
   notified: (notice: InboxNotice) => Promise<void>

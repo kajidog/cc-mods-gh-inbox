@@ -5,6 +5,7 @@ import type { GhPickItem, GhPickPull, GhStaged } from "../types"
 
 import { displayName, type Nicknames, snippet } from "./events"
 import { type Json, login, object, type PullRef, pullName, parsePullUrl, text } from "./github"
+import { type Language, MESSAGES, type Messages } from "./i18n"
 import { parseRepo, type RepoRef, repoName } from "./repo-events"
 
 // Pull requests listed at most by each search.
@@ -19,13 +20,6 @@ const REPLIES_LISTED = 49
 const HUNK_LINES = 15
 /** Past this the model reads a head and a path in place of the rest. */
 export const CONTEXT_LIMIT = 200_000
-
-const REVIEW_STATES: Record<string, string> = {
-  CHANGES_REQUESTED: "変更依頼",
-  APPROVED: "承認",
-  COMMENTED: "レビュー",
-  DISMISSED: "取り下げ",
-}
 
 export const PICK_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
@@ -87,10 +81,10 @@ export function refOfPullKey(key: string): PullRef | null {
 
 // `involves:` leaves out a review asked of the person and one they gave, so each is searched too.
 const MINE = {
-  mine: { query: "involves:@me", what: "登録したリポジトリで自分が関わる PR" },
-  requested: { query: "review-requested:@me", what: "登録したリポジトリでレビューを頼まれた PR" },
-  reviewed: { query: "reviewed-by:@me", what: "登録したリポジトリでレビューした PR" },
-}
+  mine: { query: "involves:@me", what: "searchedMine" },
+  requested: { query: "review-requested:@me", what: "searchedRequested" },
+  reviewed: { query: "reviewed-by:@me", what: "searchedReviewed" },
+} as const
 
 /**
  * The argv that lists open pull requests on one host in one request: every one
@@ -121,7 +115,8 @@ const throwErrors = (json: Json) => {
  * first, each pull request once; a search that found more than it listed is
  * said in a note.
  */
-export function parsePulls(answer: string): { pulls: GhPickPull[]; notes: string[] } {
+export function parsePulls(answer: string, language: Language = "en"): { pulls: GhPickPull[]; notes: string[] } {
+  const t = MESSAGES[language]
   const json = object(JSON.parse(answer))
   throwErrors(json)
   const data = object(json.data)
@@ -134,10 +129,10 @@ export function parsePulls(answer: string): { pulls: GhPickPull[]; notes: string
     if (pulls.some(pull => pull.key === key)) continue
     pulls.push({ key, title: text(node.title), author: login(node.author) })
   }
-  const searched = [["here", "このリポジトリの PR"], ...Object.entries(MINE).map(([alias, { what }]) => [alias, what])] as const
+  const searched = [["here", t.searchedHere], ...Object.entries(MINE).map(([alias, { what }]) => [alias, t[what]])] as const
   const notes = searched.flatMap(([alias, what]) => {
     const found = Number(object(data[alias]).issueCount) || 0
-    return found > PULLS_LISTED ? [`${what} は、更新の新しい${PULLS_LISTED}件だけを表示しています（全${found}件）。`] : []
+    return found > PULLS_LISTED ? [t.pullsCut(what, PULLS_LISTED, found)] : []
   })
 
   return { pulls, notes }
@@ -178,13 +173,13 @@ function quoted(body: string) {
   return `${fence(shown)}markdown\n${shown}\n${fence(shown)}`
 }
 /** The last lines of a hunk, up to the line commented on, under its `@@` line. */
-function cutHunk(hunk: string) {
+function cutHunk(t: Messages, hunk: string) {
   const [head = "", ...lines] = hunk.split("\n")
   if (lines.length <= HUNK_LINES) return hunk
-  return [head, `…（前の${lines.length - HUNK_LINES}行は省略）`, ...lines.slice(-HUNK_LINES)].join("\n")
+  return [head, t.linesLeftOut(lines.length - HUNK_LINES), ...lines.slice(-HUNK_LINES)].join("\n")
 }
-/** `（2026-10-17、url）`, what is known of the two. */
-const source = (at: string, url: string) => `（${[at.slice(0, 10), url].filter(one => one !== "").join("、")}）`
+/** ` (2026-10-17, url)`, what is known of the two. */
+const source = (t: Messages, at: string, url: string) => t.source([at.slice(0, 10), url].filter(one => one !== ""))
 /** `10/17 21:24` in the local time: reviews alike in their first lines are told apart by it. */
 function when(at: string) {
   const date = new Date(at)
@@ -202,18 +197,19 @@ const oid = (value: unknown) => text(object(value).abbreviatedOid)
  * first comment came with, its replies inside it. A pending review, which no
  * one else sees yet, is left out with its threads.
  */
-export function parsePicked(ref: PullRef, answer: string, nicknames: Nicknames): Picked {
+export function parsePicked(ref: PullRef, answer: string, nicknames: Nicknames, language: Language = "en"): Picked {
+  const t = MESSAGES[language]
   const json = object(JSON.parse(answer))
   throwErrors(json)
   const pull = object(object(object(json.data).repository).pullRequest)
   if (Object.keys(pull).length === 0) throw new Error(`${pullName(ref)} was not found`)
-  const who = (value: unknown) => displayName(login(value), nicknames)
+  const who = (value: unknown) => displayName(login(value), nicknames, language)
 
   const allReviews = nodes(pull.reviews)
   const pending = new Set(allReviews.filter(review => text(review.state) === "PENDING").map(review => text(review.id)))
   const reviews = allReviews.filter(review => !pending.has(text(review.id)))
   const reviewIds = new Set(reviews.map(review => text(review.id)))
-  const reviewNames = new Map(reviews.map(review => [text(review.id), `${who(review.author)} の${REVIEW_STATES[text(review.state)] ?? "レビュー"}`]))
+  const reviewNames = new Map(reviews.map(review => [text(review.id), t.reviewName(who(review.author), t.reviewStates[text(review.state)] ?? t.reviewFallback)]))
   const threads = nodes(pull.reviewThreads).flatMap(thread => {
     const first = nodes(thread.root)[0]
     // A comment's own state tells a draft, its review perhaps not listed.
@@ -230,27 +226,27 @@ export function parsePicked(ref: PullRef, answer: string, nicknames: Nicknames):
     const isResolved = thread.isResolved === true
     const resolver = login(thread.resolvedBy)
     const marks = [
-      ...(replyCount > 0 ? [`返信${replyCount}件`] : []),
-      ...(isResolved ? ["解決済み"] : []),
-      ...(thread.isOutdated === true ? ["古い差分"] : []),
+      ...(replyCount > 0 ? [t.replies(replyCount)] : []),
+      ...(isResolved ? [t.resolved] : []),
+      ...(thread.isOutdated === true ? [t.outdated] : []),
     ]
-    const state = isResolved ? `解決済み${resolver === null ? "" : `（${displayName(resolver, nicknames)} が解決）`}` : "未解決"
-    const hunk = cutHunk(text(first.diffHunk))
+    const state = isResolved ? (resolver === null ? t.resolved : t.resolvedBy(displayName(resolver, nicknames, language))) : t.unresolved
+    const hunk = cutHunk(t, text(first.diffHunk))
     const commit = oid(first.originalCommit)
     const context = [
-      `### ${place} のスレッド: ${state}${thread.isOutdated === true ? "、古い差分" : ""}`,
-      ...(parent === undefined ? [] : [`${reviewNames.get(parent)}（${text(first.url)}）の行コメント`]),
-      ...(hunk === "" ? [] : [...(commit === "" ? [] : [`コミット ${commit} の差分:`]), `${fence(hunk)}diff`, hunk, fence(hunk)]),
+      t.threadHeading(place, state, thread.isOutdated === true),
+      ...(parent === undefined ? [] : [t.lineCommentOf(reviewNames.get(parent) ?? t.reviewFallback, text(first.url))]),
+      ...(hunk === "" ? [] : [...(commit === "" ? [] : [t.diffAt(commit)]), `${fence(hunk)}diff`, hunk, fence(hunk)]),
       `${who(first.author)}:`,
       quoted(text(first.body)),
-      ...(replyCount > replies.length ? [`（前の返信${replyCount - replies.length}件は省略）`] : []),
-      ...replies.flatMap(reply => [`${who(reply.author)}（返信）:`, quoted(text(reply.body))]),
+      ...(replyCount > replies.length ? [t.repliesLeftOut(replyCount - replies.length)] : []),
+      ...replies.flatMap(reply => [t.reply(who(reply.author)), quoted(text(reply.body))]),
       text(first.url),
     ].join("\n")
     const item: GhPickItem = {
       id: text(thread.id),
       // Under its review the author goes without saying.
-      label: `${place} ${parent === undefined ? `${who(first.author)}: ` : ""}${label(text(first.body))}${marks.length === 0 ? "" : `（${marks.join("・")}）`}`,
+      label: `${place} ${parent === undefined ? `${who(first.author)}: ` : ""}${label(text(first.body))}${marks.length === 0 ? "" : t.marks(marks)}`,
       context,
       ...(parent === undefined ? {} : { parent }),
     }
@@ -264,9 +260,9 @@ export function parsePicked(ref: PullRef, answer: string, nicknames: Nicknames):
     const body = text(review.body).trim()
     // A review of replies alone shows in the threads it replied to.
     if (body === "" && own.length === 0) continue
-    const name = reviewNames.get(id) ?? "レビュー"
+    const name = reviewNames.get(id) ?? t.reviewFallback
     const open = own.filter(thread => !thread.isResolved).length
-    const counts = own.length === 0 ? "" : `（行コメント${own.length}件${open === 0 ? "・すべて解決済み" : `・未解決${open}件`}）`
+    const counts = own.length === 0 ? "" : t.lineCounts(own.length, open)
     entries.push({
       at: text(review.submittedAt),
       items: [
@@ -274,8 +270,8 @@ export function parsePicked(ref: PullRef, answer: string, nicknames: Nicknames):
           id,
           label: `${name}${when(text(review.submittedAt))}${counts}${body === "" ? "" : `: ${label(body)}`}`,
           context: [
-            `## ${name}${source(text(review.submittedAt), text(review.url))}`,
-            ...(oid(review.commit) === "" ? [] : [`コミット ${oid(review.commit)} に対するレビュー`]),
+            `## ${name}${source(t, text(review.submittedAt), text(review.url))}`,
+            ...(oid(review.commit) === "" ? [] : [t.reviewOf(oid(review.commit))]),
             ...(body === "" ? [] : [quoted(body)]),
           ].join("\n"),
         },
@@ -288,20 +284,20 @@ export function parsePicked(ref: PullRef, answer: string, nicknames: Nicknames):
   for (const comment of nodes(pull.comments)) {
     const body = text(comment.body).trim()
     if (body === "") continue
-    const name = `${who(comment.author)} のコメント`
+    const name = t.commentName(who(comment.author))
     entries.push({
       at: text(comment.createdAt),
-      items: [{ id: text(comment.id), label: `${name}: ${label(body)}`, context: [`## ${name}${source(text(comment.createdAt), text(comment.url))}`, quoted(body)].join("\n") }],
+      items: [{ id: text(comment.id), label: `${name}: ${label(body)}`, context: [`## ${name}${source(t, text(comment.createdAt), text(comment.url))}`, quoted(body)].join("\n") }],
     })
   }
   entries.sort((a, b) => b.at.localeCompare(a.at))
 
   // What did not fit in one request is said, not left to look like all there is.
-  const cut = (what: string, value: unknown, listed: number) => (total(value) > listed ? [`${what}は新しい${listed}件だけを表示しています（全${total(value)}件）。`] : [])
+  const cut = (what: string, value: unknown, listed: number) => (total(value) > listed ? [t.listCut(what, listed, total(value))] : [])
   const notes = [
-    ...cut("行コメントのスレッド", pull.reviewThreads, THREADS_LISTED),
-    ...cut("レビュー", pull.reviews, REVIEWS_LISTED),
-    ...cut("コメント", pull.comments, COMMENTS_LISTED),
+    ...cut(t.threadsWhat, pull.reviewThreads, THREADS_LISTED),
+    ...cut(t.reviewsWhat, pull.reviews, REVIEWS_LISTED),
+    ...cut(t.commentsWhat, pull.comments, COMMENTS_LISTED),
   ]
 
   return { title: text(pull.title), url: text(pull.url), head: text(pull.headRefOid).slice(0, 7), items: [...entries.flatMap(entry => entry.items), ...orphans], notes }

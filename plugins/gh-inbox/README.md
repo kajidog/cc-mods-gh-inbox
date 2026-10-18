@@ -1,151 +1,158 @@
 # gh-inbox
 
-Claude Code の mod です。  
-今開いているブランチの PR と、登録したリポジトリに届いた GitHub のイベントを Claude Code の中に通知し、選んだものを Claude に渡せるようにします。
+English | [日本語](README.ja.md)
 
-コメントの投稿、マージ、ラベル付けなどは、この mod の対象外です。
+A Claude Code mod.
+It shows GitHub events on the checked-out branch's pull request and on repositories you register inside Claude Code, and lets you hand the ones you pick to Claude.
 
-## 通知するもの
+Posting comments, merging, labelling and the like are out of its scope: it never writes to GitHub.
 
-| イベント | 例 |
+## What it notifies
+
+| Event | Example |
 | --- | --- |
-| コメント | Aさんがコメントしました。この null チェック不要では |
-| レビュー | レビューさんが変更を依頼しました。指摘2件 … / 承認しました。 |
-| 行へのコメント | レビューさんがコメントしました。src/a.ts:12 … |
-| コミット | Aさんがコミットしました。fix: … / feat: … (+12 −3) |
-| CI の失敗 | CI / testのCIが失敗しました。Run npm test |
-| マージ・クローズ | #15 がマージされました。 |
+| Comment | alice commented: Isn't this null check unneeded? |
+| Review | reviewer requested changes (2 comments): … / reviewer approved. |
+| Line comment | reviewer commented: src/a.ts:12 … |
+| Commit | alice committed: fix: … / feat: … (+12 −3) |
+| CI failure | CI failed: CI / test: Run npm test |
+| Merge / close | #15 was merged. |
 
-- 初めて見る PR では、すでにあるものは通知しません。
-- 自分の操作は、初期設定では通知しません。マージは自分の操作でも通知します。
-- 通知は、生きている窓のうち最後に操作した窓にだけ出します。`/inbox log` にはどの窓でも入ります。
+- On a pull request seen for the first time, what is already there is not notified.
+- Your own activity is not notified by default. A merge is notified even when it is yours.
+- Notices show only in the window used last among those alive. `/inbox log` lists them in every window.
+- Notices, commands and panes are in English by default; set **Language** to `ja` in `/config` for Japanese (see [Settings](#settings-config)).
 
-## 必要なもの
+## Requirements
 
-- [GitHub CLI](https://cli.github.com/)（`gh`）で `gh auth login` を済ませていること。mod はトークンを持たず、`gh` に問い合わせます。
+- [GitHub CLI](https://cli.github.com/) (`gh`), logged in with `gh auth login`. The mod holds no token: it asks `gh`.
 
-## インストール
+## Install
 
 ```
 /plugin install gh-inbox --marketplace kajidog/cc-mods-gh-inbox
 ```
 
-## リポジトリを登録する
+## Registering repositories
 
-ブランチの PR とは別に、リポジトリを登録して、選んだ種類のイベントを通知できます。登録はマシン全体で共有し、どの窓からでも同じものを見ます。
+Apart from the branch's pull request, you can register repositories and be notified of the kinds of events you choose. The registrations are shared across the machine: every window sees the same ones.
 
 ```
-/inbox repo add kajidog/cc-mods-tts              # 種類を選ぶペインが開きます
-/inbox repo add kajidog/cc-mods-tts comment,push  # 種類を指定して登録
-/inbox repo alias kajidog/cc-mods-tts tts         # 通知の先頭を [tts] にする
+/inbox repo add kajidog/cc-mods-tts              # opens a pane to choose the kinds
+/inbox repo add kajidog/cc-mods-tts comment,push  # register with these kinds
+/inbox repo alias kajidog/cc-mods-tts tts         # start its notices with [tts]
 ```
 
-| 種類 | 内容 | 例 |
+| Kind | What | Example |
 | --- | --- | --- |
-| `branch` | ブランチ作成 | [tts] Aさんがブランチを作りました。feat/foo |
-| `pr-open` | PR 作成 | [tts] Aさんが PR を作りました。#20 長い回答は要約だけ読む |
-| `pr-merge` | PR マージ | [tts] #20 がマージされました。長い回答は要約だけ読む |
-| `pr-close` | マージせずにクローズ | [tts] #21 がクローズされました。… |
-| `comment` | PR・Issue へのコメント | [tts] レビューさんが #20 にコメントしました。この null チェック不要では |
-| `review` | レビュー | [tts] レビューさんが #20 で変更を依頼しました。… |
-| `review-comment` | 行へのコメント | [tts] レビューさんが #20 にコメントしました。src/a.ts:12 … |
-| `push` | push | [tts] Aさんが main に push しました。fix: … / feat: … (+12 −3) |
-| `ci-failure` | CI（GitHub Actions）の失敗 | [tts] CI / test の CI が失敗しました（feat/foo）。Run npm test |
+| `branch` | A branch created | [tts] alice created a branch: feat/foo |
+| `pr-open` | A PR opened | [tts] alice opened a PR: #20 Read only the summary of long answers |
+| `pr-merge` | A PR merged | [tts] #20 was merged: Read only the summary of long answers |
+| `pr-close` | A PR closed without merging | [tts] #21 was closed: … |
+| `comment` | A comment on a PR or an issue | [tts] reviewer commented on #20: Isn't this null check unneeded? |
+| `review` | A review | [tts] reviewer requested changes on #20: … |
+| `review-comment` | A line comment | [tts] reviewer commented on #20: src/a.ts:12 … |
+| `push` | A push | [tts] alice pushed to main: fix: … / feat: … (+12 −3) |
+| `ci-failure` | A CI (GitHub Actions) failure | [tts] CI failed on feat/foo: CI / test: Run npm test |
 
-- 種類を省いて登録すると、`pr-open`・`pr-merge`・`comment`・`review`・`ci-failure` で始まります。
-- その窓で初めて見るリポジトリでは、すでにあるものは通知しません。
-- 今のブランチの PR とリポジトリの両方に同じイベントが届いたときは、1回だけ通知します。今のブランチの PR の最新コミットの CI は、PR の通知のほうで出します。
-- **リポジトリのイベントはリアルタイムではありません。** GitHub の Events API を使っていて、GitHub の説明では、届くまで30秒から6時間かかることがあります。残るのは直近90日・300件までです。
+- Registered without kinds, a repository starts with `pr-open`, `pr-merge`, `comment`, `review` and `ci-failure`.
+- On a repository the window sees for the first time, what is already there is not notified.
+- An event that reaches both the branch's pull request and a registered repository is notified once. CI on the newest commit of the branch's pull request is notified as that pull request's notice.
+- **Repository events are not real time.** They come from GitHub's Events API, which GitHub says can take from 30 seconds to 6 hours. Only the last 90 days and 300 events are kept.
 
-## レビューを Claude に渡す
+## Handing reviews to Claude
 
-`/inbox pick` を実行すると、PR のレビューとコメントの一覧がペインに出ます。いくつか選んで「添付する」を押すと、次に送るプロンプトと一緒に Claude に渡します。依頼の文はふつうにプロンプトに書きます。
+`/inbox pick` lists the pull request's reviews and comments in a pane. Choose some and press "Attach": they go to Claude with the next prompt you send. Write your request in the prompt as usual.
 
 ```
-/inbox pick               # 今のブランチの PR（PR がなければ PR を選ぶ画面から）
-/inbox pick 12            # このリポジトリの #12
-/inbox pick owner/repo#12 # 別のリポジトリの PR
-/inbox clear              # 添付を外す
+/inbox pick               # the branch's pull request (with none, a list of pull requests to choose from)
+/inbox pick 12            # #12 of this repository
+/inbox pick owner/repo#12 # a pull request of another repository
+/inbox clear              # detach what is attached
 ```
 
-- 一覧はペインを開いたときに GitHub から取ってきます。通知されていないものや、窓を閉じていた間に付いたものも選べます。
-- レビューごとに、その行コメントのスレッドを下に並べます。レビューを選ぶとスレッドもまとめて選び、スレッドを1つだけ選ぶこともできます。スレッドには返信も含まれます。
-- 解決済みのスレッドも出します（「解決済み」と付きます）。どう対応したかを Claude に確かめてもらうときにも使えます。
-- PR を選ぶ画面には、このリポジトリで開いている PR と、登録したリポジトリで自分が関わっている PR（レビューを頼まれた PR、レビューした PR も含む）が出ます。
-- 添付している間は、プロンプトの上に件数を出します。「選び直す」と「外す」もここから操作できます。
-- 添付は1回送ると外れます。スラッシュコマンドには付きません。
-- 行コメントの差分は、コメントした行までの最後の15行だけを渡します。GitHub の画面に出ない HTML コメントは渡しません。差分とレビューにはどのコミットに対するものかを、前置きには PR の今の先頭コミットを添えます。
-- スレッドとレビューは新しい100件、会話のコメントは新しい30件までです。それより多いときはペインにそう出ます。
+- The list is fetched from GitHub as the pane opens. What was never notified, or came while the window was closed, can be chosen too.
+- Each review has its threads of line comments listed under it. Choosing a review chooses its threads too; a thread can also be chosen alone. A thread comes with its replies.
+- Resolved threads are listed too (marked "resolved"), so Claude can also check how they were addressed.
+- The list of pull requests holds the open ones of this repository, and those in registered repositories you are involved in (including those you are asked to review or have reviewed).
+- While something is attached, the count shows above the prompt, with "Pick again" and "Detach".
+- What is attached goes with one prompt only, never with a slash command.
+- A line comment's diff is cut to the last 15 lines up to the line commented on. HTML comments, which GitHub does not show, are left out. Diffs and reviews name the commit they are about, and the preamble names the pull request's head commit now.
+- Up to the newest 100 threads and reviews and the newest 30 conversation comments are listed. When there are more, the pane says so.
+- What Claude reads with the prompt is in the language set in `/config`.
 
-## コマンド
+## Commands
 
-| コマンド | 内容 |
+| Command | What it does |
 | --- | --- |
-| `/inbox` | 見ている PR と最後に確認した時刻 |
-| `/inbox check` | すぐに確認する |
-| `/inbox log` | このセッションの通知（新しい20件） |
-| `/inbox pick [PR]` | Claude に渡すスレッド・レビュー・コメントを選ぶ |
-| `/inbox clear` | 添付を外す |
-| `/inbox repo` | 登録したリポジトリと、通知する種類の一覧 |
-| `/inbox repo add owner/repo [種類,...]` | 登録する（種類を省くと、選ぶペインを開く） |
-| `/inbox repo set owner/repo [種類,...]` | 種類を変える（種類を省くと、選ぶペインを開く） |
-| `/inbox repo remove owner/repo` | 登録を外す |
-| `/inbox repo alias owner/repo [短い名前]` | 通知の先頭に出す名前（省くと消す） |
-| `/inbox nick <login> <ニックネーム>` | 表示名を短くする（`/inbox nick <login>` で削除、`/inbox nick` で一覧） |
+| `/inbox` | The pull request watched and when it was last checked |
+| `/inbox check` | Check now |
+| `/inbox log` | This session's notices (the newest 20) |
+| `/inbox pick [PR]` | Choose threads, reviews and comments to hand to Claude |
+| `/inbox clear` | Detach what is attached |
+| `/inbox repo` | The registered repositories and the kinds they notify |
+| `/inbox repo add owner/repo [kind,...]` | Register (without kinds, opens a pane to choose them) |
+| `/inbox repo set owner/repo [kind,...]` | Change the kinds (without kinds, opens the pane) |
+| `/inbox repo remove owner/repo` | Unregister |
+| `/inbox repo alias owner/repo [short name]` | The name notices start with (without one, clears it) |
+| `/inbox nick <login> <nickname>` | A shorter name to show (`/inbox nick <login>` removes it, `/inbox nick` lists them) |
 
-## 他の mod から使う
+## Using it from another mod
 
-他の mod から、2つのイベントをフックできます。
+Another mod can hook two events.
 
-- `inbox.notify`：通知を出す前。文を変えたり、通知を止めたりできます。
-- `inbox.notified`：`inbox.notify` のフックが全部答えたあと。止められなかった通知が、表示する文のまま届きます。読み上げる、別の場所に送る、のように「出た通知に合わせて何かする」ときはこちらを使います（`inbox.notify` の途中で動くと、あとから他の mod が止めたり変えたりすることがあるためです）。
+- `inbox.notify`: before a notice shows. It can rewrite the text or stop the notice.
+- `inbox.notified`: once every hook on `inbox.notify` has answered. The notices nobody stopped come as they show. Use this one to act on a notice that showed, such as reading it aloud or sending it elsewhere (a mod acting midway through `inbox.notify` may see another mod stop or change the notice afterwards).
 
 ```ts
 on("inbox.notify", async ($, e, next) => {
-  if (e.isSelf) return { deny: "自分の操作は出さない" }  // 出さない
-  return next({ ...e, text: `★ ${e.text}` })            // 文を変えて出す
+  if (e.isSelf) return { deny: "not my own activity" } // do not show it
+  return next({ ...e, text: `★ ${e.text}` })            // show it rewritten
 })
 
 on("inbox.notified", async ($, e, next) => {
-  if (e.event.kind === "ci") void doSomething(e.text) // 出た通知に合わせて何かする
+  if (e.event.kind === "ci") void doSomething(e.text) // act on the notice that showed
   return next(e)
 })
 ```
 
-| 項目 | 内容 |
+| Field | What |
 | --- | --- |
-| `event` | 通知の元になったイベント。`kind`（`comment` `review` `commit` `ci` `merge` `close` `branch` `open` `push`）、`pull`、`author`、`url`、本文の `items` など |
-| `source` | `pull`: 今のブランチの PR / `repo`: 登録したリポジトリ |
+| `event` | The event the notice came from: `kind` (`comment` `review` `commit` `ci` `merge` `close` `branch` `open` `push`), `pull`, `author`, `url`, the bodies in `items`, and so on |
+| `source` | `pull`: the branch's pull request / `repo`: a registered repository |
 | `repo` | `host/owner/repo` |
-| `label` | 登録したリポジトリの別名（なければ名前）。今のブランチの PR では `null` |
-| `isSelf` | `gh` でログインしているアカウントの操作か |
-| `text` | 表示する文 |
+| `label` | The registered repository's alias (its name when it has none). `null` for the branch's pull request |
+| `isSelf` | Whether the account `gh` is logged in as did it |
+| `text` | The line shown, in the language set in `/config` |
 
-- 通知を出す窓（最後に操作した窓）でだけ呼ばれます。出し方（toast・log・notify）には関係なく呼ばれます。
-- `{ deny }` で止めた通知は出さず、`inbox.notified` も呼びませんが、`/inbox log` には入ります。
-- 一度にたくさん届いて「ほか N 件」にまとめた通知も、`inbox.notified` は1件ずつ呼びます。
-- 通知を読み上げる [gh-inbox-tts](../gh-inbox-tts/README.md) は、この仕組みで作っています。
-- 型は `types/index.d.ts` の `Inbox` と `InboxNotice` です。`plugin.json` の `dependencies` に `gh-inbox` を書くと、`$.inbox` に型が付きます。
+- Called only in the window that shows notices (the one used last), whatever the channel (toast, log, notify).
+- A notice stopped with `{ deny }` does not show and does not reach `inbox.notified`, but `/inbox log` still lists it.
+- When many come at once and are folded into an "N more updates" line, `inbox.notified` is still called once for each.
+- [gh-inbox-tts](../gh-inbox-tts/README.md), which reads notices aloud, is built on this.
+- The types are `Inbox` and `InboxNotice` in `types/index.d.ts`. With `gh-inbox` in the `dependencies` of `plugin.json`, `$.inbox` is typed.
 
-## 設定（`/config`）
+## Settings (`/config`)
 
-| 項目 | 初期値 | 内容 |
+| Setting | Default | What it does |
 | --- | --- | --- |
-| Check interval | 60 | 確認の間隔（秒） |
-| Where notices show | toast | `toast`: トースト / `log`: トランスクリプトの行 / `notify`: デスクトップ通知 |
-| Repositories checked | 20 | 登録できるリポジトリの数 |
-| Notify my own activity | false | 自分の操作も通知する |
+| Check interval | 60 | Seconds between checks |
+| Where notices show | toast | `toast`: a toast / `log`: a line in the transcript / `notify`: a desktop notification |
+| Repositories checked | 20 | How many repositories can be registered |
+| Language | en | `en`: English / `ja`: Japanese. For notices, commands, panes, and what is handed to Claude |
+| Notify my own activity | false | Also notify your own activity |
 
 <details>
-<summary>GitHub への負荷</summary>
-- 確認は初期設定で60秒ごとです（30秒より短くはできません）。
-- PR 1件の確認は GraphQL 1回、1ポイントです（1時間あたり5000ポイントまで使えます）。
-- PR がないブランチは5分ごとにだけ探します。マージかクローズされた PR は、それ以上問い合わせません。
-- 登録したリポジトリは、1件につき Events API を1回（`ci-failure` を選んでいれば Actions API も1回）問い合わせます。`ETag` を付けるので、変わっていなければ回数制限を使いません。GitHub が返す `X-Poll-Interval`（ふつう60秒）より短い間隔では問い合わせません。
-- `/inbox pick` は、開いたときに GraphQL を1回問い合わせます。PR を選ぶ画面と `/inbox pick 12` では、今のリポジトリを `gh repo view` で1回調べ、PR を選ぶ画面ではホストごとに検索も1回します。
-- 答えは窓の間で分け合います。新しい push のコミット（1回の確認で5件まで）、PR のタイトル、失敗したステップは、必要なときだけ追加で問い合わせます。
+<summary>Load on GitHub</summary>
+
+- Checks run every 60 seconds by default (never more often than every 30).
+- Checking one pull request costs one GraphQL request, 1 point (5,000 points an hour are available).
+- A branch with no pull request is looked up only every 5 minutes. A merged or closed pull request is not asked about any more.
+- Each registered repository costs one Events API request (and one Actions API request when `ci-failure` is chosen). They are sent with an `ETag`, so an unchanged repository does not count against the rate limit. It is never asked more often than GitHub's `X-Poll-Interval` (usually 60 seconds).
+- `/inbox pick` sends one GraphQL request as it opens. The list of pull requests and `/inbox pick 12` look up the current repository once with `gh repo view`; the list also searches once per host.
+- Answers are shared between windows. The commits of a new push (up to 5 per check), pull request titles and failed steps are asked for only when needed.
+
 </details>
 
-## 開発・ライセンス
+## Development and license
 
-リポジトリの [README](../../README.md) を見てください。
+See the repository's [README](../../README.md).

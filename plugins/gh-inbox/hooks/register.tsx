@@ -5,6 +5,7 @@ import type { GhEvent, GhPick, GhPicker, GhPickPull, GhStaged, GhWatch, Inbox, I
 
 import { displayName, mergeSeen, newEvents, type Nicknames, plain, pullIds } from "./events"
 import { type PullRef, type PullState, parsePull, parsePullUrl, pullArgv, pullName } from "./github"
+import { type Language, MESSAGES, type Messages, toLanguage } from "./i18n"
 import {
   CONTEXT_LIMIT,
   idsOf,
@@ -29,7 +30,6 @@ import {
   isAnswerOf,
   isKind,
   jobsArgv,
-  KIND_LABELS,
   KINDS,
   type Kind,
   newRepoEvents,
@@ -124,6 +124,9 @@ type Context = {
   maxRepos: number
   channel: string
   notifySelf: boolean
+  language: Language
+  /** What the mod says, in `language`. */
+  t: Messages
   found: Found | undefined
   /** The check under way, if one is. */
   running: Promise<void> | undefined
@@ -155,10 +158,7 @@ function toNicknames(value: unknown): Nicknames {
 
 const firstLine = (text: string) => text.trim().split("\n")[0] ?? ""
 
-function ago(ms: number) {
-  const seconds = Math.max(0, Math.round(ms / 1000))
-  return seconds < 60 ? `${seconds}秒前` : `${Math.round(seconds / 60)}分前`
-}
+const ago = (t: Messages, ms: number) => t.ago(Math.max(0, Math.round(ms / 1000)))
 
 async function currentBranch($: EngineInterface) {
   const { exitCode, stdout } = await $.process.run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
@@ -189,7 +189,7 @@ async function show($: EngineInterface, ctx: Context, notices: readonly InboxNot
   // A hook may have built the text from what anyone wrote on GitHub: made plain again, as it shows.
   const final = list.map(notice => ({ ...notice, text: plain(notice.text) }))
   const lines = final.slice(0, shown.length).map(notice => notice.text)
-  if (shown.length < list.length) lines.push(`GitHub: ほか${list.length - shown.length}件の更新があります（/inbox log）`)
+  if (shown.length < list.length) lines.push(ctx.t.moreUpdates(list.length - shown.length))
   for (const line of lines) {
     if (ctx.channel === "log") $.ui.log(`GitHub: ${line}`)
     else if (ctx.channel === "notify") {
@@ -300,7 +300,7 @@ async function checkPull($: EngineInterface, ctx: Context, fresh: InboxNotice[],
     const seen = seenForPull(seenByKey, ref)
     const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
     const isSelf = (event: GhEvent) => event.author !== null && event.author === pull.viewer
-    for (const event of newEvents(pull, seen, { nicknames, notifySelf: ctx.notifySelf }))
+    for (const event of newEvents(pull, seen, { nicknames, notifySelf: ctx.notifySelf, language: ctx.language }))
       fresh.push({ event, source: "pull", repo: repoKey(ref), label: null, isSelf: isSelf(event), text: plain(event.text) })
     await update($, seenIds, held => ({ ...held, [key]: mergeSeen(held[key] ?? [], pullIds(pull)) }))
 
@@ -319,7 +319,7 @@ async function checkPull($: EngineInterface, ctx: Context, fresh: InboxNotice[],
       error: null,
     }))
     if (seen === undefined && pull.state === "OPEN" && (await isShowing($, ctx, now)))
-      $.ui.toast(`GitHub: #${ref.number} の通知を始めます。${plain(pull.title)}`, { timeoutMs: TOAST_MS })
+      $.ui.toast(ctx.t.startWatching(ref.number, plain(pull.title)), { timeoutMs: TOAST_MS })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     await update($, watch, held => ({
@@ -519,7 +519,7 @@ async function checkRepo($: EngineInterface, ctx: Context, key: string, entry: R
   const fresh = newRepoEvents(
     { ref, label, kinds: entry.kinds, events, runs, titles, viewer, watchedHead },
     seen,
-    { nicknames, notifySelf: ctx.notifySelf },
+    { nicknames, notifySelf: ctx.notifySelf, language: ctx.language },
   )
   // Ids of every kind are kept, so a kind chosen later does not bring back old events.
   const wantsRuns = entry.kinds.includes("ci-failure") && cache.runsEtag !== null
@@ -592,20 +592,21 @@ async function runCheck($: EngineInterface, ctx: Context, isForced: boolean) {
 async function status($: EngineInterface, ctx: Context) {
   const { value: held } = await $.state.get({ plugin: "gh-inbox", key: "watch" })
   const now = await $.clock.now()
+  const { t } = ctx
   const lines: string[] = []
-  if (held === undefined || held === null || held.branch === null) lines.push("ブランチが分かりません（git リポジトリの外か、detached HEAD です）。")
-  else if (held.pull === null) lines.push(`${held.branch} の PR はありません。`)
-  else lines.push(`${held.pull} ${held.title ?? ""}（${held.state === "OPEN" ? "通知中" : held.state === "MERGED" ? "マージ済み" : "クローズ済み"}）`)
-  if (held?.checkedAt != null) lines.push(`最後の確認: ${ago(now - held.checkedAt)}、${ctx.intervalSeconds}秒ごとに確認します。`)
-  if (held?.error != null) lines.push(`エラー: ${held.error}`)
+  if (held === undefined || held === null || held.branch === null) lines.push(t.noBranch)
+  else if (held.pull === null) lines.push(t.noPull(held.branch))
+  else lines.push(`${held.pull} ${held.title ?? ""}${t.paren(t.pullState(held.state))}`)
+  if (held?.checkedAt != null) lines.push(t.lastChecked(ago(t, now - held.checkedAt), ctx.intervalSeconds))
+  if (held?.error != null) lines.push(t.error(held.error))
   const repos = Object.keys(toRepos(await $.store.get(REPOS_KEY))).length
-  if (repos > 0) lines.push(`登録したリポジトリ: ${repos}件（/inbox repo）`)
-  lines.push((await isShowing($, ctx, now)) ? "通知はこの窓に出します。" : "通知は最後に操作した別の窓に出します（/inbox log で一覧を見られます）。")
+  if (repos > 0) lines.push(t.registeredCount(repos))
+  lines.push((await isShowing($, ctx, now)) ? t.showsHere : t.showsElsewhere)
 
   return lines.map(plain).join("\n")
 }
 
-const kindList = (kinds: readonly Kind[]) => (kinds.length === 0 ? "なし" : kinds.map(kind => KIND_LABELS[kind]).join("、"))
+const kindList = (t: Messages, kinds: readonly Kind[]) => (kinds.length === 0 ? t.noKinds : kinds.map(kind => t.kinds[kind]).join(t.listSeparator))
 
 async function readRepos($: EngineInterface) {
   return toRepos(await $.store.get(REPOS_KEY))
@@ -619,9 +620,9 @@ async function writeRepo($: EngineInterface, key: string, change: (entry: RepoEn
   await $.store.set(REPOS_KEY, repos)
 }
 
-async function openPicker($: EngineInterface, key: string, kinds: readonly Kind[]) {
+async function openPicker($: EngineInterface, ctx: Context, key: string, kinds: readonly Kind[]) {
   await update($, picker, () => ({ repo: key, kinds: [...kinds] }))
-  const opened = await $.ui.open({ id: PICKER_PANE, title: `通知する種類: ${repoName(refOfKey(key))}`, focus: true })
+  const opened = await $.ui.open({ id: PICKER_PANE, title: ctx.t.pickerTitle(repoName(refOfKey(key))), focus: true })
 
   return opened.isPlaced
 }
@@ -636,83 +637,69 @@ async function toggleKind($: EngineInterface, kind: Kind) {
   await writeRepo($, held.repo, entry => (entry === undefined ? undefined : { ...entry, kinds }))
 }
 
-const REPO_USAGE = [
-  "使い方:",
-  "  /inbox repo                              登録したリポジトリの一覧",
-  "  /inbox repo add owner/repo [種類,...]     登録する（種類を省くと選ぶペインを開く）",
-  "  /inbox repo set owner/repo [種類,...]     種類を変える（省くと選ぶペインを開く）",
-  "  /inbox repo remove owner/repo            登録を外す",
-  "  /inbox repo alias owner/repo [短い名前]   通知の先頭に出す名前（省くと消す）",
-  `種類: ${KINDS.join(", ")}`,
-].join("\n")
-
 async function repoCommand($: EngineInterface, ctx: Context, words: readonly string[]): Promise<string> {
+  const { t } = ctx
+  const usage = t.repoUsage(KINDS.join(", "))
   const [action, name, value] = words
   const repos = await readRepos($)
   if (action === undefined) {
     const entries = Object.entries(repos)
-    if (entries.length === 0) return `登録したリポジトリはありません。\n${REPO_USAGE}`
+    if (entries.length === 0) return `${t.noRepos}\n${usage}`
     const now = await $.clock.now()
     const lines: string[] = []
     for (const [index, [key, entry]] of entries.entries()) {
       const cache = toRepoCache(await $.store.get(`${REPO_CACHE_PREFIX}${key}`))
       const label = entry.alias === undefined ? "" : ` [${entry.alias}]`
-      const paused =
-        index >= ctx.maxRepos
-          ? `（上限${ctx.maxRepos}件を超えたため確認しません）`
-          : entry.kinds.length === 0
-            ? "（種類を選ぶまで確認しません）"
-            : ""
-      lines.push(`${repoName(refOfKey(key))}${label}: ${kindList(entry.kinds)}${paused}`)
-      if (cache !== undefined) lines.push(`  最後の確認: ${ago(now - cache.at)}`)
+      const paused = index >= ctx.maxRepos ? t.overLimit(ctx.maxRepos) : entry.kinds.length === 0 ? t.noKindsChosen : ""
+      lines.push(`${repoName(refOfKey(key))}${label}: ${kindList(t, entry.kinds)}${paused}`)
+      if (cache !== undefined) lines.push(`  ${t.lastCheckedRepo(ago(t, now - cache.at))}`)
       const error = ctx.repoErrors.get(key)
-      if (error !== undefined) lines.push(`  エラー: ${plain(error)}`)
+      if (error !== undefined) lines.push(`  ${t.error(plain(error))}`)
     }
     return lines.join("\n")
   }
-  if (!["add", "set", "remove", "alias"].includes(action)) return REPO_USAGE
+  if (!["add", "set", "remove", "alias"].includes(action)) return usage
   const ref = name === undefined ? null : parseRepo(name)
-  if (ref === null) return `リポジトリは owner/repo の形で指定します。\n${REPO_USAGE}`
+  if (ref === null) return `${t.repoFormat}\n${usage}`
   // GitHub tells names apart without case: the repository registered is found whatever the case typed.
   const key = Object.keys(repos).find(one => one.toLowerCase() === repoKey(ref).toLowerCase()) ?? repoKey(ref)
   const shown = repoName(refOfKey(key))
   const entry = repos[key]
-  if (action !== "add" && entry === undefined) return `${shown} は登録されていません。`
+  if (action !== "add" && entry === undefined) return t.notRegistered(shown)
 
   let kinds: Kind[] | undefined
   if ((action === "add" || action === "set") && value !== undefined) {
     const parsed = parseKinds(value)
-    if (parsed.unknown.length > 0) return `知らない種類です: ${parsed.unknown.join(", ")}\n種類: ${KINDS.join(", ")}`
+    if (parsed.unknown.length > 0) return t.unknownKinds(parsed.unknown.join(", "), KINDS.join(", "))
     kinds = parsed.kinds
   }
 
   switch (action) {
     case "add": {
-      if (entry !== undefined) return `${shown} は登録済みです（${kindList(entry.kinds)}）。種類を変えるには /inbox repo set を使います。`
-      if (Object.keys(repos).length >= ctx.maxRepos)
-        return `登録できるのは${ctx.maxRepos}件までです（/config の「GitHub: Repositories checked」で変えられます）。`
+      if (entry !== undefined) return t.alreadyRegistered(shown, kindList(t, entry.kinds))
+      if (Object.keys(repos).length >= ctx.maxRepos) return t.tooMany(ctx.maxRepos)
       const found = await $.process.run(repoArgv(ref))
-      if (found.exitCode !== 0) return `${shown} を読めませんでした: ${firstLine(found.stderr) || `gh api exited with ${found.exitCode}`}`
+      if (found.exitCode !== 0) return t.cannotRead(shown, firstLine(found.stderr) || `gh api exited with ${found.exitCode}`)
       // Registered as GitHub spells it, the key a pull request's URL gives, so their notices are told once.
       const [id = "", fullName = ""] = found.stdout.trim().split("\n")
       const named = parseRepo(`${ref.host}/${fullName}`) ?? ref
       const held = repos[repoKey(named)]
-      if (held !== undefined) return `${repoName(named)} は登録済みです（${kindList(held.kinds)}）。種類を変えるには /inbox repo set を使います。`
+      if (held !== undefined) return t.alreadyRegistered(repoName(named), kindList(t, held.kinds))
       const chosen = kinds ?? [...DEFAULT_KINDS]
       await writeRepo($, repoKey(named), () => ({ kinds: chosen, ...(Number(id) > 0 ? { id: Number(id) } : {}) }))
       // The first look takes what is there as seen, so the notices start from now.
       void check($, ctx)
-      const opened = kinds === undefined && (await openPicker($, repoKey(named), chosen))
-      return `${repoName(named)} を登録しました（${kindList(chosen)}）。${opened ? "ペインで種類を選べます。" : ""}`
+      const opened = kinds === undefined && (await openPicker($, ctx, repoKey(named), chosen))
+      return t.registered(repoName(named), kindList(t, chosen), opened)
     }
     case "set": {
       if (kinds === undefined) {
-        const opened = await openPicker($, key, entry?.kinds ?? [])
-        return opened ? "ペインで種類を選べます。" : `ペインを開けませんでした。/inbox repo set ${shown} 種類,... で指定します。`
+        const opened = await openPicker($, ctx, key, entry?.kinds ?? [])
+        return opened ? t.chooseInPane : t.paneNotOpenedForKinds(shown)
       }
       const chosen = kinds
       await writeRepo($, key, held => held && { ...held, kinds: chosen })
-      return `${shown}: ${kindList(chosen)}`
+      return `${shown}: ${kindList(t, chosen)}`
     }
     case "remove": {
       // A check under way would write back what is removed here.
@@ -722,7 +709,7 @@ async function repoCommand($: EngineInterface, ctx: Context, words: readonly str
       await $.store.delete(`${TITLES_PREFIX}${key}`)
       await update($, seenIds, ({ [repoSeenKey(refOfKey(key))]: _, ...others }) => others)
       ctx.repoErrors.delete(key)
-      return `${shown} の登録を外しました。`
+      return t.removed(shown)
     }
     default: {
       const alias = words.slice(2).join(" ")
@@ -731,7 +718,7 @@ async function repoCommand($: EngineInterface, ctx: Context, words: readonly str
         const { alias: _, ...rest } = held
         return alias === "" ? rest : { ...rest, alias }
       })
-      return alias === "" ? `${shown} の短い名前を消しました。` : `${shown} の通知は [${alias}] で始めます。`
+      return alias === "" ? t.aliasCleared(shown) : t.aliasSet(shown, alias)
     }
   }
 }
@@ -748,12 +735,12 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 async function loadItems($: EngineInterface, ctx: Context, ref: PullRef) {
   ctx.picking += 1
   const token = ctx.picking
-  await update($, pick, (): GhPick => ({ stage: "loading", message: `${pullName(ref)} を読み込んでいます…` }))
+  await update($, pick, (): GhPick => ({ stage: "loading", message: ctx.t.loadingPull(pullName(ref)) }))
   let shown: GhPick
   try {
     const run = await $.process.run(pickArgv(ref))
     if (run.exitCode !== 0) throw new Error(firstLine(run.stderr) || `gh api exited with ${run.exitCode}`)
-    const picked = parsePicked(ref, run.stdout, toNicknames(await $.store.get(NICKNAMES_KEY)))
+    const picked = parsePicked(ref, run.stdout, toNicknames(await $.store.get(NICKNAMES_KEY)), ctx.language)
     // Keyed as GitHub spells it, whatever case was typed, so a pull request is staged once.
     const key = pullKeyOfUrl(picked.url, ref)
     const held = (await read($, staged)).find(one => one.pull === key)
@@ -761,7 +748,7 @@ async function loadItems($: EngineInterface, ctx: Context, ref: PullRef) {
     const chosen = (held?.items ?? []).map(item => item.id).filter(id => ids.has(id))
     shown = { stage: "items", pull: key, ...picked, chosen }
   } catch (error) {
-    shown = { stage: "error", message: `${pullName(ref)} を読めませんでした: ${message(error)}` }
+    shown = { stage: "error", message: ctx.t.cannotRead(pullName(ref), message(error)) }
   }
   if (token === ctx.picking) await update($, pick, () => shown)
 }
@@ -771,7 +758,8 @@ async function loadItems($: EngineInterface, ctx: Context, ref: PullRef) {
 async function loadPulls($: EngineInterface, ctx: Context, failure?: string) {
   ctx.picking += 1
   const token = ctx.picking
-  await update($, pick, (): GhPick => ({ stage: "loading", message: "PR を探しています…" }))
+  const { t } = ctx
+  await update($, pick, (): GhPick => ({ stage: "loading", message: t.searchingPulls }))
   let shown: GhPick
   try {
     const here = await hereRepo($)
@@ -788,16 +776,16 @@ async function loadPulls($: EngineInterface, ctx: Context, failure?: string) {
       try {
         const run = await $.process.run(argv)
         if (run.exitCode !== 0) throw new Error(firstLine(run.stderr) || `gh api exited with ${run.exitCode}`)
-        const found = parsePulls(run.stdout)
+        const found = parsePulls(run.stdout, ctx.language)
         pulls.push(...found.pulls.filter(pull => !pulls.some(one => one.key === pull.key)))
         notes.push(...found.notes)
       } catch (error) {
         errors.push(`${host}: ${message(error)}`)
       }
     }
-    shown = pulls.length === 0 && errors.length > 0 ? { stage: "error", message: `PR を探せませんでした: ${errors.join(" / ")}` } : { stage: "pulls", pulls, notes: [...errors.map(error => `探せなかったもの: ${error}`), ...notes] }
+    shown = pulls.length === 0 && errors.length > 0 ? { stage: "error", message: t.searchFailed(errors.join(" / ")) } : { stage: "pulls", pulls, notes: [...errors.map(t.notSearched), ...notes] }
   } catch (error) {
-    shown = { stage: "error", message: `PR を探せませんでした: ${message(error)}` }
+    shown = { stage: "error", message: t.searchFailed(message(error)) }
   }
   if (token === ctx.picking) await update($, pick, () => shown)
 }
@@ -810,9 +798,7 @@ async function pickCommand($: EngineInterface, ctx: Context, words: readonly str
     const isBare = /^#?\d+$/.test(arg)
     ref = parsePullArg(arg, isBare ? await hereRepo($) : null)
     if (ref === null)
-      return isBare
-        ? "このディレクトリのリポジトリが分かりません。/inbox pick owner/repo#12 で指定します。"
-        : "PR は 12・owner/repo#12・PR の URL のどれかで指定します。"
+      return isBare ? ctx.t.noHereRepo : ctx.t.pullFormat
   } else {
     const branch = await currentBranch($)
     const now = await $.clock.now()
@@ -822,20 +808,20 @@ async function pickCommand($: EngineInterface, ctx: Context, words: readonly str
       ref = await lookUp($, branch, now).then(
         found => found.ref,
         error => {
-          failure = `${branch} の PR: ${message(error)}`
+          failure = ctx.t.branchPullFailed(branch, message(error))
           return null
         },
       )
   }
-  if (!(await openPick($, ctx, ref, failure))) return "ペインを開けませんでした。"
+  if (!(await openPick($, ctx, ref, failure))) return ctx.t.paneNotOpened
 
-  return "ペインで選び、「添付する」を押すと、次に送るプロンプトと一緒に Claude に渡します。"
+  return ctx.t.pickOpened
 }
 
 /** Opens the pick pane on the pull request's items, or on the list of pull requests when there is none. */
 async function openPick($: EngineInterface, ctx: Context, ref: PullRef | null, failure?: string) {
-  await update($, pick, (): GhPick => ({ stage: "loading", message: "読み込んでいます…" }))
-  const opened = await $.ui.open({ id: PICK_PANE, title: "Claude に渡すものを選ぶ", focus: true })
+  await update($, pick, (): GhPick => ({ stage: "loading", message: ctx.t.loading }))
+  const opened = await $.ui.open({ id: PICK_PANE, title: ctx.t.pickTitle, focus: true })
   if (!opened.isPlaced) return false
   await (ref === null ? loadPulls($, ctx, failure) : loadItems($, ctx, ref))
 
@@ -873,11 +859,15 @@ const pullLabel = (key: string) => {
 }
 
 export const register: Register = (on, options) => {
+  const language = toLanguage(options.language)
+  const t = MESSAGES[language]
   const ctx: Context = {
     intervalSeconds: Math.max(MIN_INTERVAL_SECONDS, Number(options.intervalSeconds) || 60),
     maxRepos: Math.max(1, Number(options.maxRepos) || 20),
     channel: String(options.channel),
     notifySelf: options.notifySelf === true,
+    language,
+    t,
     found: undefined,
     running: undefined,
     checks: 0,
@@ -970,7 +960,7 @@ export const register: Register = (on, options) => {
         return { text: await status($, ctx) }
       case "log": {
         const { value: list = [] } = await $.state.get({ plugin: "gh-inbox", key: "events" })
-        if (list.length === 0) return { text: "このセッションの通知はまだありません。" }
+        if (list.length === 0) return { text: t.noLog }
         return { text: list.slice(-20).map(event => `${plain(event.text)}\n  ${plain(event.url)}`).join("\n") }
       }
       case "repo":
@@ -980,53 +970,53 @@ export const register: Register = (on, options) => {
       case "clear": {
         const count = stagedCount(await read($, staged))
         await update($, staged, () => [])
-        return { text: count === 0 ? "添付しているものはありません。" : `添付していた${count}件を外しました。` }
+        return { text: count === 0 ? t.nothingStaged : t.cleared(count) }
       }
       case "nick": {
         const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
         const [account, ...words] = rest
         if (account === undefined) {
           const entries = Object.entries(nicknames)
-          if (entries.length === 0) return { text: "ニックネームはまだありません。/inbox nick <login> <ニックネーム> で登録します。" }
+          if (entries.length === 0) return { text: t.noNicknames }
           return { text: entries.map(([name, nick]) => `${name} → ${nick}`).join("\n") }
         }
         const nickname = words.join(" ")
         if (nickname === "") {
-          if (!(account in nicknames)) return { text: `${account} のニックネームはありません。` }
+          if (!(account in nicknames)) return { text: t.noNickname(account) }
           const { [account]: _, ...others } = nicknames
           await $.store.set(NICKNAMES_KEY, others)
-          return { text: `${account} のニックネームを消しました。` }
+          return { text: t.nicknameCleared(account) }
         }
         await $.store.set(NICKNAMES_KEY, { ...nicknames, [account]: nickname })
-        return { text: `${account} は「${displayName(account, { [account]: nickname })}」と表示します。` }
+        return { text: t.nicknameSet(account, displayName(account, { [account]: nickname }, language)) }
       }
       default:
-        return { text: "使い方: /inbox [status|check|log|pick [PR]|clear|repo|nick [login [ニックネーム]]]" }
+        return { text: t.usage }
     }
   })
 
   on("ui.render", { component: "Pane", requestId: PICKER_PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const held = await read($, picker)
-    if (held === null) return <Text dimColor>リポジトリが選ばれていません。</Text>
+    if (held === null) return <Text dimColor>{t.noRepoChosen}</Text>
     const kinds = held.kinds.filter(isKind)
 
     return (
       <Box flexDirection="column">
-        <Text>{repoName(refOfKey(held.repo))}: 押すとオン・オフが切り替わり、すぐに保存します。</Text>
+        <Text>{t.pickerHint(repoName(refOfKey(held.repo)))}</Text>
         {KINDS.map((kind, index) => (
           <Button
             key={kind}
             hotkey={String(index + 1)}
             plain
-            label={`[${kinds.includes(kind) ? "x" : " "}] ${KIND_LABELS[kind]}（${kind}）`}
+            label={`[${kinds.includes(kind) ? "x" : " "}] ${t.kinds[kind]}${t.paren(kind)}`}
             onPress={() => {
               // Keys pressed in a row each read what the one before saved.
               ctx.toggling = ctx.toggling.then(() => toggleKind($, kind)).catch(() => undefined)
             }}
           />
         ))}
-        <Button label="閉じる" onPress={() => void $.ui.close({ id: PICKER_PANE })} />
+        <Button label={t.close} onPress={() => void $.ui.close({ id: PICKER_PANE })} />
       </Box>
     )
   })
@@ -1034,12 +1024,12 @@ export const register: Register = (on, options) => {
   on("ui.render", { component: "Pane", requestId: PICK_PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const held = await read($, pick)
-    const close = <Button key="close" hotkey="q" label="閉じる" onPress={() => void $.ui.close({ id: PICK_PANE })} />
-    const toPulls = <Button key="pulls" hotkey="p" label="別の PR を選ぶ" onPress={() => void loadPulls($, ctx)} />
+    const close = <Button key="close" hotkey="q" label={t.close} onPress={() => void $.ui.close({ id: PICK_PANE })} />
+    const toPulls = <Button key="pulls" hotkey="p" label={t.otherPull} onPress={() => void loadPulls($, ctx)} />
     if (held === null || held.stage === "loading")
       return (
         <Box flexDirection="column">
-          <Text dimColor>{held?.message ?? "読み込んでいます…"}</Text>
+          <Text dimColor>{held?.message ?? t.loading}</Text>
           {close}
         </Box>
       )
@@ -1055,9 +1045,7 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="column">
           <Text>
-            {held.pulls.length === 0
-              ? "開いている PR が見つかりません。/inbox pick owner/repo#12 で指定できます。"
-              : "PR を選びます（このリポジトリの PR と、登録したリポジトリで自分が関わる・レビューを頼まれた PR）。"}
+            {held.pulls.length === 0 ? t.noPulls : t.choosePull}
           </Text>
           {held.notes.map(note => (
             <Text key={note} color="warning">
@@ -1069,7 +1057,7 @@ export const register: Register = (on, options) => {
               key={pull.key}
               hotkey={index < 9 ? String(index + 1) : undefined}
               plain
-              label={`${plain(pullLabel(pull.key))} ${plain(pull.title)}${pull.author === null ? "" : `（${plain(pull.author)}）`}`}
+              label={`${plain(pullLabel(pull.key))} ${plain(pull.title)}${pull.author === null ? "" : t.paren(plain(pull.author))}`}
               onPress={() => {
                 const ref = refOfPullKey(pull.key)
                 if (ref !== null) void loadItems($, ctx, ref)
@@ -1091,9 +1079,7 @@ export const register: Register = (on, options) => {
           </Text>
         ))}
         <Text dimColor>
-          {held.items.length === 0
-            ? "レビュー・コメントはありません。"
-            : "レビューを選ぶと、その行コメントもまとめて選びます。「添付する」で、次に送るプロンプトと一緒に Claude に渡します。"}
+          {held.items.length === 0 ? t.noItems : t.itemsHint}
         </Text>
         {held.items.map((item, index) => {
           // A review shows whether it is chosen with all its threads, in part, or not at all.
@@ -1118,7 +1104,7 @@ export const register: Register = (on, options) => {
         <Button
           key="stage"
           hotkey="a"
-          label={`添付する（${held.chosen.length}件）`}
+          label={t.attach(held.chosen.length)}
           onPress={() => {
             // After the toggles pressed before it, so it stages what they chose.
             ctx.toggling = ctx.toggling.then(() => stageChosen($)).catch(() => undefined)
@@ -1134,22 +1120,18 @@ export const register: Register = (on, options) => {
     const held = await read($, staged)
     if (e.props.hasSurvey || held.length === 0) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
-    const what = held.map(one => `${plain(pullLabel(one.pull))} の${one.items.length}件`).join("、")
+    const what = held.map(one => t.stagedOf(plain(pullLabel(one.pull)), one.items.length)).join(t.listSeparator)
     const size = stagedSize(held)
     // What the other mods draw stays, under this.
     const below = await next(e)
 
     return (
       <Box flexDirection="column">
-        <Text>GitHub: {what}を添付中。次に送るプロンプトと一緒に Claude に渡します。</Text>
-        {size > CONTEXT_LIMIT && (
-          <Text color="warning">
-            {`約${Math.round(size / 1000)}k 文字あり、上限の${CONTEXT_LIMIT / 1000}k を超えた分は Claude に届きません。選び直して減らしてください。`}
-          </Text>
-        )}
+        <Text>{t.staged(what)}</Text>
+        {size > CONTEXT_LIMIT && <Text color="warning">{t.oversize(Math.round(size / 1000), CONTEXT_LIMIT / 1000)}</Text>}
         <Box>
-          <Button key="gh-inbox-repick" label="選び直す" onPress={() => void openPick($, ctx, refOfPullKey(held[0]?.pull ?? ""))} />
-          <Button key="gh-inbox-clear" label="外す" onPress={() => void update($, staged, () => [])} />
+          <Button key="gh-inbox-repick" label={t.repick} onPress={() => void openPick($, ctx, refOfPullKey(held[0]?.pull ?? ""))} />
+          <Button key="gh-inbox-clear" label={t.detach} onPress={() => void update($, staged, () => [])} />
         </Box>
         {below}
       </Box>
