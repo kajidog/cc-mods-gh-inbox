@@ -1,10 +1,24 @@
 import { atom, read, update } from "claude-code"
 import type { EngineInterface, Register, Timer } from "claude-code"
 
-import type { GhEvent, GhPicker, GhWatch } from "../types"
+import type { GhEvent, GhPick, GhPicker, GhPickPull, GhStaged, GhWatch } from "../types"
 
 import { displayName, mergeSeen, newEvents, type Nicknames, plain, pullIds } from "./events"
 import { type PullRef, type PullState, parsePull, parsePullUrl, pullArgv, pullName } from "./github"
+import {
+  CONTEXT_LIMIT,
+  idsOf,
+  parsePicked,
+  parsePullArg,
+  parsePulls,
+  pickArgv,
+  pullKeyOfUrl,
+  pullsArgv,
+  refOfPullKey,
+  stagedContext,
+  stagedCount,
+  stagedSize,
+} from "./pick"
 import { PRESENCE_PREFIX, type Presence, pickActive, toPresence } from "./presence"
 import {
   ACTIONS_PRIMED,
@@ -80,6 +94,7 @@ const CACHE_PREFIX = "cache:"
 const PRESENCE_KEPT_MS = 24 * 60 * 60 * 1000
 const CACHE_KEPT_MS = 60 * 60 * 1000
 const PICKER_PANE = "gh-inbox-kinds"
+const PICK_PANE = "gh-inbox-pick"
 // Titles asked for in one GraphQL request at most.
 const TITLES_AT_ONCE = 50
 // A lookup that fails for now (no network, a rate limit) is tried at this many checks, its notice held meanwhile.
@@ -89,6 +104,8 @@ const events = atom({ plugin: "gh-inbox", key: "events" } as const, [] as GhEven
 const watch = atom({ plugin: "gh-inbox", key: "watch" } as const, null as GhWatch | null)
 const seenIds = atom({ plugin: "gh-inbox", key: "seen" } as const, {} as Record<string, string[]>)
 const picker = atom({ plugin: "gh-inbox", key: "picker" } as const, null as GhPicker | null)
+const pick = atom({ plugin: "gh-inbox", key: "pick" } as const, null as GhPick | null)
+const staged = atom({ plugin: "gh-inbox", key: "staged" } as const, [] as GhStaged[])
 
 type Found = {
   branch: string
@@ -123,6 +140,8 @@ type Context = {
   retries: Map<string, number>
   /** The picker's toggles, one after another. */
   toggling: Promise<void>
+  /** How many loads the pick pane has started: a load that is no longer the last one is not shown. */
+  picking: number
 }
 
 const pullKey = (ref: PullRef) => `${ref.host}/${pullName(ref)}`
@@ -697,6 +716,127 @@ async function repoCommand($: EngineInterface, ctx: Context, words: readonly str
   }
 }
 
+/** The repository open in this window, as `gh` resolves it; null outside one, or with no `gh`. */
+async function hereRepo($: EngineInterface) {
+  const run = await $.process.run(["gh", "repo", "view", "--json", "url", "--jq", ".url"]).catch(() => undefined)
+  return run?.exitCode === 0 ? parseRepo(run.stdout.trim()) : null
+}
+
+const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+/** Shows what the pull request holds now in the pick pane, what is staged from it chosen already. */
+async function loadItems($: EngineInterface, ctx: Context, ref: PullRef) {
+  ctx.picking += 1
+  const token = ctx.picking
+  await update($, pick, (): GhPick => ({ stage: "loading", message: `${pullName(ref)} を読み込んでいます…` }))
+  let shown: GhPick
+  try {
+    const run = await $.process.run(pickArgv(ref))
+    if (run.exitCode !== 0) throw new Error(firstLine(run.stderr) || `gh api exited with ${run.exitCode}`)
+    const picked = parsePicked(ref, run.stdout, toNicknames(await $.store.get(NICKNAMES_KEY)))
+    // Keyed as GitHub spells it, whatever case was typed, so a pull request is staged once.
+    const key = pullKeyOfUrl(picked.url, ref)
+    const held = (await read($, staged)).find(one => one.pull === key)
+    const ids = new Set(picked.items.map(item => item.id))
+    const chosen = (held?.items ?? []).map(item => item.id).filter(id => ids.has(id))
+    shown = { stage: "items", pull: key, ...picked, chosen }
+  } catch (error) {
+    shown = { stage: "error", message: `${pullName(ref)} を読めませんでした: ${message(error)}` }
+  }
+  if (token === ctx.picking) await update($, pick, () => shown)
+}
+
+/** Lists in the pick pane the open pull requests of this repository and those of the registered ones the person is involved in. */
+async function loadPulls($: EngineInterface, ctx: Context) {
+  ctx.picking += 1
+  const token = ctx.picking
+  await update($, pick, (): GhPick => ({ stage: "loading", message: "PR を探しています…" }))
+  let shown: GhPick
+  try {
+    const here = await hereRepo($)
+    const registered = Object.keys(toRepos(await $.store.get(REPOS_KEY)))
+      .map(refOfKey)
+      .filter(ref => here === null || repoKey(ref).toLowerCase() !== repoKey(here).toLowerCase())
+    const hosts = [...new Set([...(here === null ? [] : [here.host]), ...registered.map(ref => ref.host)])]
+    const pulls: GhPickPull[] = []
+    const errors: string[] = []
+    for (const host of hosts) {
+      const argv = pullsArgv(host, here?.host === host ? here : null, registered.filter(ref => ref.host === host))
+      if (argv === null) continue
+      try {
+        const run = await $.process.run(argv)
+        if (run.exitCode !== 0) throw new Error(firstLine(run.stderr) || `gh api exited with ${run.exitCode}`)
+        pulls.push(...parsePulls(run.stdout).filter(pull => !pulls.some(one => one.key === pull.key)))
+      } catch (error) {
+        errors.push(`${host}: ${message(error)}`)
+      }
+    }
+    shown = pulls.length === 0 && errors.length > 0 ? { stage: "error", message: `PR を探せませんでした: ${errors.join(" / ")}` } : { stage: "pulls", pulls }
+  } catch (error) {
+    shown = { stage: "error", message: `PR を探せませんでした: ${message(error)}` }
+  }
+  if (token === ctx.picking) await update($, pick, () => shown)
+}
+
+async function pickCommand($: EngineInterface, ctx: Context, words: readonly string[]): Promise<string> {
+  const arg = words.join(" ")
+  let ref: PullRef | null = null
+  if (arg !== "") {
+    const isBare = /^#?\d+$/.test(arg)
+    ref = parsePullArg(arg, isBare ? await hereRepo($) : null)
+    if (ref === null)
+      return isBare
+        ? "このディレクトリのリポジトリが分かりません。/inbox pick owner/repo#12 で指定します。"
+        : "PR は 12・owner/repo#12・PR の URL のどれかで指定します。"
+  } else {
+    const branch = await currentBranch($)
+    const now = await $.clock.now()
+    if (branch !== null) ref = ctx.found?.branch === branch ? ctx.found.ref : ((await lookUp($, branch, now).catch(() => undefined))?.ref ?? null)
+  }
+  if (!(await openPick($, ctx, ref))) return "ペインを開けませんでした。"
+
+  return "ペインで選び、「添付する」を押すと、次に送るプロンプトと一緒に Claude に渡します。"
+}
+
+/** Opens the pick pane on the pull request's items, or on the list of pull requests when there is none. */
+async function openPick($: EngineInterface, ctx: Context, ref: PullRef | null) {
+  await update($, pick, (): GhPick => ({ stage: "loading", message: "読み込んでいます…" }))
+  const opened = await $.ui.open({ id: PICK_PANE, title: "Claude に渡すものを選ぶ", focus: true })
+  if (!opened.isPlaced) return false
+  await (ref === null ? loadPulls($, ctx) : loadItems($, ctx, ref))
+
+  return true
+}
+
+/** Turns one item of the pick pane on or off: a review with its threads. */
+async function toggleItem($: EngineInterface, id: string) {
+  await update($, pick, held => {
+    if (held?.stage !== "items") return held
+    const ids = idsOf(held.items, id)
+    // A review chosen with every thread is taken off whole; chosen in part, it is chosen whole.
+    const isWhole = ids.every(one => held.chosen.includes(one))
+    const chosen = isWhole ? held.chosen.filter(one => !ids.includes(one)) : [...new Set([...held.chosen, ...ids])]
+    return { ...held, chosen }
+  })
+}
+
+/** Stages the pick pane's chosen items in place of what was staged from that pull request. */
+async function stageChosen($: EngineInterface) {
+  const held = await read($, pick)
+  if (held?.stage !== "items") return
+  const items = held.items.filter(item => held.chosen.includes(item.id))
+  await update($, staged, list => [
+    ...list.filter(one => one.pull !== held.pull),
+    ...(items.length === 0 ? [] : [{ pull: held.pull, title: held.title, url: held.url, head: held.head, items }]),
+  ])
+  await $.ui.close({ id: PICK_PANE })
+}
+
+const pullLabel = (key: string) => {
+  const ref = refOfPullKey(key)
+  return ref === null ? key : pullName(ref)
+}
+
 export const register: Register = (on, options) => {
   const ctx: Context = {
     intervalSeconds: Math.max(MIN_INTERVAL_SECONDS, Number(options.intervalSeconds) || 60),
@@ -713,14 +853,15 @@ export const register: Register = (on, options) => {
     repoErrors: new Map(),
     retries: new Map(),
     toggling: Promise.resolve(),
+    picking: 0,
   }
   let timer: Timer | undefined
 
   on("session.start", async ($, e, next) => {
     await $.command.register({
       name: COMMAND,
-      description: "GitHub notices for this branch's pull request and registered repositories: status, check now, recent notices, repositories, nicknames",
-      argumentHint: "[status|check|log|repo [add|set|remove|alias ...]|nick [login [nickname]]]",
+      description: "GitHub notices for this branch's pull request and registered repositories: status, check now, recent notices, pick review comments to hand to Claude, repositories, nicknames",
+      argumentHint: "[status|check|log|pick [pr]|clear|repo [add|set|remove|alias ...]|nick [login [nickname]]]",
     })
     ctx.sessionId = await $.session.id()
     const now = await $.clock.now()
@@ -753,8 +894,25 @@ export const register: Register = (on, options) => {
 
   on("prompt.submit", async ($, e, next) => {
     void touch($, ctx, true).catch(() => undefined)
-
-    return next(e)
+    // What is staged goes with the next prompt the person sends, not with a command or a prompt of a plugin's.
+    const isPersons = (e.origin.kind === "composer" || e.origin.kind === "bridge") && e.command === undefined && e.isMeta !== true
+    if (!isPersons) return next(e)
+    // Taken at once, so a second prompt sent meanwhile does not carry it too; put back when this one does not go.
+    let held: GhStaged[] = []
+    await update($, staged, list => {
+      held = list
+      return []
+    })
+    if (held.length === 0) return next(e)
+    const putBack = () => update($, staged, list => [...held.filter(one => !list.some(other => other.pull === one.pull)), ...list])
+    try {
+      const result = await next({ ...e, context: [...(e.context ?? []), ...stagedContext(held)] })
+      if (result.drop !== undefined) await putBack()
+      return result
+    } catch (error) {
+      await putBack()
+      throw error
+    }
   })
 
   on("command.run", { command: COMMAND }, async ($, e) => {
@@ -774,6 +932,13 @@ export const register: Register = (on, options) => {
       }
       case "repo":
         return { text: await repoCommand($, ctx, rest) }
+      case "pick":
+        return { text: await pickCommand($, ctx, rest) }
+      case "clear": {
+        const count = stagedCount(await read($, staged))
+        await update($, staged, () => [])
+        return { text: count === 0 ? "添付しているものはありません。" : `添付していた${count}件を外しました。` }
+      }
       case "nick": {
         const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
         const [account, ...words] = rest
@@ -793,7 +958,7 @@ export const register: Register = (on, options) => {
         return { text: `${account} は「${displayName(account, { [account]: nickname })}」と表示します。` }
       }
       default:
-        return { text: "使い方: /inbox [status|check|log|repo|nick [login [ニックネーム]]]" }
+        return { text: "使い方: /inbox [status|check|log|pick [PR]|clear|repo|nick [login [ニックネーム]]]" }
     }
   })
 
@@ -819,6 +984,123 @@ export const register: Register = (on, options) => {
           />
         ))}
         <Button label="閉じる" onPress={() => void $.ui.close({ id: PICKER_PANE })} />
+      </Box>
+    )
+  })
+
+  on("ui.render", { component: "Pane", requestId: PICK_PANE }, async ($, e) => {
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const held = await read($, pick)
+    const close = <Button key="close" hotkey="q" label="閉じる" onPress={() => void $.ui.close({ id: PICK_PANE })} />
+    const toPulls = <Button key="pulls" hotkey="p" label="別の PR を選ぶ" onPress={() => void loadPulls($, ctx)} />
+    if (held === null || held.stage === "loading")
+      return (
+        <Box flexDirection="column">
+          <Text dimColor>{held?.message ?? "読み込んでいます…"}</Text>
+          {close}
+        </Box>
+      )
+    if (held.stage === "error")
+      return (
+        <Box flexDirection="column">
+          <Text>{plain(held.message)}</Text>
+          {toPulls}
+          {close}
+        </Box>
+      )
+    if (held.stage === "pulls")
+      return (
+        <Box flexDirection="column">
+          <Text>
+            {held.pulls.length === 0
+              ? "開いている PR が見つかりません。/inbox pick owner/repo#12 で指定できます。"
+              : "PR を選びます（このリポジトリの PR と、登録したリポジトリで自分が関わる PR）。"}
+          </Text>
+          {held.pulls.map((pull, index) => (
+            <Button
+              key={pull.key}
+              hotkey={index < 9 ? String(index + 1) : undefined}
+              plain
+              label={`${plain(pullLabel(pull.key))} ${plain(pull.title)}${pull.author === null ? "" : `（${plain(pull.author)}）`}`}
+              onPress={() => {
+                const ref = refOfPullKey(pull.key)
+                if (ref !== null) void loadItems($, ctx, ref)
+              }}
+            />
+          ))}
+          {close}
+        </Box>
+      )
+
+    return (
+      <Box flexDirection="column">
+        <Text>
+          {plain(pullLabel(held.pull))} {plain(held.title)}
+        </Text>
+        {held.notes.map(note => (
+          <Text key={note} dimColor>
+            {note}
+          </Text>
+        ))}
+        <Text dimColor>
+          {held.items.length === 0
+            ? "レビュー・コメントはありません。"
+            : "レビューを選ぶと、その行コメントもまとめて選びます。「添付する」で、次に送るプロンプトと一緒に Claude に渡します。"}
+        </Text>
+        {held.items.map((item, index) => {
+          // A review shows whether it is chosen with all its threads, in part, or not at all.
+          const ids = idsOf(held.items, item.id)
+          const count = ids.filter(id => held.chosen.includes(id)).length
+          const mark = count === ids.length ? "x" : count > 0 ? "-" : " "
+          return (
+            <Box key={`row:${item.id}`} paddingLeft={item.parent === undefined ? 0 : 4}>
+              <Button
+                key={item.id}
+                hotkey={index < 9 ? String(index + 1) : undefined}
+                plain
+                label={`[${mark}] ${plain(item.label)}`}
+                onPress={() => {
+                  // Keys pressed in a row each read what the one before wrote.
+                  ctx.toggling = ctx.toggling.then(() => toggleItem($, item.id)).catch(() => undefined)
+                }}
+              />
+            </Box>
+          )
+        })}
+        <Button
+          key="stage"
+          hotkey="a"
+          label={`添付する（${held.chosen.length}件）`}
+          onPress={() => {
+            // After the toggles pressed before it, so it stages what they chose.
+            ctx.toggling = ctx.toggling.then(() => stageChosen($)).catch(() => undefined)
+          }}
+        />
+        {toPulls}
+        {close}
+      </Box>
+    )
+  })
+
+  on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
+    const held = await read($, staged)
+    if (e.props.hasSurvey || held.length === 0) return next(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const what = held.map(one => `${plain(pullLabel(one.pull))} の${one.items.length}件`).join("、")
+    const size = stagedSize(held)
+
+    return (
+      <Box flexDirection="column">
+        <Text>GitHub: {what}を添付中。次に送るプロンプトと一緒に Claude に渡します。</Text>
+        {size > CONTEXT_LIMIT && (
+          <Text color="warning">
+            {`約${Math.round(size / 1000)}k 文字あり、上限の${CONTEXT_LIMIT / 1000}k を超えた分は Claude に届きません。選び直して減らしてください。`}
+          </Text>
+        )}
+        <Box>
+          <Button key="gh-inbox-repick" label="選び直す" onPress={() => void openPick($, ctx, refOfPullKey(held[0]?.pull ?? ""))} />
+          <Button key="gh-inbox-clear" label="外す" onPress={() => void update($, staged, () => [])} />
+        </Box>
       </Box>
     )
   })
