@@ -23,7 +23,7 @@ const ROOT_T1 = {
   originalCommit: { abbreviatedOid: "aaa1111" },
   pullRequestReview: { id: "R1" },
 }
-const ROOT_T2 = { id: "c3", author: { login: "rev" }, body: "Rename this\n`<!-- span -->` <!-- gone -->\n```html\n<!-- block -->\n```", url: "u3", diffHunk: "", pullRequestReview: { id: "R1" } }
+const ROOT_T2 = { id: "c3", author: { login: "rev" }, body: "Rename this\n`<!-- span -->` <!-- gone --> `![alt](kept.png)` ![shot](gone.png)\n```html\n<!-- block -->\n```", url: "u3", diffHunk: "", pullRequestReview: { id: "R1" } }
 
 // R1 came with T1 and T2; R3 is only "me" replying in T1; R2 says nothing; P1 is "me"'s review not yet submitted.
 const PULL_ANSWER = JSON.stringify({
@@ -112,7 +112,10 @@ function fakeGh(on: On, branch: string) {
     const answer = (): Answer => {
       if (argv[0] === "git") return { stdout: `${branch}\n` }
       if (argv.includes("pr") && argv.includes("view"))
-        return branch === "main" ? { stderr: 'no pull requests found for branch "main"', exitCode: 1 } : { stdout: '{"url":"https://github.com/o/r/pull/5","state":"OPEN"}' }
+        return branch === "main"
+          ? { stderr: 'no pull requests found for branch "main"', exitCode: 1 }
+          : branch === "broken"
+            ? { stderr: "HTTP 401: Bad credentials", exitCode: 1 } : { stdout: '{"url":"https://github.com/o/r/pull/5","state":"OPEN"}' }
       if (argv.includes("repo") && argv.includes("view")) return { stdout: "https://github.com/o/r\n" }
       const query = argv.find(word => word.startsWith("query=")) ?? ""
       if (query.includes("reviewThreads")) return { stdout: PULL_ANSWER }
@@ -170,10 +173,11 @@ test("what GitHub does not show is left out of what the model reads, and a long 
   expect(open?.context).not.toContain("+line 15\n")
 })
 
-test("an HTML comment a code span or a fenced block shows is kept", () => {
+test("an HTML comment or an image a code span or a fenced block shows is kept", () => {
   const [, , , resolved] = parsePicked(REF, PULL_ANSWER, {}).items
   expect(resolved?.context).toContain("`<!-- span -->`")
   expect(resolved?.context).toContain("```html\n<!-- block -->\n```")
+  expect(resolved?.context).toContain("`![alt](kept.png)`")
   expect(resolved?.context).not.toContain("gone")
 })
 
@@ -264,6 +268,25 @@ test("on a branch with no pull request the pane lists pull requests to choose fr
   expect((await pane.find({ key: "C1" }))?.props.label).toBe("[ ] bot のコメント: Coverage dropped")
 })
 
+test("a branch whose pull request could not be looked up says why above the list", async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: 1_000_000 })
+  fakeGh(on, "broken")
+
+  await $.command.run({ ...PICK, args: "pick" })
+  const pane = await $.ui.mount(PANE)
+  expect((await pane.findAll({ type: "Text" })).map(one => one.text)).toContain("探せなかったもの: broken の PR: HTTP 401: Bad credentials")
+  expect(await pane.find({ key: "github.com/o/r#5" })).toBeDefined()
+})
+
+test("a search that found more than it lists says so", () => {
+  const answer = { data: { here: { issueCount: 25, nodes: [] }, mine: { issueCount: 3, nodes: [] }, requested: { issueCount: 21, nodes: [] } } }
+  expect(parsePulls(JSON.stringify(answer)).notes).toEqual([
+    "このリポジトリの PR は、更新の新しい20件だけを表示しています（全25件）。",
+    "登録したリポジトリでレビューを頼まれた PR は、更新の新しい20件だけを表示しています（全21件）。",
+  ])
+})
+
 test("/inbox clear takes back what was staged", async ($, on) => {
   mock.store(on, {})
   mock.clock(on, { now: 1_000_000 })
@@ -345,7 +368,7 @@ test("the pull request list has those asked of or reviewed by the person too, ne
       reviewed: { nodes: [pull(4, "2026-10-02T00:00:00Z"), pull(2, "2026-10-01T00:00:00Z")] },
     },
   }
-  expect(parsePulls(JSON.stringify(answer)).map(one => one.key)).toEqual(["github.com/o/r#1", "github.com/x/y#3", "github.com/x/y#4", "github.com/x/y#2"])
+  expect(parsePulls(JSON.stringify(answer)).pulls.map(one => one.key)).toEqual(["github.com/o/r#1", "github.com/x/y#3", "github.com/x/y#4", "github.com/x/y#2"])
 })
 
 test("without a repository here a bare number says so", async ($, on) => {

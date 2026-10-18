@@ -747,7 +747,8 @@ async function loadItems($: EngineInterface, ctx: Context, ref: PullRef) {
 }
 
 /** Lists in the pick pane the open pull requests of this repository and those of the registered ones the person is involved in. */
-async function loadPulls($: EngineInterface, ctx: Context) {
+/** Lists pull requests to choose from; `failure` says why the branch's own could not be looked up. */
+async function loadPulls($: EngineInterface, ctx: Context, failure?: string) {
   ctx.picking += 1
   const token = ctx.picking
   await update($, pick, (): GhPick => ({ stage: "loading", message: "PR を探しています…" }))
@@ -759,19 +760,22 @@ async function loadPulls($: EngineInterface, ctx: Context) {
       .filter(ref => here === null || repoKey(ref).toLowerCase() !== repoKey(here).toLowerCase())
     const hosts = [...new Set([...(here === null ? [] : [here.host]), ...registered.map(ref => ref.host)])]
     const pulls: GhPickPull[] = []
-    const errors: string[] = []
+    const notes: string[] = []
+    const errors: string[] = failure === undefined ? [] : [failure]
     for (const host of hosts) {
       const argv = pullsArgv(host, here?.host === host ? here : null, registered.filter(ref => ref.host === host))
       if (argv === null) continue
       try {
         const run = await $.process.run(argv)
         if (run.exitCode !== 0) throw new Error(firstLine(run.stderr) || `gh api exited with ${run.exitCode}`)
-        pulls.push(...parsePulls(run.stdout).filter(pull => !pulls.some(one => one.key === pull.key)))
+        const found = parsePulls(run.stdout)
+        pulls.push(...found.pulls.filter(pull => !pulls.some(one => one.key === pull.key)))
+        notes.push(...found.notes)
       } catch (error) {
         errors.push(`${host}: ${message(error)}`)
       }
     }
-    shown = pulls.length === 0 && errors.length > 0 ? { stage: "error", message: `PR を探せませんでした: ${errors.join(" / ")}` } : { stage: "pulls", pulls, notes: errors.map(error => `探せなかったもの: ${error}`) }
+    shown = pulls.length === 0 && errors.length > 0 ? { stage: "error", message: `PR を探せませんでした: ${errors.join(" / ")}` } : { stage: "pulls", pulls, notes: [...errors.map(error => `探せなかったもの: ${error}`), ...notes] }
   } catch (error) {
     shown = { stage: "error", message: `PR を探せませんでした: ${message(error)}` }
   }
@@ -781,6 +785,7 @@ async function loadPulls($: EngineInterface, ctx: Context) {
 async function pickCommand($: EngineInterface, ctx: Context, words: readonly string[]): Promise<string> {
   const arg = words.join(" ")
   let ref: PullRef | null = null
+  let failure: string | undefined
   if (arg !== "") {
     const isBare = /^#?\d+$/.test(arg)
     ref = parsePullArg(arg, isBare ? await hereRepo($) : null)
@@ -791,19 +796,28 @@ async function pickCommand($: EngineInterface, ctx: Context, words: readonly str
   } else {
     const branch = await currentBranch($)
     const now = await $.clock.now()
-    if (branch !== null) ref = ctx.found?.branch === branch ? ctx.found.ref : ((await lookUp($, branch, now).catch(() => undefined))?.ref ?? null)
+    if (branch !== null && ctx.found?.branch === branch) ref = ctx.found.ref
+    else if (branch !== null)
+      // A branch with no pull request is not a failure; anything else is said above the list.
+      ref = await lookUp($, branch, now).then(
+        found => found.ref,
+        error => {
+          failure = `${branch} の PR: ${message(error)}`
+          return null
+        },
+      )
   }
-  if (!(await openPick($, ctx, ref))) return "ペインを開けませんでした。"
+  if (!(await openPick($, ctx, ref, failure))) return "ペインを開けませんでした。"
 
   return "ペインで選び、「添付する」を押すと、次に送るプロンプトと一緒に Claude に渡します。"
 }
 
 /** Opens the pick pane on the pull request's items, or on the list of pull requests when there is none. */
-async function openPick($: EngineInterface, ctx: Context, ref: PullRef | null) {
+async function openPick($: EngineInterface, ctx: Context, ref: PullRef | null, failure?: string) {
   await update($, pick, (): GhPick => ({ stage: "loading", message: "読み込んでいます…" }))
   const opened = await $.ui.open({ id: PICK_PANE, title: "Claude に渡すものを選ぶ", focus: true })
   if (!opened.isPlaced) return false
-  await (ref === null ? loadPulls($, ctx) : loadItems($, ctx, ref))
+  await (ref === null ? loadPulls($, ctx, failure) : loadItems($, ctx, ref))
 
   return true
 }

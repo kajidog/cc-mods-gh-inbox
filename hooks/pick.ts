@@ -86,7 +86,11 @@ export function refOfPullKey(key: string): PullRef | null {
 }
 
 // `involves:` leaves out a review asked of the person and one they gave, so each is searched too.
-const MINE = { mine: "involves:@me", requested: "review-requested:@me", reviewed: "reviewed-by:@me" }
+const MINE = {
+  mine: { query: "involves:@me", what: "登録したリポジトリで自分が関わる PR" },
+  requested: { query: "review-requested:@me", what: "登録したリポジトリでレビューを頼まれた PR" },
+  reviewed: { query: "reviewed-by:@me", what: "登録したリポジトリでレビューした PR" },
+}
 
 /**
  * The argv that lists open pull requests on one host in one request: every one
@@ -95,13 +99,13 @@ const MINE = { mine: "involves:@me", requested: "review-requested:@me", reviewed
  */
 export function pullsArgv(host: string, here: RepoRef | null, others: readonly RepoRef[]): string[] | null {
   const searches: string[] = []
-  const fields = `nodes { ... on PullRequest { number title url updatedAt author { login } } }`
+  const fields = `issueCount nodes { ... on PullRequest { number title url updatedAt author { login } } }`
   if (here !== null)
     searches.push(`here: search(type: ISSUE, first: ${PULLS_LISTED}, query: "is:pr is:open repo:${repoName(here)} sort:updated-desc") { ${fields} }`)
   if (others.length > 0) {
     const repos = others.map(ref => `repo:${repoName(ref)}`).join(" ")
-    for (const [alias, who] of Object.entries(MINE))
-      searches.push(`${alias}: search(type: ISSUE, first: ${PULLS_LISTED}, query: "is:pr is:open ${who} ${repos} sort:updated-desc") { ${fields} }`)
+    for (const [alias, { query }] of Object.entries(MINE))
+      searches.push(`${alias}: search(type: ISSUE, first: ${PULLS_LISTED}, query: "is:pr is:open ${query} ${repos} sort:updated-desc") { ${fields} }`)
   }
   if (searches.length === 0) return null
 
@@ -112,8 +116,12 @@ const throwErrors = (json: Json) => {
   if (Array.isArray(json.errors) && json.errors.length > 0) throw new Error(text(object(json.errors[0]).message) || "GitHub answered with an error")
 }
 
-/** Reads `pullsArgv`'s answer: this repository's first, then the rest newest first, each pull request once. */
-export function parsePulls(answer: string): GhPickPull[] {
+/**
+ * Reads `pullsArgv`'s answer: this repository's first, then the rest newest
+ * first, each pull request once; a search that found more than it listed is
+ * said in a note.
+ */
+export function parsePulls(answer: string): { pulls: GhPickPull[]; notes: string[] } {
   const json = object(JSON.parse(answer))
   throwErrors(json)
   const data = object(json.data)
@@ -126,29 +134,36 @@ export function parsePulls(answer: string): GhPickPull[] {
     if (pulls.some(pull => pull.key === key)) continue
     pulls.push({ key, title: text(node.title), author: login(node.author) })
   }
+  const searched = [["here", "このリポジトリの PR"], ...Object.entries(MINE).map(([alias, { what }]) => [alias, what])] as const
+  const notes = searched.flatMap(([alias, what]) => {
+    const found = Number(object(data[alias]).issueCount) || 0
+    return found > PULLS_LISTED ? [`${what} は、更新の新しい${PULLS_LISTED}件だけを表示しています（全${found}件）。`] : []
+  })
 
-  return pulls
+  return { pulls, notes }
 }
 
 export type Picked = { title: string; url: string; head: string; items: GhPickItem[]; notes: string[] }
 
 const fence = (body: string) => "`".repeat(Math.max(3, ...[...body.matchAll(/`+/g)].map(run => run[0].length + 1)))
-const IMAGE = /!\[[^\]]*\]\([^)]*\)/g
-// A badge or other image says nothing in a one-line label.
-const label = (body: string) => snippet(body.replace(IMAGE, ""))
+// Whichever comes first: an HTML comment, an image, a fenced block (one left open runs to the end, as GitHub draws it) or a code span.
+const HIDDEN_OR_CODE =
+  /<!--[\s\S]*?(?:-->|$)|!\[[^\]]*\]\([^)]*\)|(?:^|\n) {0,3}(`{3,}|~{3,})[^\n]*(?:\n[\s\S]*?\n {0,3}\1[`~]*[ \t]*(?=\n|$)|[\s\S]*$)|(`+)[^`](?:[\s\S]*?[^`])?\2(?!`)/g
 /**
- * A body as the model reads it: what GitHub does not show (an HTML comment)
- * left out, so nothing the person never saw goes with their prompt, and fenced,
- * so it cannot pass for a heading of its own.
+ * `body` without its HTML comments, which GitHub does not show, and its images,
+ * a badge saying nothing in words; what a fenced block or a code span shows as
+ * text is kept as it is.
+ */
+const shownText = (body: string) => body.replace(HIDDEN_OR_CODE, match => (match.startsWith("<!--") || match.startsWith("![") ? "" : match))
+const label = (body: string) => snippet(shownText(body))
+/**
+ * A body as the model reads it: nothing the person never saw goes with their
+ * prompt, and fenced, so it cannot pass for a heading of its own.
  */
 function quoted(body: string) {
-  const shown = withoutComments(body).replace(IMAGE, "").trim()
+  const shown = shownText(body).trim()
   return `${fence(shown)}markdown\n${shown}\n${fence(shown)}`
 }
-// Whichever comes first: an HTML comment, a fenced block (one left open runs to the end, as GitHub draws it) or a code span.
-const COMMENT_OR_CODE = /<!--[\s\S]*?(?:-->|$)|(?:^|\n) {0,3}(`{3,}|~{3,})[^\n]*(?:\n[\s\S]*?\n {0,3}\1[`~]*[ \t]*(?=\n|$)|[\s\S]*$)|(`+)[^`](?:[\s\S]*?[^`])?\2(?!`)/g
-/** `body` with its HTML comments left out, but not what a fenced block or a code span shows as text. */
-const withoutComments = (body: string) => body.replace(COMMENT_OR_CODE, match => (match.startsWith("<!--") ? "" : match))
 /** The last lines of a hunk, up to the line commented on, under its `@@` line. */
 function cutHunk(hunk: string) {
   const [head = "", ...lines] = hunk.split("\n")
