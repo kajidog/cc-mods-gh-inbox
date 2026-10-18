@@ -939,7 +939,7 @@ export const register: Register = (on, options) => {
     if (held.length === 0) return next(e)
     const putBack = () => update($, staged, list => [...held.filter(one => !list.some(other => other.pull === one.pull)), ...list])
     try {
-      const result = await next({ ...e, context: [...(e.context ?? []), ...stagedContext(held)] })
+      const result = await next({ ...e, context: [...(e.context ?? []), ...stagedContext(held, ctx.language)] })
       if (result.drop !== undefined) await putBack()
       return result
     } catch (error) {
@@ -1121,7 +1121,7 @@ export const register: Register = (on, options) => {
     if (e.props.hasSurvey || held.length === 0) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
     const what = held.map(one => t.stagedOf(plain(pullLabel(one.pull)), one.items.length)).join(t.listSeparator)
-    const size = stagedSize(held)
+    const size = stagedSize(held, ctx.language)
     // What the other mods draw stays, under this.
     const below = await next(e)
 
