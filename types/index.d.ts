@@ -47,6 +47,62 @@ export type GhWatch = {
   error: string | null
 }
 
+/** An open pull request `/inbox pick` lists to choose from. */
+export type GhPickPull = {
+  /** `host/owner/repo#number`. */
+  key: string
+  title: string
+  author: string | null
+}
+
+/** One thing of a pull request the person can hand to Claude: a review, a thread of line comments, a comment. */
+export type GhPickItem = {
+  /** GitHub's node id. */
+  id: string
+  /** The line the pane shows. */
+  label: string
+  /** What the model reads for it. */
+  context: string
+  /** The review a thread came with: its item's id. Pressing the review chooses its threads too. */
+  parent?: string
+}
+
+/** What the pick pane shows. */
+export type GhPick =
+  | { stage: "loading"; message: string }
+  | { stage: "error"; message: string }
+  | {
+      stage: "pulls"
+      pulls: GhPickPull[]
+      /** The hosts that could not be searched, said in a line each. */
+      notes: string[]
+    }
+  | {
+      stage: "items"
+      /** `host/owner/repo#number`. */
+      pull: string
+      title: string
+      url: string
+      /** The head commit's short id when the list was fetched. */
+      head: string
+      items: GhPickItem[]
+      /** What was left out of the list, said in a line each. */
+      notes: string[]
+      /** The ids chosen so far. */
+      chosen: string[]
+    }
+
+/** What one pull request has staged for the next prompt. */
+export type GhStaged = {
+  /** `host/owner/repo#number`. */
+  pull: string
+  title: string
+  url: string
+  /** The head commit's short id when the items were fetched. */
+  head: string
+  items: GhPickItem[]
+}
+
 declare module "claude-code" {
   interface PluginState {
     "gh-inbox": {
@@ -56,6 +112,9 @@ declare module "claude-code" {
       /** The ids this session has seen, by `host/owner/repo#number`, and by `repo:host/owner/repo` for a registered repository. */
       seen: Record<string, string[]>
       picker: GhPicker | null
+      pick: GhPick | null
+      /** What the next prompt the person sends carries to the model. */
+      staged: GhStaged[]
     }
   }
 }
