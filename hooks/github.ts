@@ -39,6 +39,8 @@ export type Pull = {
   url: string
   state: PullState
   mergedBy: string | null
+  /** Who closed it last; null while open, or for a merge. */
+  closedBy: string | null
   closedAt: string | null
   comments: Comment[]
   reviews: Review[]
@@ -54,6 +56,7 @@ export const PULL_QUERY = `query($owner: String!, $repo: String!, $number: Int!)
     pullRequest(number: $number) {
       title url state closedAt
       mergedBy { login }
+      closed: timelineItems(itemTypes: [CLOSED_EVENT], last: 1) { nodes { ... on ClosedEvent { actor { login } } } }
       comments(last: 50) { nodes { id author { login } body createdAt url } }
       reviews(last: 50) { nodes { id author { login } state body submittedAt url
         comments(first: 50) { nodes { id author { login } createdAt path line originalLine diffHunk body url } } } }
@@ -173,6 +176,7 @@ export function parsePull(ref: PullRef, answer: string): Pull {
     url: text(pull.url),
     state: state === "MERGED" || state === "CLOSED" ? state : "OPEN",
     mergedBy: login(pull.mergedBy),
+    closedBy: login(object(nodes(pull.closed).at(-1)).actor),
     closedAt: text(pull.closedAt) || null,
     comments: nodes(pull.comments).map(node => ({
       id: text(node.id),

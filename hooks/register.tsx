@@ -186,7 +186,8 @@ async function show($: EngineInterface, ctx: Context, notices: readonly InboxNot
     if (passed !== undefined) list.push(passed)
   }
   const shown = list.length > SHOWN_AT_ONCE ? [...list.slice(0, SHOWN_AT_ONCE - 1)] : list
-  const lines = shown.map(notice => notice.text)
+  // A hook may have built the text from what anyone wrote on GitHub: made plain again, as it shows.
+  const lines = shown.map(notice => plain(notice.text))
   if (shown.length < list.length) lines.push(`GitHub: ほか${list.length - shown.length}件の更新があります（/inbox log）`)
   for (const line of lines) {
     if (ctx.channel === "log") $.ui.log(`GitHub: ${line}`)
