@@ -27,10 +27,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check:version
-      - name: Create or update release PR
+      # With changesets left: open or update the release PR. With none (the release PR merged): tag each
+      # version not tagged yet and create its GitHub release from its CHANGELOG. Nothing is published to npm.
+      - name: Create or update release PR, or tag the release
         uses: changesets/action@v2.1.2
         with:
           version-script: npm run release:version
+          publish-script: npm run release:tag
           commit-message: "chore: release"
           pr-title: "chore: release"
       - run: npm run check:version

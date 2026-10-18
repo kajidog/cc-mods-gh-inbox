@@ -13,6 +13,7 @@
   "scripts": {
     "changeset": "changeset",
     "release:version": "changeset version && node scripts/sync-plugin-version.mjs && npm install --package-lock-only --ignore-scripts",
+    "release:tag": "changeset tag",
     "check:version": "node scripts/sync-plugin-version.mjs --check",
     "lint": "biome lint --error-on-warnings .",
     "validate": "claude plugin validate --strict . && npm run validate --workspaces",
