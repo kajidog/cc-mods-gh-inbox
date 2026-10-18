@@ -194,12 +194,12 @@ export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, opt
       url: pull.url,
       items: [],
     })
-  } else if (pull.state === "CLOSED" && !seen.has(CLOSED_ID)) {
+  } else if (pull.state === "CLOSED" && !seen.has(CLOSED_ID) && !isMuted(pull.closedBy)) {
     events.push({
       id: CLOSED_ID,
       kind: "close",
       pull: name,
-      author: null,
+      author: pull.closedBy,
       at: pull.closedAt ?? stamp,
       text: `#${pull.ref.number} がクローズされました。`,
       url: pull.url,

@@ -13,6 +13,7 @@ function pullWith(changes: Partial<Pull>): Pull {
     url: "https://github.com/o/r/pull/7",
     state: "OPEN",
     mergedBy: null,
+    closedBy: null,
     closedAt: null,
     comments: [],
     reviews: [],
@@ -96,6 +97,13 @@ describe("newEvents", () => {
     const pull = pullWith({ state: "MERGED", mergedBy: "me", closedAt: "2026-01-02T00:00:00Z" })
     expect(texts(pull)).toEqual(["#7 がマージされました。"])
     expect(texts(pull, [MERGED_ID])).toEqual([])
+  })
+
+  test("a close tells who closed it, and mine is not notified", async () => {
+    const closed = { state: "CLOSED", closedAt: "2026-01-02T00:00:00Z" } as const
+    expect(newEvents(pullWith({ ...closed, closedBy: "someone" }), new Set(), options).map(event => event.author)).toEqual(["someone"])
+    expect(texts(pullWith({ ...closed, closedBy: "me" }))).toEqual([])
+    expect(newEvents(pullWith({ ...closed, closedBy: "me" }), new Set(), { ...options, notifySelf: true }).map(event => event.author)).toEqual(["me"])
   })
 })
 

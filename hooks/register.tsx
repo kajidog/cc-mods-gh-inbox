@@ -1,7 +1,7 @@
 import { atom, read, update } from "claude-code"
 import type { EngineInterface, Register, Timer } from "claude-code"
 
-import type { GhEvent, GhPick, GhPicker, GhPickPull, GhStaged, GhWatch } from "../types"
+import type { GhEvent, GhPick, GhPicker, GhPickPull, GhStaged, GhWatch, Inbox, InboxNotice } from "../types"
 
 import { displayName, mergeSeen, newEvents, type Nicknames, plain, pullIds } from "./events"
 import { type PullRef, type PullState, parsePull, parsePullUrl, pullArgv, pullName } from "./github"
@@ -178,9 +178,16 @@ async function lookUp($: EngineInterface, branch: string, now: number): Promise<
   return { branch, ref, state: answer.state ?? null, lookedAt: now, isDone: false }
 }
 
-async function show($: EngineInterface, ctx: Context, list: readonly GhEvent[]) {
+async function show($: EngineInterface, ctx: Context, notices: readonly InboxNotice[]) {
+  // Each notice goes past the hooks on `inbox.notify` first: one they refuse is not shown.
+  const list: InboxNotice[] = []
+  for (const notice of notices) {
+    const passed = await $.inbox.notify(notice).catch(() => undefined)
+    if (passed !== undefined) list.push(passed)
+  }
   const shown = list.length > SHOWN_AT_ONCE ? [...list.slice(0, SHOWN_AT_ONCE - 1)] : list
-  const lines = shown.map(event => plain(event.text))
+  // A hook may have built the text from what anyone wrote on GitHub: made plain again, as it shows.
+  const lines = shown.map(notice => plain(notice.text))
   if (shown.length < list.length) lines.push(`GitHub: ほか${list.length - shown.length}件の更新があります（/inbox log）`)
   for (const line of lines) {
     if (ctx.channel === "log") $.ui.log(`GitHub: ${line}`)
@@ -257,7 +264,7 @@ async function fetchPull($: EngineInterface, ctx: Context, ref: PullRef, now: nu
 }
 
 /** Checks the branch's pull request; its notices go to `fresh`. */
-async function checkPull($: EngineInterface, ctx: Context, fresh: GhEvent[], isForced: boolean) {
+async function checkPull($: EngineInterface, ctx: Context, fresh: InboxNotice[], isForced: boolean) {
   try {
     const branch = await currentBranch($)
     if (branch === null) {
@@ -289,7 +296,9 @@ async function checkPull($: EngineInterface, ctx: Context, fresh: GhEvent[], isF
     const { value: seenByKey = {} } = await $.state.get({ plugin: "gh-inbox", key: "seen" })
     const seen = seenForPull(seenByKey, ref)
     const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
-    fresh.push(...newEvents(pull, seen, { nicknames, notifySelf: ctx.notifySelf }))
+    const isSelf = (event: GhEvent) => event.author !== null && event.author === pull.viewer
+    for (const event of newEvents(pull, seen, { nicknames, notifySelf: ctx.notifySelf }))
+      fresh.push({ event, source: "pull", repo: repoKey(ref), label: null, isSelf: isSelf(event), text: plain(event.text) })
     await update($, seenIds, held => ({ ...held, [key]: mergeSeen(held[key] ?? [], pullIds(pull)) }))
 
     ctx.found.head = pull.commits.at(-1)?.oid
@@ -476,7 +485,7 @@ async function titlesFor($: EngineInterface, ref: RepoRef, pending: ReturnType<t
 }
 
 /** Checks one registered repository; its notices are returned. */
-async function checkRepo($: EngineInterface, ctx: Context, key: string, entry: RepoEntry, nicknames: Nicknames, now: number) {
+async function checkRepo($: EngineInterface, ctx: Context, key: string, entry: RepoEntry, nicknames: Nicknames, now: number): Promise<InboxNotice[]> {
   const ref = refOfKey(key)
   let cache = await fetchRepo($, ctx, ref, entry, now)
   const seenKey = repoSeenKey(ref)
@@ -503,8 +512,9 @@ async function checkRepo($: EngineInterface, ctx: Context, key: string, entry: R
   // What waits for a lookup is neither notified nor taken as seen yet.
   const events = cache.events.filter(event => !deferred.has(event.id))
   const runs = cache.runs.filter(run => !deferred.has(run.id))
+  const label = repoLabel(key, entry)
   const fresh = newRepoEvents(
-    { ref, label: repoLabel(key, entry), kinds: entry.kinds, events, runs, titles, viewer, watchedHead },
+    { ref, label, kinds: entry.kinds, events, runs, titles, viewer, watchedHead },
     seen,
     { nicknames, notifySelf: ctx.notifySelf },
   )
@@ -517,11 +527,18 @@ async function checkRepo($: EngineInterface, ctx: Context, key: string, entry: R
     [seenKey]: mergeSeen((held[seenKey] ?? []).filter(id => wantsRuns || id !== ACTIONS_PRIMED), ids),
   }))
 
-  return fresh
+  return fresh.map(event => ({
+    event,
+    source: "repo",
+    repo: key,
+    label,
+    isSelf: viewer !== "" && event.author === viewer,
+    text: plain(event.text),
+  }))
 }
 
 /** Checks every registered repository; their notices go to `fresh`. */
-async function checkRepos($: EngineInterface, ctx: Context, fresh: GhEvent[]) {
+async function checkRepos($: EngineInterface, ctx: Context, fresh: InboxNotice[]) {
   const repos = Object.entries(toRepos(await $.store.get(REPOS_KEY))).slice(0, ctx.maxRepos)
   if (repos.length === 0) return
   const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
@@ -554,12 +571,12 @@ async function check($: EngineInterface, ctx: Context, isForced = false) {
 async function runCheck($: EngineInterface, ctx: Context, isForced: boolean) {
   ctx.checks += 1
   try {
-    const fresh: GhEvent[] = []
+    const fresh: InboxNotice[] = []
     await checkPull($, ctx, fresh, isForced)
     await checkRepos($, ctx, fresh)
     await touch($, ctx, false)
     if (fresh.length === 0) return
-    await update($, events, list => [...list, ...fresh].slice(-EVENTS_KEPT))
+    await update($, events, list => [...list, ...fresh.map(notice => notice.event)].slice(-EVENTS_KEPT))
     // Every session lists the notices; only the one touched last shows them.
     if (await isShowing($, ctx, await $.clock.now())) await show($, ctx, fresh)
   } catch (error) {
@@ -871,6 +888,13 @@ export const register: Register = (on, options) => {
     picking: 0,
   }
   let timer: Timer | undefined
+
+  // `$.inbox.notify` hands a notice back as the hooks on `inbox.notify` let it through, for another mod to act before it shows.
+  on("engine.create", async ($, e, next) => {
+    const built = await next(e)
+    const inbox: Inbox = { notify: async notice => notice }
+    return { ...built, inbox }
+  })
 
   on("session.start", async ($, e, next) => {
     await $.command.register({

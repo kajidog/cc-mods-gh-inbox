@@ -128,6 +128,7 @@ describe("one notice for what the pull request and the repository both see", () 
     url: "",
     state: "MERGED",
     mergedBy: "kajidog",
+    closedBy: null,
     closedAt: "2026-10-16T02:49:46Z",
     comments: [{ id: "IC_kwDOVDRCgM8AAAABcdCdCg", author: "bot", body: "hi", at: "2026-10-15T23:31:53Z", url: "" }],
     reviews: [

@@ -275,3 +275,25 @@ test("the failed steps of at most a few runs are looked up at one check, the res
   expect(github.asked.filter(argv => argv.some(word => word.endsWith("/jobs")))).toHaveLength(5)
   expect((await $.command.run({ ...CHECK, args: "log" })).text?.match(/CI が失敗しました/g)).toHaveLength(8)
 })
+
+test("a hook on inbox.notify sees each notice first, rewrites what shows or keeps it from showing, and the log keeps it", async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const github = fakeGitHub(on, [[], [COMMENT, { ...COMMENT, id: "2", actor: { login: "bot" }, payload: { ...COMMENT.payload, comment: { ...COMMENT.payload.comment, node_id: "IC_2" } } }]])
+  const heard: unknown[] = []
+  on("inbox.notify", async (_$, e, next) => {
+    heard.push(e)
+    if (e.event.author === "bot") return { deny: "muted" }
+    return next({ ...e, text: `${e.text}!` })
+  })
+
+  await $.command.run(CHECK)
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(heard).toEqual([
+    expect.objectContaining({ event: expect.objectContaining({ kind: "comment", pull: "o/r#3", author: "bot" }) }),
+    expect.objectContaining({ source: "repo", repo: KEY, label: "r", isSelf: false, text: "[r] someoneさんが #3 にコメントしました。Looks good" }),
+  ])
+  expect(github.toasts).toEqual(["[r] someoneさんが #3 にコメントしました。Looks good!"])
+  expect(await $.command.run({ ...CHECK, args: "log" })).toMatchObject({ text: expect.stringContaining("botさん") })
+})
