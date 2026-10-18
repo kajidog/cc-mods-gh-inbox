@@ -1,5 +1,15 @@
 # gh-inbox
 
+## 0.3.0
+
+### Minor Changes
+
+- 2daf686: 通知を出す前に `$.inbox.notify` を通すようにしました。他の mod が `inbox.notify` をフックすると、通知の前に処理を挟んだり、文を変えたり、通知を止めたりできます。フックが全部答えたあとの通知は `inbox.notified` で受け取れます。
+
+### Patch Changes
+
+- 5ea7c35: リポジトリの中の場所を `plugins/gh-inbox` に移しました。`/plugin install` で入れている場合はそのまま更新できます。`--plugin-dir ~/cc-mods-gh-inbox` で読み込んでいる場合は、`--plugin-dir ~/cc-mods-gh-inbox/plugins/gh-inbox` に変えてください。
+
 ## 0.2.0
 
 ### Minor Changes
