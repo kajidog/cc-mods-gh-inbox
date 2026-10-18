@@ -93,6 +93,31 @@ Claude Code の mod です。
 | `/inbox repo alias owner/repo [短い名前]` | 通知の先頭に出す名前（省くと消す） |
 | `/inbox nick <login> <ニックネーム>` | 表示名を短くする（`/inbox nick <login>` で削除、`/inbox nick` で一覧） |
 
+## 他の mod から使う
+
+通知は出す前に `$.inbox.notify` を通ります。他の mod が `inbox.notify` をフックすれば、通知の前に処理を挟めます（読み上げる、別の場所に送る、など）。
+
+```ts
+on("inbox.notify", async ($, e, next) => {
+  if (e.event.kind === "ci") await doSomething(e.text) // 通知の前に走らせる
+  if (e.isSelf) return { deny: "自分の操作は出さない" }  // 出さない
+  return next({ ...e, text: `★ ${e.text}` })            // 文を変えて出す
+})
+```
+
+| 項目 | 内容 |
+| --- | --- |
+| `event` | 通知の元になったイベント。`kind`（`comment` `review` `commit` `ci` `merge` `close` `branch` `open` `push`）、`pull`、`author`、`url`、本文の `items` など |
+| `source` | `pull`: 今のブランチの PR / `repo`: 登録したリポジトリ |
+| `repo` | `host/owner/repo` |
+| `label` | 登録したリポジトリの別名（なければ名前）。今のブランチの PR では `null` |
+| `isSelf` | `gh` でログインしているアカウントの操作か |
+| `text` | 表示する文 |
+
+- 通知を出す窓（最後に操作した窓）でだけ呼ばれます。出し方（toast・log・notify）には関係なく呼ばれます。
+- `{ deny }` で止めた通知は出しませんが、`/inbox log` には入ります。
+- 型は `types/index.d.ts` の `Inbox` と `InboxNotice` です。`plugin.json` の `dependencies` に `gh-inbox` を書くと、`$.inbox` に型が付きます。
+
 ## 設定（`/config`）
 
 | 項目 | 初期値 | 内容 |

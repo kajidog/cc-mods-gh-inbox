@@ -103,7 +103,37 @@ export type GhStaged = {
   items: GhPickItem[]
 }
 
+/** One notice about to be shown, as `$.inbox.notify` takes it. */
+export type InboxNotice = {
+  event: GhEvent
+  /** pull: the checked-out branch's pull request. repo: a registered repository. */
+  source: "pull" | "repo"
+  /** `host/owner/repo`. */
+  repo: string
+  /** The registered repository's label, its alias or its name, that leads `text` in brackets; null for the branch's pull request. */
+  label: string | null
+  /** Whether the account `gh` is logged in as did it. */
+  isSelf: boolean
+  /** The line shown, as plain text. */
+  text: string
+}
+
+/**
+ * `$.inbox`, for another mod to act before a notice shows. Every notice of a check passes `notify`
+ * one by one, in the one session that shows it (the one touched last), whatever the channel.
+ * A hook on `inbox.notify` runs first, may rewrite the notice (its `text`) with `next`, or keep it
+ * from showing with `{ deny }`; `/inbox log` lists it either way.
+ */
+export type Inbox = {
+  /** Resolves to the notice as the hooks let it through; rejects when one refused it. */
+  notify: (notice: InboxNotice) => Promise<InboxNotice>
+}
+
 declare module "claude-code" {
+  interface EngineInterface {
+    inbox: Inbox
+  }
+
   interface PluginState {
     "gh-inbox": {
       /** Recent notices, oldest first. */
