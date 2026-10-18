@@ -32,8 +32,8 @@ export const PICK_QUERY = `query($owner: String!, $repo: String!, $number: Int!)
     pullRequest(number: $number) {
       title url headRefOid
       reviewThreads(last: ${THREADS_LISTED}) { totalCount nodes { id isResolved isOutdated path line originalLine resolvedBy { login }
-        root: comments(first: 1) { nodes { id author { login } body url diffHunk originalCommit { abbreviatedOid } pullRequestReview { id } } }
-        replies: comments(last: ${REPLIES_LISTED}) { totalCount nodes { id author { login } body } } } }
+        root: comments(first: 1) { nodes { id author { login } body url state diffHunk originalCommit { abbreviatedOid } pullRequestReview { id } } }
+        replies: comments(last: ${REPLIES_LISTED}) { totalCount nodes { id author { login } body state } } } }
       reviews(last: ${REVIEWS_LISTED}) { totalCount nodes { id author { login } state body url submittedAt commit { abbreviatedOid } } }
       comments(last: ${COMMENTS_LISTED}) { totalCount nodes { id author { login } body url createdAt } }
     }
@@ -85,19 +85,23 @@ export function refOfPullKey(key: string): PullRef | null {
   return { host, owner, repo, number: Number(number) }
 }
 
+// `involves:` leaves out a review asked of the person and one they gave, so each is searched too.
+const MINE = { mine: "involves:@me", requested: "review-requested:@me", reviewed: "reviewed-by:@me" }
+
 /**
  * The argv that lists open pull requests on one host in one request: every one
  * of `here`, the repository open in this window, and those of `others` the
- * person is involved in.
+ * person is involved in, is asked to review or has reviewed.
  */
 export function pullsArgv(host: string, here: RepoRef | null, others: readonly RepoRef[]): string[] | null {
   const searches: string[] = []
-  const fields = `nodes { ... on PullRequest { number title url author { login } } }`
+  const fields = `nodes { ... on PullRequest { number title url updatedAt author { login } } }`
   if (here !== null)
     searches.push(`here: search(type: ISSUE, first: ${PULLS_LISTED}, query: "is:pr is:open repo:${repoName(here)} sort:updated-desc") { ${fields} }`)
   if (others.length > 0) {
     const repos = others.map(ref => `repo:${repoName(ref)}`).join(" ")
-    searches.push(`mine: search(type: ISSUE, first: ${PULLS_LISTED}, query: "is:pr is:open involves:@me ${repos} sort:updated-desc") { ${fields} }`)
+    for (const [alias, who] of Object.entries(MINE))
+      searches.push(`${alias}: search(type: ISSUE, first: ${PULLS_LISTED}, query: "is:pr is:open ${who} ${repos} sort:updated-desc") { ${fields} }`)
   }
   if (searches.length === 0) return null
 
@@ -108,13 +112,14 @@ const throwErrors = (json: Json) => {
   if (Array.isArray(json.errors) && json.errors.length > 0) throw new Error(text(object(json.errors[0]).message) || "GitHub answered with an error")
 }
 
-/** Reads `pullsArgv`'s answer: this repository's first, each pull request once. */
+/** Reads `pullsArgv`'s answer: this repository's first, then the rest newest first, each pull request once. */
 export function parsePulls(answer: string): GhPickPull[] {
   const json = object(JSON.parse(answer))
   throwErrors(json)
   const data = object(json.data)
   const pulls: GhPickPull[] = []
-  for (const node of [...nodes(data.here), ...nodes(data.mine)]) {
+  const mine = Object.keys(MINE).flatMap(alias => nodes(data[alias])).sort((a, b) => text(b.updatedAt).localeCompare(text(a.updatedAt)))
+  for (const node of [...nodes(data.here), ...mine]) {
     const ref = parsePullUrl(text(node.url))
     if (ref === null) continue
     const key = pullKeyOf(ref)
@@ -137,9 +142,13 @@ const label = (body: string) => snippet(body.replace(IMAGE, ""))
  * so it cannot pass for a heading of its own.
  */
 function quoted(body: string) {
-  const shown = body.replace(/<!--[\s\S]*?(?:-->|$)/g, "").replace(IMAGE, "").trim()
+  const shown = withoutComments(body).replace(IMAGE, "").trim()
   return `${fence(shown)}markdown\n${shown}\n${fence(shown)}`
 }
+// Whichever comes first: an HTML comment, a fenced block (one left open runs to the end, as GitHub draws it) or a code span.
+const COMMENT_OR_CODE = /<!--[\s\S]*?(?:-->|$)|(?:^|\n) {0,3}(`{3,}|~{3,})[^\n]*(?:\n[\s\S]*?\n {0,3}\1[`~]*[ \t]*(?=\n|$)|[\s\S]*$)|(`+)[^`](?:[\s\S]*?[^`])?\2(?!`)/g
+/** `body` with its HTML comments left out, but not what a fenced block or a code span shows as text. */
+const withoutComments = (body: string) => body.replace(COMMENT_OR_CODE, match => (match.startsWith("<!--") ? "" : match))
 /** The last lines of a hunk, up to the line commented on, under its `@@` line. */
 function cutHunk(hunk: string) {
   const [head = "", ...lines] = hunk.split("\n")
@@ -179,12 +188,15 @@ export function parsePicked(ref: PullRef, answer: string, nicknames: Nicknames):
   const reviewNames = new Map(reviews.map(review => [text(review.id), `${who(review.author)} の${REVIEW_STATES[text(review.state)] ?? "レビュー"}`]))
   const threads = nodes(pull.reviewThreads).flatMap(thread => {
     const first = nodes(thread.root)[0]
-    if (first === undefined) return []
+    // A comment's own state tells a draft, its review perhaps not listed.
+    if (first === undefined || text(first.state) === "PENDING") return []
     const review = text(object(first.pullRequestReview).id)
     if (pending.has(review)) return []
     const parent = reviewIds.has(review) ? review : undefined
-    const replies = nodes(thread.replies).filter(reply => text(reply.id) !== text(first.id))
-    const replyCount = Math.max(replies.length, total(thread.replies) - 1)
+    const listed = nodes(thread.replies)
+    const drafts = listed.filter(reply => text(reply.state) === "PENDING").length
+    const replies = listed.filter(reply => text(reply.id) !== text(first.id) && text(reply.state) !== "PENDING")
+    const replyCount = Math.max(replies.length, total(thread.replies) - 1 - drafts)
     const line = typeof thread.line === "number" ? thread.line : typeof thread.originalLine === "number" ? thread.originalLine : null
     const place = `${text(thread.path)}${line === null ? "" : `:${line}`}`
     const isResolved = thread.isResolved === true

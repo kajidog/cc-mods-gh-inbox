@@ -1,7 +1,7 @@
 import type { On } from "claude-code"
 import { expect, mock, test } from "claude-code/testing"
 
-import { parsePicked, parsePullArg, stagedContext } from "../hooks/pick"
+import { parsePicked, parsePullArg, parsePulls, pullsArgv, stagedContext } from "../hooks/pick"
 
 const REF = { host: "github.com", owner: "o", repo: "r", number: 5 }
 const PICK = { command: "inbox", args: "pick 5", origin: { kind: "composer" }, presentation: { isFullscreen: false, columns: 120 } } as const
@@ -23,7 +23,7 @@ const ROOT_T1 = {
   originalCommit: { abbreviatedOid: "aaa1111" },
   pullRequestReview: { id: "R1" },
 }
-const ROOT_T2 = { id: "c3", author: { login: "rev" }, body: "Rename this", url: "u3", diffHunk: "", pullRequestReview: { id: "R1" } }
+const ROOT_T2 = { id: "c3", author: { login: "rev" }, body: "Rename this\n`<!-- span -->` <!-- gone -->\n```html\n<!-- block -->\n```", url: "u3", diffHunk: "", pullRequestReview: { id: "R1" } }
 
 // R1 came with T1 and T2; R3 is only "me" replying in T1; R2 says nothing; P1 is "me"'s review not yet submitted.
 const PULL_ANSWER = JSON.stringify({
@@ -34,7 +34,7 @@ const PULL_ANSWER = JSON.stringify({
         url: "https://github.com/o/r/pull/5",
         headRefOid: "bbb2222cccc",
         reviewThreads: {
-          totalCount: 3,
+          totalCount: 4,
           nodes: [
             {
               id: "T1",
@@ -45,7 +45,14 @@ const PULL_ANSWER = JSON.stringify({
               originalLine: 10,
               resolvedBy: null,
               root: { nodes: [ROOT_T1] },
-              replies: { totalCount: 2, nodes: [{ id: "c1", author: { login: "rev" }, body: ROOT_T1.body }, { id: "c2", author: { login: "me" }, body: "Why?" }] },
+              replies: {
+                totalCount: 3,
+                nodes: [
+                  { id: "c1", author: { login: "rev" }, body: ROOT_T1.body },
+                  { id: "c2", author: { login: "me" }, body: "Why?" },
+                  { id: "c5", author: { login: "me" }, body: "draft reply", state: "PENDING" },
+                ],
+              },
             },
             {
               id: "T2",
@@ -66,6 +73,16 @@ const PULL_ANSWER = JSON.stringify({
               line: 1,
               root: { nodes: [{ id: "c4", author: { login: "me" }, body: "draft note", url: "u8", diffHunk: "", pullRequestReview: { id: "P1" } }] },
               replies: { totalCount: 1, nodes: [{ id: "c4", author: { login: "me" }, body: "draft note" }] },
+            },
+            // A draft whose review is past the reviews listed.
+            {
+              id: "T4",
+              isResolved: false,
+              isOutdated: false,
+              path: "src/d.ts",
+              line: 2,
+              root: { nodes: [{ id: "c6", author: { login: "me" }, body: "old draft", url: "u10", state: "PENDING", diffHunk: "", pullRequestReview: { id: "P9" } }] },
+              replies: { totalCount: 1, nodes: [{ id: "c6", author: { login: "me" }, body: "old draft", state: "PENDING" }] },
             },
           ],
         },
@@ -151,6 +168,13 @@ test("what GitHub does not show is left out of what the model reads, and a long 
   expect(open?.context).toContain("@@ -0,0 +1,30 @@\n…（前の15行は省略）\n+line 16")
   expect(open?.context).toContain("+line 30\n```")
   expect(open?.context).not.toContain("+line 15\n")
+})
+
+test("an HTML comment a code span or a fenced block shows is kept", () => {
+  const [, , , resolved] = parsePicked(REF, PULL_ANSWER, {}).items
+  expect(resolved?.context).toContain("`<!-- span -->`")
+  expect(resolved?.context).toContain("```html\n<!-- block -->\n```")
+  expect(resolved?.context).not.toContain("gone")
 })
 
 test("parsePullArg reads a number of this repository, a name and a URL", () => {
@@ -296,6 +320,32 @@ test("a pending review is not listed, nor its threads", () => {
   const ids = parsePicked(REF, PULL_ANSWER, {}).items.map(item => item.id)
   expect(ids).not.toContain("P1")
   expect(ids).not.toContain("T3")
+})
+
+test("a draft is told by the comment's own state, its review listed or not, and a draft reply is not counted", () => {
+  const picked = parsePicked(REF, PULL_ANSWER, {})
+  expect(picked.items.map(item => item.id)).not.toContain("T4")
+  const open = picked.items.find(item => item.id === "T1")
+  expect(open?.context).not.toContain("draft reply")
+  expect(open?.context).not.toContain("前の返信")
+})
+
+test("the pull request list has those asked of or reviewed by the person too, newest first after this repository's", () => {
+  const argv = pullsArgv("github.com", { host: "github.com", owner: "o", repo: "r" }, [{ host: "github.com", owner: "x", repo: "y" }])
+  const query = argv?.at(-1) ?? ""
+  expect(query).toContain("involves:@me repo:x/y")
+  expect(query).toContain("review-requested:@me repo:x/y")
+  expect(query).toContain("reviewed-by:@me repo:x/y")
+  const pull = (number: number, updatedAt: string) => ({ number, title: `#${number}`, url: `https://github.com/x/y/pull/${number}`, updatedAt, author: null })
+  const answer = {
+    data: {
+      here: { nodes: [{ ...pull(1, "2026-01-01T00:00:00Z"), url: "https://github.com/o/r/pull/1" }] },
+      mine: { nodes: [pull(2, "2026-10-01T00:00:00Z")] },
+      requested: { nodes: [pull(3, "2026-10-03T00:00:00Z")] },
+      reviewed: { nodes: [pull(4, "2026-10-02T00:00:00Z"), pull(2, "2026-10-01T00:00:00Z")] },
+    },
+  }
+  expect(parsePulls(JSON.stringify(answer)).map(one => one.key)).toEqual(["github.com/o/r#1", "github.com/x/y#3", "github.com/x/y#4", "github.com/x/y#2"])
 })
 
 test("without a repository here a bare number says so", async ($, on) => {

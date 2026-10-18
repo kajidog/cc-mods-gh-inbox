@@ -771,7 +771,7 @@ async function loadPulls($: EngineInterface, ctx: Context) {
         errors.push(`${host}: ${message(error)}`)
       }
     }
-    shown = pulls.length === 0 && errors.length > 0 ? { stage: "error", message: `PR を探せませんでした: ${errors.join(" / ")}` } : { stage: "pulls", pulls }
+    shown = pulls.length === 0 && errors.length > 0 ? { stage: "error", message: `PR を探せませんでした: ${errors.join(" / ")}` } : { stage: "pulls", pulls, notes: errors.map(error => `探せなかったもの: ${error}`) }
   } catch (error) {
     shown = { stage: "error", message: `PR を探せませんでした: ${message(error)}` }
   }
@@ -1014,8 +1014,13 @@ export const register: Register = (on, options) => {
           <Text>
             {held.pulls.length === 0
               ? "開いている PR が見つかりません。/inbox pick owner/repo#12 で指定できます。"
-              : "PR を選びます（このリポジトリの PR と、登録したリポジトリで自分が関わる PR）。"}
+              : "PR を選びます（このリポジトリの PR と、登録したリポジトリで自分が関わる・レビューを頼まれた PR）。"}
           </Text>
+          {held.notes.map(note => (
+            <Text key={note} color="warning">
+              {plain(note)}
+            </Text>
+          ))}
           {held.pulls.map((pull, index) => (
             <Button
               key={pull.key}

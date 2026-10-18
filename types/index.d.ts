@@ -71,7 +71,12 @@ export type GhPickItem = {
 export type GhPick =
   | { stage: "loading"; message: string }
   | { stage: "error"; message: string }
-  | { stage: "pulls"; pulls: GhPickPull[] }
+  | {
+      stage: "pulls"
+      pulls: GhPickPull[]
+      /** The hosts that could not be searched, said in a line each. */
+      notes: string[]
+    }
   | {
       stage: "items"
       /** `host/owner/repo#number`. */
