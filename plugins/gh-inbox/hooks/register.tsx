@@ -187,7 +187,8 @@ async function show($: EngineInterface, ctx: Context, notices: readonly InboxNot
   }
   const shown = list.length > SHOWN_AT_ONCE ? [...list.slice(0, SHOWN_AT_ONCE - 1)] : list
   // A hook may have built the text from what anyone wrote on GitHub: made plain again, as it shows.
-  const lines = shown.map(notice => plain(notice.text))
+  const final = list.map(notice => ({ ...notice, text: plain(notice.text) }))
+  const lines = final.slice(0, shown.length).map(notice => notice.text)
   if (shown.length < list.length) lines.push(`GitHub: ほか${list.length - shown.length}件の更新があります（/inbox log）`)
   for (const line of lines) {
     if (ctx.channel === "log") $.ui.log(`GitHub: ${line}`)
@@ -196,6 +197,8 @@ async function show($: EngineInterface, ctx: Context, notices: readonly InboxNot
       if (!sent.isSent) $.ui.toast(line, { timeoutMs: TOAST_MS })
     } else $.ui.toast(line, { timeoutMs: TOAST_MS })
   }
+  // Told once every hook on `inbox.notify` has answered, so what a hook there does is what shows.
+  for (const notice of final) await $.inbox.notified(notice).catch(() => undefined)
 }
 
 /** Writes this session's presence: touched now when `isTouch`, alive now either way. */
@@ -889,10 +892,11 @@ export const register: Register = (on, options) => {
   }
   let timer: Timer | undefined
 
-  // `$.inbox.notify` hands a notice back as the hooks on `inbox.notify` let it through, for another mod to act before it shows.
+  // `$.inbox.notify` hands a notice back as the hooks on `inbox.notify` let it through, for another mod to act before it shows;
+  // `$.inbox.notified` is the hooks' answer told, for another mod to act on what shows.
   on("engine.create", async ($, e, next) => {
     const built = await next(e)
-    const inbox: Inbox = { notify: async notice => notice }
+    const inbox: Inbox = { notify: async notice => notice, notified: async () => undefined }
     return { ...built, inbox }
   })
 

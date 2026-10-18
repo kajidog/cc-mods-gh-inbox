@@ -1,13 +1,18 @@
 {
   "name": "cc-mods-gh-inbox",
-  "description": "Claude Code mods by kajidog: gh-inbox shows GitHub events on your pull request and hands the ones you pick to Claude. Read-only.",
+  "description": "Claude Code mods by kajidog: gh-inbox shows GitHub events on your pull request and hands the ones you pick to Claude (read-only); gh-inbox-tts reads its notices aloud through tts.",
   "owner": {
     "name": "kajidog"
   },
+  "allowCrossMarketplaceDependenciesOn": ["cc-mods-tts"],
   "plugins": [
     {
       "name": "gh-inbox",
-      "source": "./"
+      "source": "./plugins/gh-inbox"
+    },
+    {
+      "name": "gh-inbox-tts",
+      "source": "./plugins/gh-inbox-tts"
     }
   ]
 }

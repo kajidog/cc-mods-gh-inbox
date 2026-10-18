@@ -1,9 +1,11 @@
 {
   "name": "cc-mods-gh-inbox",
-  "version": "0.2.0",
   "private": true,
-  "description": "Claude Code GitHub inbox mod",
+  "description": "Claude Code mods by kajidog around GitHub notices",
   "license": "MIT",
+  "workspaces": [
+    "plugins/*"
+  ],
   "engines": {
     "node": "^22.11.0 || ^24.0.0 || >=26.0.0",
     "npm": ">=10.9.0"
@@ -13,9 +15,9 @@
     "release:version": "changeset version && node scripts/sync-plugin-version.mjs && npm install --package-lock-only --ignore-scripts",
     "check:version": "node scripts/sync-plugin-version.mjs --check",
     "lint": "biome lint --error-on-warnings .",
-    "typecheck": "tsc -p .",
-    "validate": "claude plugin validate --strict .",
-    "test": "claude plugin test .",
+    "validate": "claude plugin validate --strict . && npm run validate --workspaces",
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm test --workspaces",
     "check": "npm run lint && npm run validate && npm run typecheck && npm test"
   },
   "devDependencies": {

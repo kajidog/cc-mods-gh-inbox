@@ -1,0 +1,12 @@
+{
+  "name": "gh-inbox-tts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reads gh-inbox's notices aloud through tts",
+  "license": "MIT",
+  "scripts": {
+    "validate": "claude plugin validate --strict .",
+    "typecheck": "tsc -p .",
+    "test": "claude plugin test ."
+  }
+}

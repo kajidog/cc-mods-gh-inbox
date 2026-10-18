@@ -1,28 +1,11 @@
 # cc-mods-gh-inbox
 
-Claude Code の mod です。  
-今開いているブランチの PR と、登録したリポジトリに届いた GitHub のイベントを Claude Code の中に通知し、選んだものを Claude に渡せるようにします。
+GitHub の通知まわりの Claude Code の mod です。
 
-コメントの投稿、マージ、ラベル付けなどは、この mod の対象外です。
-
-## 通知するもの
-
-| イベント | 例 |
+| mod | 内容 |
 | --- | --- |
-| コメント | Aさんがコメントしました。この null チェック不要では |
-| レビュー | レビューさんが変更を依頼しました。指摘2件 … / 承認しました。 |
-| 行へのコメント | レビューさんがコメントしました。src/a.ts:12 … |
-| コミット | Aさんがコミットしました。fix: … / feat: … (+12 −3) |
-| CI の失敗 | CI / testのCIが失敗しました。Run npm test |
-| マージ・クローズ | #15 がマージされました。 |
-
-- 初めて見る PR では、すでにあるものは通知しません。
-- 自分の操作は、初期設定では通知しません。マージは自分の操作でも通知します。
-- 通知は、生きている窓のうち最後に操作した窓にだけ出します。`/inbox log` にはどの窓でも入ります。
-
-## 必要なもの
-
-- [GitHub CLI](https://cli.github.com/)（`gh`）で `gh auth login` を済ませていること。mod はトークンを持たず、`gh` に問い合わせます。
+| [gh-inbox](plugins/gh-inbox/README.md) | 今のブランチの PR と、登録したリポジトリに届いた GitHub のイベントを通知し、選んだものを Claude に渡す |
+| [gh-inbox-tts](plugins/gh-inbox-tts/README.md) | gh-inbox の通知を [tts](https://github.com/kajidog/cc-mods-tts) で読み上げる |
 
 ## インストール
 
@@ -30,121 +13,28 @@ Claude Code の mod です。
 /plugin install gh-inbox --marketplace kajidog/cc-mods-gh-inbox
 ```
 
-## リポジトリを登録する
-
-ブランチの PR とは別に、リポジトリを登録して、選んだ種類のイベントを通知できます。登録はマシン全体で共有し、どの窓からでも同じものを見ます。
+読み上げも使うなら、tts のマーケットプレイスを登録してから gh-inbox-tts を入れます。gh-inbox と tts がまだなければ、一緒に入ります。
 
 ```
-/inbox repo add kajidog/cc-mods-tts              # 種類を選ぶペインが開きます
-/inbox repo add kajidog/cc-mods-tts comment,push  # 種類を指定して登録
-/inbox repo alias kajidog/cc-mods-tts tts         # 通知の先頭を [tts] にする
+/plugin marketplace add kajidog/cc-mods-tts
+/plugin install gh-inbox-tts --marketplace kajidog/cc-mods-gh-inbox
 ```
-
-| 種類 | 内容 | 例 |
-| --- | --- | --- |
-| `branch` | ブランチ作成 | [tts] Aさんがブランチを作りました。feat/foo |
-| `pr-open` | PR 作成 | [tts] Aさんが PR を作りました。#20 長い回答は要約だけ読む |
-| `pr-merge` | PR マージ | [tts] #20 がマージされました。長い回答は要約だけ読む |
-| `pr-close` | マージせずにクローズ | [tts] #21 がクローズされました。… |
-| `comment` | PR・Issue へのコメント | [tts] レビューさんが #20 にコメントしました。この null チェック不要では |
-| `review` | レビュー | [tts] レビューさんが #20 で変更を依頼しました。… |
-| `review-comment` | 行へのコメント | [tts] レビューさんが #20 にコメントしました。src/a.ts:12 … |
-| `push` | push | [tts] Aさんが main に push しました。fix: … / feat: … (+12 −3) |
-| `ci-failure` | CI（GitHub Actions）の失敗 | [tts] CI / test の CI が失敗しました（feat/foo）。Run npm test |
-
-- 種類を省いて登録すると、`pr-open`・`pr-merge`・`comment`・`review`・`ci-failure` で始まります。
-- その窓で初めて見るリポジトリでは、すでにあるものは通知しません。
-- 今のブランチの PR とリポジトリの両方に同じイベントが届いたときは、1回だけ通知します。今のブランチの PR の最新コミットの CI は、PR の通知のほうで出します。
-- **リポジトリのイベントはリアルタイムではありません。** GitHub の Events API を使っていて、GitHub の説明では、届くまで30秒から6時間かかることがあります。残るのは直近90日・300件までです。
-
-## レビューを Claude に渡す
-
-`/inbox pick` を実行すると、PR のレビューとコメントの一覧がペインに出ます。いくつか選んで「添付する」を押すと、次に送るプロンプトと一緒に Claude に渡します。依頼の文はふつうにプロンプトに書きます。
-
-```
-/inbox pick               # 今のブランチの PR（PR がなければ PR を選ぶ画面から）
-/inbox pick 12            # このリポジトリの #12
-/inbox pick owner/repo#12 # 別のリポジトリの PR
-/inbox clear              # 添付を外す
-```
-
-- 一覧はペインを開いたときに GitHub から取ってきます。通知されていないものや、窓を閉じていた間に付いたものも選べます。
-- レビューごとに、その行コメントのスレッドを下に並べます。レビューを選ぶとスレッドもまとめて選び、スレッドを1つだけ選ぶこともできます。スレッドには返信も含まれます。
-- 解決済みのスレッドも出します（「解決済み」と付きます）。どう対応したかを Claude に確かめてもらうときにも使えます。
-- PR を選ぶ画面には、このリポジトリで開いている PR と、登録したリポジトリで自分が関わっている PR（レビューを頼まれた PR、レビューした PR も含む）が出ます。
-- 添付している間は、プロンプトの上に件数を出します。「選び直す」と「外す」もここから操作できます。
-- 添付は1回送ると外れます。スラッシュコマンドには付きません。
-- 行コメントの差分は、コメントした行までの最後の15行だけを渡します。GitHub の画面に出ない HTML コメントは渡しません。差分とレビューにはどのコミットに対するものかを、前置きには PR の今の先頭コミットを添えます。
-- スレッドとレビューは新しい100件、会話のコメントは新しい30件までです。それより多いときはペインにそう出ます。
-
-## コマンド
-
-| コマンド | 内容 |
-| --- | --- |
-| `/inbox` | 見ている PR と最後に確認した時刻 |
-| `/inbox check` | すぐに確認する |
-| `/inbox log` | このセッションの通知（新しい20件） |
-| `/inbox pick [PR]` | Claude に渡すスレッド・レビュー・コメントを選ぶ |
-| `/inbox clear` | 添付を外す |
-| `/inbox repo` | 登録したリポジトリと、通知する種類の一覧 |
-| `/inbox repo add owner/repo [種類,...]` | 登録する（種類を省くと、選ぶペインを開く） |
-| `/inbox repo set owner/repo [種類,...]` | 種類を変える（種類を省くと、選ぶペインを開く） |
-| `/inbox repo remove owner/repo` | 登録を外す |
-| `/inbox repo alias owner/repo [短い名前]` | 通知の先頭に出す名前（省くと消す） |
-| `/inbox nick <login> <ニックネーム>` | 表示名を短くする（`/inbox nick <login>` で削除、`/inbox nick` で一覧） |
-
-## 他の mod から使う
-
-通知は出す前に `$.inbox.notify` を通ります。他の mod が `inbox.notify` をフックすれば、通知の前に処理を挟めます（読み上げる、別の場所に送る、など）。
-
-```ts
-on("inbox.notify", async ($, e, next) => {
-  if (e.event.kind === "ci") await doSomething(e.text) // 通知の前に走らせる
-  if (e.isSelf) return { deny: "自分の操作は出さない" }  // 出さない
-  return next({ ...e, text: `★ ${e.text}` })            // 文を変えて出す
-})
-```
-
-| 項目 | 内容 |
-| --- | --- |
-| `event` | 通知の元になったイベント。`kind`（`comment` `review` `commit` `ci` `merge` `close` `branch` `open` `push`）、`pull`、`author`、`url`、本文の `items` など |
-| `source` | `pull`: 今のブランチの PR / `repo`: 登録したリポジトリ |
-| `repo` | `host/owner/repo` |
-| `label` | 登録したリポジトリの別名（なければ名前）。今のブランチの PR では `null` |
-| `isSelf` | `gh` でログインしているアカウントの操作か |
-| `text` | 表示する文 |
-
-- 通知を出す窓（最後に操作した窓）でだけ呼ばれます。出し方（toast・log・notify）には関係なく呼ばれます。
-- `{ deny }` で止めた通知は出しませんが、`/inbox log` には入ります。
-- 型は `types/index.d.ts` の `Inbox` と `InboxNotice` です。`plugin.json` の `dependencies` に `gh-inbox` を書くと、`$.inbox` に型が付きます。
-
-## 設定（`/config`）
-
-| 項目 | 初期値 | 内容 |
-| --- | --- | --- |
-| Check interval | 60 | 確認の間隔（秒） |
-| Where notices show | toast | `toast`: トースト / `log`: トランスクリプトの行 / `notify`: デスクトップ通知 |
-| Repositories checked | 20 | 登録できるリポジトリの数 |
-| Notify my own activity | false | 自分の操作も通知する |
-
-<details>
-<summary>GitHub への負荷</summary>
-- 確認は初期設定で60秒ごとです（30秒より短くはできません）。
-- PR 1件の確認は GraphQL 1回、1ポイントです（1時間あたり5000ポイントまで使えます）。
-- PR がないブランチは5分ごとにだけ探します。マージかクローズされた PR は、それ以上問い合わせません。
-- 登録したリポジトリは、1件につき Events API を1回（`ci-failure` を選んでいれば Actions API も1回）問い合わせます。`ETag` を付けるので、変わっていなければ回数制限を使いません。GitHub が返す `X-Poll-Interval`（ふつう60秒）より短い間隔では問い合わせません。
-- `/inbox pick` は、開いたときに GraphQL を1回問い合わせます。PR を選ぶ画面と `/inbox pick 12` では、今のリポジトリを `gh repo view` で1回調べ、PR を選ぶ画面ではホストごとに検索も1回します。
-- 答えは窓の間で分け合います。新しい push のコミット（1回の確認で5件まで）、PR のタイトル、失敗したステップは、必要なときだけ追加で問い合わせます。
-</details>
 
 ## 開発
 
 ```sh
 npm install
-claude --plugin-dir ~/cc-mods-gh-inbox   # 読み込んで起動（変更すると読み込み直されます）
-npm run check                            # lint・検証・型チェック・テスト
-npm run changeset                        # ユーザー向けの変更メモを追加
+claude --plugin-dir ~/cc-mods-gh-inbox/plugins/gh-inbox   # 読み込んで起動（変更すると読み込み直されます）
+npm run check                                             # lint・検証・型チェック・テスト（全部の mod）
+npm run changeset                                         # ユーザー向けの変更メモを追加
 ```
+
+- mod は `plugins/` の下に1つずつ置きます。バージョンは mod ごとに changesets で上げます。
+- gh-inbox-tts を手元で試すときは、gh-inbox と tts も一緒に読み込みます。
+
+  ```sh
+  claude --plugin-dir ~/cc-mods-gh-inbox/plugins/gh-inbox --plugin-dir ~/cc-mods-gh-inbox/plugins/gh-inbox-tts --plugin-dir ~/cc-mods-tts
+  ```
 
 main に入った変更メモから、リリース用の PR が自動で作られます。
 

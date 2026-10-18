@@ -1,4 +1,4 @@
-# cc-mods-gh-inbox
+# gh-inbox
 
 ## 0.2.0
 
