@@ -146,16 +146,28 @@ export function parsePulls(answer: string): { pulls: GhPickPull[]; notes: string
 export type Picked = { title: string; url: string; head: string; items: GhPickItem[]; notes: string[] }
 
 const fence = (body: string) => "`".repeat(Math.max(3, ...[...body.matchAll(/`+/g)].map(run => run[0].length + 1)))
-// Whichever comes first: an HTML comment, an image, an indented block (after a blank line, as one cannot break a paragraph),
-// a fenced block (one left open runs to the end, as GitHub draws it) or a code span.
+const HIDDEN = /<!--[\s\S]*?(?:-->|$)|!\[[^\]]*\]\([^)]*\)/g
+// Whichever comes first: something hidden, an indented block (after a blank line, as one cannot break a paragraph),
+// a closed fenced block (no backtick after a backtick fence) or a code span closed on its line.
 const HIDDEN_OR_CODE =
-  /<!--[\s\S]*?(?:-->|$)|!\[[^\]]*\]\([^)]*\)|(?:^|\n[ \t]*\n)(?: {4}|\t)[^\n]*(?:\n(?:(?: {4}|\t)[^\n]*|[ \t]*(?=\n)))*|(?:^|\n) {0,3}(`{3,}|~{3,})[^\n]*(?:\n[\s\S]*?\n {0,3}\1(?:(?<=`)`|(?<=~)~)*[ \t]*(?=\n|$)|[\s\S]*$)|(`+)[^`](?:[\s\S]*?[^`])?\2(?!`)/g
+  /<!--[\s\S]*?(?:-->|$)|!\[[^\]]*\]\([^)]*\)|(?:^|\n[ \t]*\n)(?: {4}|\t)[^\n]*(?:\n(?:(?: {4}|\t)[^\n]*|[ \t]*(?=\n)))*|(?:^|\n) {0,3}(`{3,}|~{3,})(?:(?<=`)[^`\n]*|(?<=~)[^\n]*)\n(?:[\s\S]*?\n)? {0,3}\1(?:(?<=`)`|(?<=~)~)*[ \t]*(?=\n|$)|(?<!`)(`+)(?!`)[^\n]*?[^`\n]\2(?!`)/g
+const LIST_ITEM = /(?:^|\n) {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|\n|$)/
 /**
  * `body` without its HTML comments, which GitHub does not show, and its images,
  * a badge saying nothing in words; what a code block or a code span shows as
  * text is kept as it is.
+ *
+ * Markdown is read only so far: where GitHub might not take it for code (a
+ * fence left open, a span across lines, an indented block after a list, where
+ * it may go on the list instead) it is stripped all the same, so what is lost
+ * is at most some of a code sample, never something hidden sent on.
  */
-const shownText = (body: string) => body.replace(HIDDEN_OR_CODE, match => (match.startsWith("<!--") || match.startsWith("![") ? "" : match))
+const shownText = (body: string) =>
+  body.replace(HIDDEN_OR_CODE, (match, _fence, _span, at: number) => {
+    if (match.startsWith("<!--") || match.startsWith("![")) return ""
+    const isIndented = /^(?:\n[ \t]*\n)?(?: {4}|\t)/.test(match)
+    return isIndented && LIST_ITEM.test(body.slice(0, at)) ? match.replace(HIDDEN, "") : match
+  })
 const label = (body: string) => snippet(shownText(body))
 /**
  * A body as the model reads it: nothing the person never saw goes with their
