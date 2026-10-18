@@ -146,12 +146,13 @@ export function parsePulls(answer: string): { pulls: GhPickPull[]; notes: string
 export type Picked = { title: string; url: string; head: string; items: GhPickItem[]; notes: string[] }
 
 const fence = (body: string) => "`".repeat(Math.max(3, ...[...body.matchAll(/`+/g)].map(run => run[0].length + 1)))
-// Whichever comes first: an HTML comment, an image, a fenced block (one left open runs to the end, as GitHub draws it) or a code span.
+// Whichever comes first: an HTML comment, an image, an indented block (after a blank line, as one cannot break a paragraph),
+// a fenced block (one left open runs to the end, as GitHub draws it) or a code span.
 const HIDDEN_OR_CODE =
-  /<!--[\s\S]*?(?:-->|$)|!\[[^\]]*\]\([^)]*\)|(?:^|\n) {0,3}(`{3,}|~{3,})[^\n]*(?:\n[\s\S]*?\n {0,3}\1[`~]*[ \t]*(?=\n|$)|[\s\S]*$)|(`+)[^`](?:[\s\S]*?[^`])?\2(?!`)/g
+  /<!--[\s\S]*?(?:-->|$)|!\[[^\]]*\]\([^)]*\)|(?:^|\n[ \t]*\n)(?: {4}|\t)[^\n]*(?:\n(?:(?: {4}|\t)[^\n]*|[ \t]*(?=\n)))*|(?:^|\n) {0,3}(`{3,}|~{3,})[^\n]*(?:\n[\s\S]*?\n {0,3}\1[`~]*[ \t]*(?=\n|$)|[\s\S]*$)|(`+)[^`](?:[\s\S]*?[^`])?\2(?!`)/g
 /**
  * `body` without its HTML comments, which GitHub does not show, and its images,
- * a badge saying nothing in words; what a fenced block or a code span shows as
+ * a badge saying nothing in words; what a code block or a code span shows as
  * text is kept as it is.
  */
 const shownText = (body: string) => body.replace(HIDDEN_OR_CODE, match => (match.startsWith("<!--") || match.startsWith("![") ? "" : match))

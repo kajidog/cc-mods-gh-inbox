@@ -23,7 +23,7 @@ const ROOT_T1 = {
   originalCommit: { abbreviatedOid: "aaa1111" },
   pullRequestReview: { id: "R1" },
 }
-const ROOT_T2 = { id: "c3", author: { login: "rev" }, body: "Rename this\n`<!-- span -->` <!-- gone --> `![alt](kept.png)` ![shot](gone.png)\n```html\n<!-- block -->\n```", url: "u3", diffHunk: "", pullRequestReview: { id: "R1" } }
+const ROOT_T2 = { id: "c3", author: { login: "rev" }, body: "Rename this\n`<!-- span -->` <!-- gone --> `![alt](kept.png)` ![shot](gone.png)\n```html\n<!-- block -->\n```\n\n    <!-- indented -->\n    ![x](indented.png)\n\nafter <!-- gone -->", url: "u3", diffHunk: "", pullRequestReview: { id: "R1" } }
 
 // R1 came with T1 and T2; R3 is only "me" replying in T1; R2 says nothing; P1 is "me"'s review not yet submitted.
 const PULL_ANSWER = JSON.stringify({
@@ -173,11 +173,12 @@ test("what GitHub does not show is left out of what the model reads, and a long 
   expect(open?.context).not.toContain("+line 15\n")
 })
 
-test("an HTML comment or an image a code span or a fenced block shows is kept", () => {
+test("an HTML comment or an image a code span or a code block shows is kept", () => {
   const [, , , resolved] = parsePicked(REF, PULL_ANSWER, {}).items
   expect(resolved?.context).toContain("`<!-- span -->`")
   expect(resolved?.context).toContain("```html\n<!-- block -->\n```")
   expect(resolved?.context).toContain("`![alt](kept.png)`")
+  expect(resolved?.context).toContain("    <!-- indented -->\n    ![x](indented.png)\n\nafter\n````")
   expect(resolved?.context).not.toContain("gone")
 })
 
