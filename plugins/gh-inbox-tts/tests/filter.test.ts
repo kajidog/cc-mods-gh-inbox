@@ -41,9 +41,8 @@ test("the format fills its placeholders, an unknown one left as written", async 
   expect(toSettings({ format: " " }).format).toBe("{text}")
 })
 
-test("what tts says follows what the hooks beneath answered", async () => {
-  const settings = toSettings({ interrupt: true })
-  expect(speechFor(settings, { value: notice({ text: "rewritten" }) })).toEqual({ text: "rewritten", interrupt: true })
-  expect(speechFor(settings, { deny: "muted" })).toBeUndefined()
-  expect(speechFor(settings, { value: notice({ isSelf: true }) })).toBeUndefined()
+test("what tts says is the notice as it shows, filtered and formatted", async () => {
+  const settings = toSettings({ interrupt: true, format: "{body}" })
+  expect(speechFor(settings, notice({ text: "[r] rewritten" }))).toEqual({ text: "rewritten", interrupt: true })
+  expect(speechFor(settings, notice({ isSelf: true }))).toBeUndefined()
 })

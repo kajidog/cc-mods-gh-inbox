@@ -95,13 +95,20 @@ Claude Code の mod です。
 
 ## 他の mod から使う
 
-通知は出す前に `$.inbox.notify` を通ります。他の mod が `inbox.notify` をフックすれば、通知の前に処理を挟めます（読み上げる、別の場所に送る、など）。
+他の mod から、2つのイベントをフックできます。
+
+- `inbox.notify`：通知を出す前。文を変えたり、通知を止めたりできます。
+- `inbox.notified`：`inbox.notify` のフックが全部答えたあと。止められなかった通知が、表示する文のまま届きます。読み上げる、別の場所に送る、のように「出た通知に合わせて何かする」ときはこちらを使います（`inbox.notify` の途中で動くと、あとから他の mod が止めたり変えたりすることがあるためです）。
 
 ```ts
 on("inbox.notify", async ($, e, next) => {
-  if (e.event.kind === "ci") await doSomething(e.text) // 通知の前に走らせる
   if (e.isSelf) return { deny: "自分の操作は出さない" }  // 出さない
   return next({ ...e, text: `★ ${e.text}` })            // 文を変えて出す
+})
+
+on("inbox.notified", async ($, e, next) => {
+  if (e.event.kind === "ci") void doSomething(e.text) // 出た通知に合わせて何かする
+  return next(e)
 })
 ```
 
@@ -115,7 +122,8 @@ on("inbox.notify", async ($, e, next) => {
 | `text` | 表示する文 |
 
 - 通知を出す窓（最後に操作した窓）でだけ呼ばれます。出し方（toast・log・notify）には関係なく呼ばれます。
-- `{ deny }` で止めた通知は出しませんが、`/inbox log` には入ります。
+- `{ deny }` で止めた通知は出さず、`inbox.notified` も呼びませんが、`/inbox log` には入ります。
+- 一度にたくさん届いて「ほか N 件」にまとめた通知も、`inbox.notified` は1件ずつ呼びます。
 - 通知を読み上げる [gh-inbox-tts](../gh-inbox-tts/README.md) は、この仕組みで作っています。
 - 型は `types/index.d.ts` の `Inbox` と `InboxNotice` です。`plugin.json` の `dependencies` に `gh-inbox` を書くと、`$.inbox` に型が付きます。
 

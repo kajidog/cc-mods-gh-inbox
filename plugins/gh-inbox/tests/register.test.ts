@@ -297,3 +297,29 @@ test("a hook on inbox.notify sees each notice first, rewrites what shows or keep
   expect(github.toasts).toEqual(["[r] someoneさんが #3 にコメントしました。Looks good!"])
   expect(await $.command.run({ ...CHECK, args: "log" })).toMatchObject({ text: expect.stringContaining("botさん") })
 })
+
+test("inbox.notified tells each notice no hook refused, as it shows, once every hook on inbox.notify answered", async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const BOT = { ...COMMENT, id: "2", actor: { login: "bot" }, payload: { ...COMMENT.payload, comment: { ...COMMENT.payload.comment, node_id: "IC_2" } } }
+  fakeGitHub(on, [[], [COMMENT, BOT]])
+  const told: string[] = []
+  on("inbox.notified", async (_$, e, next) => {
+    told.push(e.text)
+    return next(e)
+  })
+  // Refused and rewritten on the way back up, after every hook beneath has answered.
+  on("inbox.notify", async (_$, e, next) => {
+    const result = await next(e)
+    const notice = "value" in result ? result.value : undefined
+    if (notice === undefined) return result
+    if (notice.event.author === "bot") return { deny: "muted" }
+    return { value: { ...notice, text: `${notice.text}\u001b[31m!` } }
+  })
+
+  await $.command.run(CHECK)
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  // As it shows: the escape a hook wrote loses its control character.
+  expect(told).toEqual(["[r] someoneさんが #3 にコメントしました。Looks good[31m!"])
+})

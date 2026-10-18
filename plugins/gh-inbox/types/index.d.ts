@@ -119,14 +119,23 @@ export type InboxNotice = {
 }
 
 /**
- * `$.inbox`, for another mod to act before a notice shows. Every notice of a check passes `notify`
- * one by one, in the one session that shows it (the one touched last), whatever the channel.
- * A hook on `inbox.notify` runs first, may rewrite the notice (its `text`) with `next`, or keep it
- * from showing with `{ deny }`; `/inbox log` lists it either way.
+ * `$.inbox`, for another mod to act on the notices. Every notice of a check passes `notify` one by
+ * one, in the one session that shows it (the one touched last), whatever the channel; `/inbox log`
+ * lists it either way.
  */
 export type Inbox = {
-  /** Resolves to the notice as the hooks let it through; rejects when one refused it. */
+  /**
+   * Before a notice shows. A hook on `inbox.notify` may rewrite the notice (its `text`) with `next`,
+   * or keep it from showing with `{ deny }`. Resolves to the notice as the hooks let it through;
+   * rejects when one refused it.
+   */
   notify: (notice: InboxNotice) => Promise<InboxNotice>
+  /**
+   * Once every hook on `inbox.notify` has answered: each notice none refused, as it shows, the ones
+   * counted in the "ほか N 件" line too. A hook on `inbox.notified` acts on what the person sees
+   * (reads it aloud, sends it elsewhere); its answer changes nothing.
+   */
+  notified: (notice: InboxNotice) => Promise<void>
 }
 
 declare module "claude-code" {

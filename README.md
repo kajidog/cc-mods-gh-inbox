@@ -11,10 +11,14 @@ GitHub の通知まわりの Claude Code の mod です。
 
 ```
 /plugin install gh-inbox --marketplace kajidog/cc-mods-gh-inbox
-/plugin install gh-inbox-tts --marketplace kajidog/cc-mods-gh-inbox   # 読み上げも使うなら
 ```
 
-gh-inbox-tts を入れると、gh-inbox と tts もまだなければ一緒に入ります。
+読み上げも使うなら、tts のマーケットプレイスを登録してから gh-inbox-tts を入れます。gh-inbox と tts がまだなければ、一緒に入ります。
+
+```
+/plugin marketplace add kajidog/cc-mods-tts
+/plugin install gh-inbox-tts --marketplace kajidog/cc-mods-gh-inbox
+```
 
 ## 開発
 

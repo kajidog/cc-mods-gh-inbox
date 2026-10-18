@@ -3,16 +3,21 @@
 [gh-inbox](../gh-inbox/README.md) の通知を、[tts](https://github.com/kajidog/cc-mods-tts) で読み上げる Claude Code の mod です。
 
 - 通知が出る窓（最後に操作した窓）でだけ読みます。窓をいくつ開いていても、同じ通知を何度も読みません。
-- 他の mod が止めた通知は読みません。文が書き換えられた通知は、書き換えたあとの文で読みます。
+- 他の mod が止めた通知は読みません。文が書き換えられた通知は、書き換えたあとの文（表示される文）で読みます。
 - 読み方（コード・URL を読まない、など）と声は tts の設定に従います。tts の読み上げモードが `notify` のときも読みます。
 
 ## インストール
 
+tts は別のマーケットプレイスにあるので、先にそのマーケットプレイスを登録します。
+
 ```
+/plugin marketplace add kajidog/cc-mods-tts
 /plugin install gh-inbox-tts --marketplace kajidog/cc-mods-gh-inbox
 ```
 
-gh-inbox と tts がまだなければ、一緒に入ります。tts のセットアップ（VOICEVOX などのエンジン）は [tts の README](https://github.com/kajidog/cc-mods-tts) を見てください。
+- 登録しておけば、gh-inbox と tts がまだないときは一緒に入ります。
+- 登録せずに入れると tts が入らず、gh-inbox-tts は読み込まれません。そのときは `/plugin marketplace add kajidog/cc-mods-tts` のあと `/reload-plugins` を実行してください。
+- tts のセットアップ（VOICEVOX などのエンジン）は [tts の README](https://github.com/kajidog/cc-mods-tts) を見てください。
 
 ## 設定（`/config`）
 

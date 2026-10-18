@@ -61,8 +61,8 @@ export function speechOf(format: string, notice: InboxNotice) {
   return format.replace(/\{(\w+)\}/g, (whole, name: string) => values[name] ?? whole)
 }
 
-/** What to have tts say once the hooks beneath answered a notice; undefined says nothing (refused, or filtered out). */
-export function speechFor(settings: Settings, result: { value: InboxNotice } | { deny: string }) {
-  if (!("value" in result) || !shouldRead(settings, result.value)) return undefined
-  return { text: speechOf(settings.format, result.value), interrupt: settings.interrupt }
+/** What to have tts say for a notice as it shows; undefined says nothing. */
+export function speechFor(settings: Settings, notice: InboxNotice) {
+  if (!shouldRead(settings, notice)) return undefined
+  return { text: speechOf(settings.format, notice), interrupt: settings.interrupt }
 }
