@@ -1,6 +1,6 @@
 {
   "name": "gh-inbox",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Shows GitHub events (comments, reviews, commits, CI failures, merges) for the checked-out branch's pull request and for repositories you register, to read and hand to Claude. Read-only: it never writes to GitHub.",
   "author": {
     "name": "kajidog"
@@ -18,7 +18,11 @@
       "title": "GitHub: Where notices show",
       "description": "toast: a toast over the transcript. log: a dim line in the transcript. notify: a desktop notification through your notification channel.",
       "default": "toast",
-      "options": ["toast", "log", "notify"]
+      "options": [
+        "toast",
+        "log",
+        "notify"
+      ]
     },
     "maxRepos": {
       "type": "number",
