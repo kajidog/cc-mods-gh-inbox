@@ -846,9 +846,10 @@ async function stageChosen($: EngineInterface) {
   await $.ui.close({ id: PICK_PANE })
 }
 
+// A host other than github.com is named, so the same owner/repo#N on two hosts is told apart.
 const pullLabel = (key: string) => {
   const ref = refOfPullKey(key)
-  return ref === null ? key : pullName(ref)
+  return ref === null ? key : `${ref.host === "github.com" ? "" : `${ref.host}/`}${pullName(ref)}`
 }
 
 export const register: Register = (on, options) => {
@@ -1107,6 +1108,8 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const what = held.map(one => `${plain(pullLabel(one.pull))} の${one.items.length}件`).join("、")
     const size = stagedSize(held)
+    // What the other mods draw stays, under this.
+    const below = await next(e)
 
     return (
       <Box flexDirection="column">
@@ -1120,6 +1123,7 @@ export const register: Register = (on, options) => {
           <Button key="gh-inbox-repick" label="選び直す" onPress={() => void openPick($, ctx, refOfPullKey(held[0]?.pull ?? ""))} />
           <Button key="gh-inbox-clear" label="外す" onPress={() => void update($, staged, () => [])} />
         </Box>
+        {below}
       </Box>
     )
   })

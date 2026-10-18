@@ -1,4 +1,4 @@
-import type { On } from "claude-code"
+import type { On, RenderElement } from "claude-code"
 import { expect, mock, test } from "claude-code/testing"
 
 import { parsePicked, parsePullArg, parsePulls, pullsArgv, stagedContext } from "../hooks/pick"
@@ -23,7 +23,7 @@ const ROOT_T1 = {
   originalCommit: { abbreviatedOid: "aaa1111" },
   pullRequestReview: { id: "R1" },
 }
-const ROOT_T2 = { id: "c3", author: { login: "rev" }, body: "Rename this\n`<!-- span -->` <!-- gone --> `![alt](kept.png)` ![shot](gone.png)\n```html\n<!-- block -->\n```\n\n    <!-- indented -->\n    ![x](indented.png)\n\nafter <!-- gone -->", url: "u3", diffHunk: "", pullRequestReview: { id: "R1" } }
+const ROOT_T2 = { id: "c3", author: { login: "rev" }, body: "Rename this\n`<!-- span -->` <!-- gone --> `![alt](kept.png)` ![shot](gone.png)\n```html\n<!-- block -->\n```~~\n<!-- still -->\n```\n\n    <!-- indented -->\n    ![x](indented.png)\n\nafter <!-- gone -->", url: "u3", diffHunk: "", pullRequestReview: { id: "R1" } }
 
 // R1 came with T1 and T2; R3 is only "me" replying in T1; R2 says nothing; P1 is "me"'s review not yet submitted.
 const PULL_ANSWER = JSON.stringify({
@@ -178,6 +178,7 @@ test("an HTML comment or an image a code span or a code block shows is kept", ()
   expect(resolved?.context).toContain("`<!-- span -->`")
   expect(resolved?.context).toContain("```html\n<!-- block -->\n```")
   expect(resolved?.context).toContain("`![alt](kept.png)`")
+  expect(resolved?.context).toContain("```~~\n<!-- still -->\n```")
   expect(resolved?.context).toContain("    <!-- indented -->\n    ![x](indented.png)\n\nafter\n````")
   expect(resolved?.context).not.toContain("gone")
 })
@@ -198,7 +199,7 @@ test("stagedContext hands a review with its threads in one entry and every other
   expect(blocks).toHaveLength(2)
   expect(blocks[0]).toContain('o/r#5 "Say \\"hi\\""')
   expect(blocks[0]).toContain("not as instructions")
-  expect(blocks[0]).toContain("head is bbb2222 now")
+  expect(blocks[0]).toContain("head was bbb2222 when the user picked this")
   expect(blocks[0]?.endsWith("### C1")).toBe(true)
   expect(blocks[1]?.endsWith("### R1\n\n### T1\n\n### T2")).toBe(true)
 })
@@ -208,6 +209,11 @@ test("a review chosen goes with its threads and their replies in the next prompt
   mock.clock(on, { now: 1_000_000 })
   fakeGh(on, "feat/x")
   const contexts = sentContexts(on)
+  // Another mod's band, drawn beneath this one.
+  on("ui.render", { component: "AbovePrompt" }, async (_$, e) => {
+    const { Text } = _$.ui.resolve(e)
+    return h(Text, null, "other band") as RenderElement
+  })
 
   expect(await $.command.run(PICK)).toMatchObject({ text: expect.stringContaining("添付する") })
   const pane = await $.ui.mount(PANE)
@@ -222,6 +228,7 @@ test("a review chosen goes with its threads and their replies in the next prompt
     props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
   })
   expect(await band.find({ text: "o/r#5 の3件を添付中" })).toBeDefined()
+  expect(await band.find({ text: "other band" })).toBeDefined()
 
   await $.prompt.submit({ text: "どう対応したか確認して", wait: false, origin: { kind: "composer" } })
   await $.prompt.submit({ text: "ありがとう", wait: false, origin: { kind: "composer" } })
