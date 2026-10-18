@@ -34,8 +34,13 @@ jobs:
           echo "Claude Code: \`$version\` (${{ matrix.os }})" >> "$GITHUB_STEP_SUMMARY"
       # The same static analysis Claude Code runs when it loads the mod.
       - run: npm run validate
+      # gh-inbox-tts depends on tts: its contract comes from that repository, as an install would bring it.
+      - uses: actions/checkout@v4
+        with:
+          repository: kajidog/cc-mods-tts
+          path: .deps/cc-mods-tts
       - name: Generate mod API types
-        run: claude --init-only --plugin-dir .
+        run: claude --init-only --plugin-dir plugins/gh-inbox --plugin-dir plugins/gh-inbox-tts --plugin-dir .deps/cc-mods-tts
         env:
           # Emit API declarations even in a non-interactive session.
           CLAUDE_CODE_PLUGIN_DIR_WATCH: "1"
