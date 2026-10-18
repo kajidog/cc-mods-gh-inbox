@@ -1,6 +1,6 @@
 {
   "name": "gh-inbox-tts",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Reads gh-inbox's notices aloud through tts",
   "license": "MIT",

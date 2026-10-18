@@ -1,11 +1,14 @@
 {
   "name": "gh-inbox-tts",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Reads gh-inbox's GitHub notices aloud through tts, filtered by kind, repository and whose activity it was.",
   "author": {
     "name": "kajidog"
   },
-  "dependencies": ["gh-inbox", "tts@cc-mods-tts"],
+  "dependencies": [
+    "gh-inbox",
+    "tts@cc-mods-tts"
+  ],
   "userConfig": {
     "kinds": {
       "type": "string",
