@@ -27,6 +27,23 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check:version
+      # A push that changes the version of a mod already there is a release PR merged (adding a mod is not):
+      # only that commit is tagged, so a tag never lands on code that came after its version.
+      - name: Find whether this push is a release
+        id: release
+        shell: bash
+        run: |
+          if git diff --diff-filter=M HEAD^ HEAD -- 'plugins/*/package.json' | grep -qE '^\+\s*"version":'; then
+            echo "is-release=true" >> "$GITHUB_OUTPUT"
+          fi
+      # Tags each version not tagged yet and creates its GitHub release from its CHANGELOG. Run apart from
+      # the release PR: a release PR merged while newer changesets were already on main is tagged too.
+      # Nothing is published to npm.
+      - name: Tag the release
+        if: steps.release.outputs.is-release == 'true'
+        uses: changesets/action/publish@v2.1.2
+        with:
+          script: npm run release:tag
       - name: Create or update release PR
         uses: changesets/action@v2.1.2
         with:
