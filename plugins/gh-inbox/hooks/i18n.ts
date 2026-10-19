@@ -58,6 +58,9 @@ const en = {
   noKinds: "none",
 
   // `/inbox`
+  commandDescription:
+    "GitHub notices for this branch's pull request and registered repositories: status, check now, recent notices, pick review comments to hand to Claude, repositories, nicknames",
+  commandHint: "[status|check|log|pick [pr]|clear|repo [add|set|remove|alias ...]|nick [login [nickname]]]",
   noBranch: "The branch is not known (outside a git repository, or a detached HEAD).",
   noPull: (branch: string) => `${branch} has no pull request.`,
   pullState: (state: string | null): string => (state === "OPEN" ? "watching" : state === "MERGED" ? "merged" : "closed"),
@@ -216,6 +219,8 @@ const ja: Messages = {
   },
   noKinds: "なし",
 
+  commandDescription: "このブランチの PR と登録したリポジトリの GitHub 通知: 状態、すぐに確認、最近の通知、Claude に渡すレビューを選ぶ、リポジトリ、ニックネーム",
+  commandHint: "[status|check|log|pick [PR]|clear|repo [add|set|remove|alias ...]|nick [login [ニックネーム]]]",
   noBranch: "ブランチが分かりません（git リポジトリの外か、detached HEAD です）。",
   noPull: branch => `${branch} の PR はありません。`,
   pullState: state => (state === "OPEN" ? "通知中" : state === "MERGED" ? "マージ済み" : "クローズ済み"),

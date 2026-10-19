@@ -339,3 +339,24 @@ test("notices and commands speak English by default", async ($, on) => {
   expect(await $.command.run({ ...CHECK, args: "repo add owner/repo comment,push" })).toEqual({ text: "Registered Owner/Repo (Comments on PRs and issues, Pushes)." })
   expect(await $.command.run({ ...CHECK, args: "nick" })).toEqual({ text: "No nicknames yet. Add one with /inbox nick <login> <nickname>." })
 })
+
+for (const [language, hint] of [["en", "nick [login [nickname]]"], ["ja", "nick [login [ニックネーム]]"]] as const) {
+  test(`/inbox is listed in the command picker in ${language}`, { options: { language } }, async ($, on) => {
+    mock.store(on, {})
+    mock.clock(on, { now: 1_000_000 })
+    fakeGitHub(on, [[]])
+    const registered: Array<{ description: string; argumentHint?: string }> = []
+    on("command.register", async (_$, e) => {
+      registered.push(e)
+      return { value: { command: e.name } }
+    })
+
+    on("session.id", async () => ({ value: "s1" }))
+    on("session.start", async (_$, e) => ({ cwd: e.cwd }))
+
+    await $.session.start({ cwd: "/repo", surface: "terminal", isInteractive: true })
+    expect(registered).toHaveLength(1)
+    expect(registered[0]?.argumentHint).toContain(hint)
+    expect(registered[0]?.description.startsWith(language === "en" ? "GitHub notices" : "このブランチの PR")).toBe(true)
+  })
+}

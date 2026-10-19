@@ -893,8 +893,8 @@ export const register: Register = (on, options) => {
   on("session.start", async ($, e, next) => {
     await $.command.register({
       name: COMMAND,
-      description: "GitHub notices for this branch's pull request and registered repositories: status, check now, recent notices, pick review comments to hand to Claude, repositories, nicknames",
-      argumentHint: "[status|check|log|pick [pr]|clear|repo [add|set|remove|alias ...]|nick [login [nickname]]]",
+      description: t.commandDescription,
+      argumentHint: t.commandHint,
     })
     ctx.sessionId = await $.session.id()
     const now = await $.clock.now()
