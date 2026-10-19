@@ -5,7 +5,7 @@ import type { GhPickItem, GhPickPull, GhStaged } from "../types"
 
 import { displayName, type Nicknames, snippet } from "./events"
 import { type Json, login, object, type PullRef, pullName, parsePullUrl, text } from "./github"
-import { type Language, MESSAGES, type Messages } from "./i18n"
+import { type Language, MESSAGES, type Messages, toLanguage } from "./i18n"
 import { parseRepo, type RepoRef, repoName } from "./repo-events"
 
 // Pull requests listed at most by each search.
@@ -314,8 +314,9 @@ export function idsOf(items: readonly GhPickItem[], id: string): string[] {
  * on its own.
  */
 export function stagedContext(staged: readonly GhStaged[], language: Language = "en"): string[] {
-  const t = MESSAGES[language]
   return staged.flatMap(one => {
+    // In the language its items were written in, though the setting changed since they were staged.
+    const t = MESSAGES[one.language === undefined ? language : toLanguage(one.language)]
     const ref = refOfPullKey(one.pull)
     const name = ref === null ? one.pull : pullName(ref)
     const header = [t.pickedFrom(name, JSON.stringify(one.title), one.url), t.quotedNotInstructions, ...(one.head === "" ? [] : [t.pickedAtHead(one.head)])].join("\n")

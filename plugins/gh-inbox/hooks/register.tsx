@@ -841,13 +841,13 @@ async function toggleItem($: EngineInterface, id: string) {
 }
 
 /** Stages the pick pane's chosen items in place of what was staged from that pull request. */
-async function stageChosen($: EngineInterface) {
+async function stageChosen($: EngineInterface, ctx: Context) {
   const held = await read($, pick)
   if (held?.stage !== "items") return
   const items = held.items.filter(item => held.chosen.includes(item.id))
   await update($, staged, list => [
     ...list.filter(one => one.pull !== held.pull),
-    ...(items.length === 0 ? [] : [{ pull: held.pull, title: held.title, url: held.url, head: held.head, items }]),
+    ...(items.length === 0 ? [] : [{ pull: held.pull, title: held.title, url: held.url, head: held.head, items, language: ctx.language }]),
   ])
   await $.ui.close({ id: PICK_PANE })
 }
@@ -1107,7 +1107,7 @@ export const register: Register = (on, options) => {
           label={t.attach(held.chosen.length)}
           onPress={() => {
             // After the toggles pressed before it, so it stages what they chose.
-            ctx.toggling = ctx.toggling.then(() => stageChosen($)).catch(() => undefined)
+            ctx.toggling = ctx.toggling.then(() => stageChosen($, ctx)).catch(() => undefined)
           }}
         />
         {toPulls}

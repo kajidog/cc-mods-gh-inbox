@@ -101,6 +101,8 @@ export type GhStaged = {
   /** The head commit's short id when the items were fetched. */
   head: string
   items: GhPickItem[]
+  /** The language the items were written in, so what goes with them is in it too: `en` or `ja`. */
+  language?: string
 }
 
 /** One notice about to be shown, as `$.inbox.notify` takes it. */
