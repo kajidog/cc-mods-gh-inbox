@@ -326,6 +326,34 @@ test("inbox.notified tells each notice no hook refused, as it shows, once every 
   expect(told).toEqual(["[r] someoneさんが #3 にコメントしました。Looks good[31m!"])
 })
 
+test("at a session's first look, what came since another session last looked is listed, not shown", JA, async ($, on) => {
+  // Another session looked at o/r before this one opened, and saw nothing then.
+  mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } }, [`shared-seen:repo:${KEY}`]: { at: 999_000, ids: [] } })
+  const now = Date.parse("2026-10-17T00:00:00Z")
+  const clock = mock.clock(on, { now })
+  const github = fakeGitHub(on, [[COMMENT], []])
+
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual(["GitHub: どの窓も見ていなかったあいだの通知が1件あります（/inbox log）"])
+  expect(await $.command.run({ ...CHECK, args: "log" })).toEqual({
+    text: "[r] someoneさんが #3 にコメントしました。Looks good\n  u（1日前）",
+  })
+
+  // Seen now: the next check tells nothing of it.
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(github.toasts).toHaveLength(1)
+})
+
+test("/inbox log lists what other sessions listed", JA, async ($, on) => {
+  const event = { id: "x", kind: "comment", pull: "o/r#3", author: "a", at: "2026-10-16T23:00:00Z", text: "elsewhere", url: "u", items: [] }
+  mock.store(on, { history: [event] })
+  mock.clock(on, { now: Date.parse("2026-10-17T00:00:00Z") })
+  fakeGitHub(on, [[]])
+
+  expect(await $.command.run({ ...CHECK, args: "log" })).toEqual({ text: "elsewhere\n  u（1時間前）" })
+})
+
 test("notices and commands speak English by default", async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } } })
   const clock = mock.clock(on, { now: 1_000_000 })
