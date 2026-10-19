@@ -42,7 +42,9 @@ export function toSharedSeen(value: unknown): SharedSeen | undefined {
 
 // `pull` names no host: the URL's tells apart the same repository on two hosts.
 const hostOf = (url: string) => /^https?:\/\/([^/]+)/.exec(url)?.[1] ?? ""
-const eventKey = (event: GhEvent) => `${hostOf(event.url)}|${event.pull}|${event.id}`
+// A merge or a close is `merged:#n` or `closed:#n` from a registered repository, `state:merged` or `state:closed` from the branch's pull request.
+const sameId = (id: string) => id.replace(/^(merged|closed):#\d+$/, "state:$1")
+const eventKey = (event: GhEvent) => `${hostOf(event.url)}|${event.pull}|${sameId(event.id)}`
 
 /** The `added` that `held` does not hold yet, each once. */
 export function unheld(held: readonly GhEvent[], added: readonly GhEvent[]): GhEvent[] {

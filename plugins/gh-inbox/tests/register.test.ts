@@ -361,6 +361,23 @@ test("at a first look while another session is alive, what it has not told yet i
   expect(github.toasts).toEqual(["[r] someoneさんが #3 にコメントしました。Looks good"])
 })
 
+test("at a first look while another session is alive and showing, what it has not listed yet is left for it to tell how many", JA, async ($, on) => {
+  const now = Date.parse("2026-10-17T00:00:00Z")
+  mock.store(on, {
+    repos: { [KEY]: { kinds: ["comment"], alias: "r" } },
+    [`shared-seen:repo:${KEY}`]: { at: now - 30_000, ids: [] },
+    // Touched after this one: that one shows.
+    "presence:other": { activeAt: now, aliveAt: now },
+    "presence:": { activeAt: now - 600_000, aliveAt: now },
+  })
+  mock.clock(on, { now })
+  const github = fakeGitHub(on, [[COMMENT]])
+
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual([])
+  expect(await $.command.run({ ...CHECK, args: "log" })).toMatchObject({ text: expect.stringContaining("Looks good") })
+})
+
 test("what a session caught up while another showed is told by the one showing, once", JA, async ($, on) => {
   mock.store(on, { "missed:other": 2 })
   const clock = mock.clock(on, { now: 1_000_000 })

@@ -165,6 +165,13 @@ type Context = {
 }
 
 const pullKey = (ref: PullRef) => `${ref.host}/${pullName(ref)}`
+/**
+ * A check's notices: `fresh` came since this session last looked. At its first look, what came since any
+ * session last looked is `missed` while no other session is alive, `adopted` while one is: that one may not
+ * have told it yet, and this one may be the one showing.
+ */
+type Checked = { fresh: InboxNotice[]; missed: InboxNotice[]; adopted: InboxNotice[] }
+
 const presenceKey = (ctx: Context) => `${PRESENCE_PREFIX}${ctx.sessionId}`
 const historyKey = (ctx: Context) => `${HISTORY_PREFIX}${ctx.sessionId}`
 const missedKey = (ctx: Context) => `${MISSED_PREFIX}${ctx.sessionId}`
@@ -352,12 +359,14 @@ async function fetchPull($: EngineInterface, ctx: Context, ref: PullRef, now: nu
   return pull
 }
 
-/**
- * Checks the branch's pull request; its notices go to `fresh`. At the session's first look, what came
- * since a session last looked goes to `missed` while no other session is alive, to `fresh` while one is
- * (it may not have told it yet, and this one may be the one showing).
- */
-async function checkPull($: EngineInterface, ctx: Context, fresh: InboxNotice[], missed: InboxNotice[], isForced: boolean) {
+/** Which of a check's lists a first look (`own` undefined) or a later one puts its notices in. */
+async function bucketOf($: EngineInterface, ctx: Context, own: unknown, now: number): Promise<keyof Checked> {
+  if (own !== undefined) return "fresh"
+  return (await isAnotherAlive($, ctx, now)) ? "adopted" : "missed"
+}
+
+/** Checks the branch's pull request; its notices go to `checked`. */
+async function checkPull($: EngineInterface, ctx: Context, checked: Checked, isForced: boolean) {
   try {
     const branch = await currentBranch($)
     if (branch === null) {
@@ -389,11 +398,11 @@ async function checkPull($: EngineInterface, ctx: Context, fresh: InboxNotice[],
     const { value: seenByKey = {} } = await $.state.get({ plugin: "gh-inbox", key: "seen" })
     const own = seenForPull(seenByKey, ref)
     const seen = own ?? seenForPull(await sharedSeen($), ref)
-    const isMissed = own === undefined && !(await isAnotherAlive($, ctx, now))
+    const bucket = checked[await bucketOf($, ctx, own, now)]
     const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
     const isSelf = (event: GhEvent) => event.author !== null && event.author === pull.viewer
     for (const event of newEvents(pull, seen, { nicknames, notifySelf: ctx.notifySelf, language: ctx.language }))
-      (isMissed ? missed : fresh).push({ event, source: "pull", repo: repoKey(ref), label: null, isSelf: isSelf(event), text: plain(event.text) })
+      bucket.push({ event, source: "pull", repo: repoKey(ref), label: null, isSelf: isSelf(event), text: plain(event.text) })
     await update($, seenIds, held => ({ ...held, [key]: mergeSeen(held[key] ?? [], pullIds(pull)) }))
     await shareSeen($, key, pullIds(pull), now)
 
@@ -580,7 +589,7 @@ async function titlesFor($: EngineInterface, ref: RepoRef, pending: ReturnType<t
   return titles
 }
 
-/** Checks one registered repository; its notices are returned, and whether the session missed them (see `checkPull`). */
+/** Checks one registered repository; its notices are returned, and the list of a check they go in. */
 async function checkRepo(
   $: EngineInterface,
   ctx: Context,
@@ -588,7 +597,7 @@ async function checkRepo(
   entry: RepoEntry,
   nicknames: Nicknames,
   now: number,
-): Promise<{ notices: InboxNotice[]; isMissed: boolean }> {
+): Promise<{ notices: InboxNotice[]; bucket: keyof Checked }> {
   const ref = refOfKey(key)
   let cache = await fetchRepo($, ctx, ref, entry, now)
   const seenKey = repoSeenKey(ref)
@@ -641,11 +650,11 @@ async function checkRepo(
     text: plain(event.text),
   }))
 
-  return { notices, isMissed: own === undefined && !(await isAnotherAlive($, ctx, now)) }
+  return { notices, bucket: await bucketOf($, ctx, own, now) }
 }
 
-/** Checks every registered repository; their notices go to `fresh`, or to `missed` (see `checkPull`). */
-async function checkRepos($: EngineInterface, ctx: Context, fresh: InboxNotice[], missed: InboxNotice[]) {
+/** Checks every registered repository; their notices go to `checked`. */
+async function checkRepos($: EngineInterface, ctx: Context, checked: Checked) {
   const repos = Object.entries(toRepos(await $.store.get(REPOS_KEY))).slice(0, ctx.maxRepos)
   if (repos.length === 0) return
   const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
@@ -659,8 +668,8 @@ async function checkRepos($: EngineInterface, ctx: Context, fresh: InboxNotice[]
       continue
     }
     try {
-      const { notices, isMissed } = await checkRepo($, ctx, key, entry, nicknames, now)
-      ;(isMissed ? missed : fresh).push(...notices)
+      const { notices, bucket } = await checkRepo($, ctx, key, entry, nicknames, now)
+      checked[bucket].push(...notices)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       ctx.repoErrors.set(key, message)
@@ -680,25 +689,27 @@ async function check($: EngineInterface, ctx: Context, isForced = false) {
 async function runCheck($: EngineInterface, ctx: Context, isForced: boolean) {
   ctx.checks += 1
   try {
-    const fresh: InboxNotice[] = []
-    const missed: InboxNotice[] = []
-    await checkPull($, ctx, fresh, missed, isForced)
-    await checkRepos($, ctx, fresh, missed)
+    const checked: Checked = { fresh: [], missed: [], adopted: [] }
+    await checkPull($, ctx, checked, isForced)
+    await checkRepos($, ctx, checked)
     await touch($, ctx, false)
+    const { fresh, missed, adopted } = checked
     const now = await $.clock.now()
-    if (fresh.length > 0 || missed.length > 0) {
-      const added = [...missed, ...fresh].map(notice => notice.event)
-      // What no session had listed is only listed now: a toast says how much, from the session showing.
-      const caughtUp = unheld(await readHistory($), missed.map(notice => notice.event)).length
-      await update($, events, list => latest([...list, ...added], EVENTS_KEPT))
+    // Only the one touched last shows them.
+    const isShown = await isShowing($, ctx, now)
+    if (fresh.length > 0 || missed.length > 0 || adopted.length > 0) {
+      // What no session had listed and this one does not show is only listed: a toast says how much, from the session showing.
+      const unshown = isShown ? missed : [...missed, ...adopted]
+      const caughtUp = unheld(await readHistory($), unshown.map(notice => notice.event)).length
+      await update($, events, list => latest([...list, ...[...missed, ...adopted, ...fresh].map(notice => notice.event)], EVENTS_KEPT))
       await writeHistory($, ctx, now)
       if (caughtUp > 0) await $.store.set(missedKey(ctx), Number((await $.store.get(missedKey(ctx))) ?? 0) + caughtUp)
     }
-    // Only the one touched last shows them.
-    if (!(await isShowing($, ctx, now))) return
+    if (!isShown) return
     const caughtUp = await claimMissed($)
     if (caughtUp > 0) $.ui.toast(ctx.t.missed(caughtUp), { timeoutMs: TOAST_MS })
-    if (fresh.length > 0) await show($, ctx, fresh)
+    const shown = [...adopted, ...fresh]
+    if (shown.length > 0) await show($, ctx, shown)
   } catch (error) {
     $.ui.log(`gh-inbox: ${error instanceof Error ? error.message : String(error)}`, { to: "debug" })
   } finally {

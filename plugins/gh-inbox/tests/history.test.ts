@@ -31,6 +31,12 @@ test("a notice another session listed already is listed once, the same repositor
   expect(mergeHistories([held, added])).toHaveLength(4)
 })
 
+test("a merge told by the branch's pull request and by its registered repository is listed once", async () => {
+  const fromPull = [event("state:merged", "2026-10-16T00:00:00Z", "o/r#3"), event("state:closed", "2026-10-16T00:00:00Z", "o/r#4")]
+  const fromRepo = [event("merged:#3", "2026-10-16T00:00:00Z", "o/r#3"), event("closed:#4", "2026-10-16T00:00:00Z", "o/r#4")]
+  expect(mergeHistories([fromPull, fromRepo])).toHaveLength(2)
+})
+
 test("a session keeps its newest notices by when they happened, an old batch caught up late included, without their bodies", async () => {
   const recent = Array.from({ length: HISTORY_KEPT }, (_, i) => event(`new${i}`, `2026-10-17T00:00:${String(i % 60).padStart(2, "0")}Z`))
   const old = Array.from({ length: 10 }, (_, i) => event(`old${i}`, "2026-10-01T00:00:00Z"))
