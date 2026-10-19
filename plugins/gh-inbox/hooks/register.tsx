@@ -704,7 +704,10 @@ async function runCheck($: EngineInterface, ctx: Context, isForced: boolean) {
       // What no session had listed and this one does not show is only listed: a toast says how much, from the session showing.
       const unshown = isShown ? missed : [...missed, ...adopted]
       const caughtUp = unheld(await readHistory($), unshown.map(notice => notice.event)).length
-      await update($, events, list => latest([...list, ...[...missed, ...adopted, ...fresh].map(notice => notice.event)], EVENTS_KEPT))
+      // One with no time of its own (a failed check of a commit with none) is kept as of when it was seen.
+      const seenAt = new Date(now).toISOString()
+      const added = [...missed, ...adopted, ...fresh].map(({ event }) => (event.at === "" ? { ...event, at: seenAt } : event))
+      await update($, events, list => latest([...list, ...added], EVENTS_KEPT))
       await writeHistory($, ctx, now)
       if (caughtUp > 0) await $.store.set(missedKey(ctx), { at: now, count: (toMissed(await $.store.get(missedKey(ctx)))?.count ?? 0) + caughtUp })
     }

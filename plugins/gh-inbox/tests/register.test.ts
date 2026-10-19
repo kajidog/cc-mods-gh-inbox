@@ -406,6 +406,23 @@ for (const registered of [true, false]) {
   })
 }
 
+test("a notice with no time of its own is listed as of when it was seen, not behind every other", JA, async ($, on) => {
+  const now = Date.parse("2026-10-17T00:00:00Z")
+  const old = Array.from({ length: 20 }, (_, i) => ({ id: `o${i}`, kind: "comment", pull: "o/r#1", author: "a", at: "2026-10-16T00:00:00Z", text: `old${i}`, url: "u", items: [] }))
+  mock.store(on, {
+    // This session's notices are read before the other's, so nothing before them lends them a time.
+    "history:": { at: 1, events: [] },
+    "history:other": { at: 1, events: old },
+    repos: { [KEY]: { kinds: ["comment"], alias: "r" } },
+    [`shared-seen:repo:${KEY}`]: { at: now - 30_000, ids: [] },
+  })
+  mock.clock(on, { now })
+  fakeGitHub(on, [[{ ...COMMENT, created_at: "" }]])
+
+  await $.command.run(CHECK)
+  expect(await $.command.run({ ...CHECK, args: "log" })).toMatchObject({ text: expect.stringContaining("Looks good") })
+})
+
 test("/inbox log lists what other sessions listed", JA, async ($, on) => {
   const event = { id: "x", kind: "comment", pull: "o/r#3", author: "a", at: "2026-10-16T23:00:00Z", text: "elsewhere", url: "u", items: [] }
   mock.store(on, { "history:other": { at: 1, events: [event] } })
