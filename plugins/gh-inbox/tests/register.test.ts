@@ -474,6 +474,36 @@ test("notices and commands speak English by default", async ($, on) => {
   expect(await $.command.run({ ...CHECK, args: "nick" })).toEqual({ text: "No nicknames yet. Add one with /inbox nick <login> <nickname>." })
 })
 
+test("a session that has ended is not marked alive again by a check still under way", JA, async ($, on) => {
+  // The store, by hand, to see what is written to it.
+  const store = new Map<string, unknown>()
+  const written: string[] = []
+  on("store.get", async (_$, e) => ({ value: store.get(e.key) }))
+  on("store.set", async (_$, e) => {
+    written.push(e.key)
+    store.set(e.key, e.value)
+    return { value: undefined }
+  })
+  on("store.delete", async (_$, e) => {
+    store.delete(e.key)
+    return { value: undefined }
+  })
+  on("store.keys", async () => ({ value: [...store.keys()] }))
+  mock.clock(on, { now: 1_000_000 })
+  fakeGitHub(on, [[]])
+  on("command.register", async (_$, e) => ({ value: { command: e.name } }))
+  on("session.id", async () => ({ value: "s1" }))
+  on("session.start", async (_$, e) => ({ cwd: e.cwd }))
+  on("session.end", async () => ({ sessionId: "s1" }))
+
+  await $.session.start({ cwd: "/repo", surface: "terminal", isInteractive: true })
+  expect(written).toContain("presence:s1")
+  await $.session.end({ reason: "prompt_input_exit", sessionId: "s1", resume: { id: "s1" } })
+  written.length = 0
+  await $.command.run(CHECK)
+  expect(written).not.toContain("presence:s1")
+})
+
 for (const [language, hint] of [["en", "nick [login [nickname]]"], ["ja", "nick [login [ニックネーム]]"]] as const) {
   test(`/inbox is listed in the command picker in ${language}`, { options: { language } }, async ($, on) => {
     mock.store(on, {})

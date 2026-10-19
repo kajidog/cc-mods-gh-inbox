@@ -163,6 +163,8 @@ type Context = {
   toggling: Promise<void>
   /** How many loads the pick pane has started: a load that is no longer the last one is not shown. */
   picking: number
+  /** Whether the session has ended: a check still under way then does not mark it alive again. */
+  isEnded: boolean
 }
 
 const pullKey = (ref: PullRef) => `${ref.host}/${pullName(ref)}`
@@ -230,8 +232,9 @@ async function show($: EngineInterface, ctx: Context, notices: readonly InboxNot
 
 /** Writes this session's presence: touched now when `isTouch`, alive now either way. */
 async function touch($: EngineInterface, ctx: Context, isTouch: boolean) {
-  if (ctx.sessionId === "") return
+  if (ctx.sessionId === "" || ctx.isEnded) return
   const now = await $.clock.now()
+  if (ctx.isEnded) return
   if (isTouch) ctx.activeAt = now
   ctx.touchedAt = now
   const presence: Presence = { activeAt: ctx.activeAt, aliveAt: now }
@@ -1016,6 +1019,7 @@ export const register: Register = (on, options) => {
     retries: new Map(),
     toggling: Promise.resolve(),
     picking: 0,
+    isEnded: false,
   }
   let timer: Timer | undefined
 
@@ -1034,6 +1038,7 @@ export const register: Register = (on, options) => {
       argumentHint: t.commandHint,
     })
     ctx.sessionId = await $.session.id()
+    ctx.isEnded = false
     const now = await $.clock.now()
     await tidy($, now)
     // Notices a session listed before they were shared are shared as it opens again.
@@ -1052,6 +1057,7 @@ export const register: Register = (on, options) => {
   on("session.end", async ($, e, next) => {
     timer?.cancel()
     timer = undefined
+    ctx.isEnded = true
     if (ctx.sessionId !== "") await $.store.delete(presenceKey(ctx))
 
     return next(e)
