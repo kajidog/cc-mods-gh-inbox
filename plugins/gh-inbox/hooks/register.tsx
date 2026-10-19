@@ -166,11 +166,11 @@ async function currentBranch($: EngineInterface) {
   return exitCode === 0 && branch !== "" && branch !== "HEAD" ? branch : null
 }
 
-async function lookUp($: EngineInterface, branch: string, now: number): Promise<Found> {
+async function lookUp($: EngineInterface, ctx: Context, branch: string, now: number): Promise<Found> {
   const { exitCode, stdout, stderr } = await $.process.run(["gh", "pr", "view", "--json", "url,state"])
   if (exitCode !== 0) {
     if (/no (?:open )?pull requests? found/i.test(stderr)) return { branch, ref: null, state: null, lookedAt: now, isDone: false }
-    throw new Error(firstLine(stderr) || `gh pr view exited with ${exitCode}`)
+    throw new Error(firstLine(stderr) || ctx.t.exitedWith("gh pr view", exitCode))
   }
   const answer = JSON.parse(stdout) as { url?: string; state?: PullState }
   const ref = parsePullUrl(answer.url ?? "")
@@ -256,11 +256,11 @@ async function fetchPull($: EngineInterface, ctx: Context, ref: PullRef, now: nu
   const cached = await $.store.get(key)
   if (typeof cached === "object" && cached !== null) {
     const { at, text } = cached as { at?: unknown; text?: unknown }
-    if (typeof at === "number" && typeof text === "string" && now - at < ctx.intervalSeconds * 1000) return parsePull(ref, text)
+    if (typeof at === "number" && typeof text === "string" && now - at < ctx.intervalSeconds * 1000) return parsePull(ref, text, ctx.language)
   }
   const fetched = await $.process.run(pullArgv(ref))
-  if (fetched.exitCode !== 0) throw new Error(firstLine(fetched.stderr) || `gh api exited with ${fetched.exitCode}`)
-  const pull = parsePull(ref, fetched.stdout)
+  if (fetched.exitCode !== 0) throw new Error(firstLine(fetched.stderr) || ctx.t.exitedWith("gh api", fetched.exitCode))
+  const pull = parsePull(ref, fetched.stdout, ctx.language)
   await $.store.set(key, { at: now, text: fetched.stdout })
 
   return pull
@@ -279,7 +279,7 @@ async function checkPull($: EngineInterface, ctx: Context, fresh: InboxNotice[],
     const isStale = ctx.found !== undefined && (ctx.found.ref === null || ctx.found.isDone) && now - ctx.found.lookedAt > LOOKUP_MS
     if (isForced || ctx.found === undefined || ctx.found.branch !== branch || isStale) {
       const before = ctx.found
-      ctx.found = await lookUp($, branch, now)
+      ctx.found = await lookUp($, ctx, branch, now)
       // The same closed pull request found again has nothing more to say.
       if (before?.isDone && before.ref !== null && ctx.found.ref !== null && pullName(before.ref) === pullName(ctx.found.ref) && ctx.found.state !== "OPEN")
         ctx.found.isDone = true
@@ -336,12 +336,12 @@ async function checkPull($: EngineInterface, ctx: Context, fresh: InboxNotice[],
 }
 
 /** Runs a conditional `gh api -i`; a `304` answers with nothing changed. */
-async function ask($: EngineInterface, argv: string[]): Promise<Response> {
+async function ask($: EngineInterface, ctx: Context, argv: string[]): Promise<Response> {
   const run = await $.process.run(argv)
   const response = parseResponse(run.stdout)
   if (response.status === 304) return response
   if (run.exitCode !== 0 || response.status !== 200)
-    throw new Error(firstLine(run.stderr) || `GitHub answered ${response.status || `with exit code ${run.exitCode}`}`)
+    throw new Error(firstLine(run.stderr) || (response.status ? ctx.t.githubAnswered(response.status) : ctx.t.exitedWith("gh api", run.exitCode)))
 
   return response
 }
@@ -376,17 +376,17 @@ async function fetchRepo($: EngineInterface, ctx: Context, ref: RepoRef, entry: 
   let next: RepoCache = cached ?? { at: now, etag: null, poll: DEFAULT_POLL_SECONDS, events: [], runsEtag: null, runs: [] }
   if (dropsRuns) next = { ...next, runsEtag: null, runs: [] }
   if (!isFresh) {
-    const answer = await ask($, eventsArgv(ref, next.etag || null))
+    const answer = await ask($, ctx, eventsArgv(ref, next.etag || null))
     if (answer.status === 200 && id !== undefined && !isAnswerOf(answer.body, id))
-      throw new Error("the name now leads to another repository: remove it and add it again")
+      throw new Error(ctx.t.repoMoved)
     if (answer.status === 200) next = { ...next, etag: answer.headers.etag ?? null, events: parseEvents(answer.body) }
     next = { ...next, at: now, poll: Number(answer.headers["x-poll-interval"]) || next.poll }
   }
   if (wantsRuns) {
     // Runs that cannot be read (Actions turned off, a token without `actions:read`) do not stop the events.
     try {
-      const answer = await ask($, runsArgv(ref, next.runsEtag || null))
-      if (answer.status === 200 && id !== undefined && !isAnswerOf(answer.body, id)) throw new Error("the name now leads to another repository")
+      const answer = await ask($, ctx, runsArgv(ref, next.runsEtag || null))
+      if (answer.status === 200 && id !== undefined && !isAnswerOf(answer.body, id)) throw new Error(ctx.t.repoMoved)
       if (answer.status === 200) next = { ...next, runsEtag: answer.headers.etag ?? "", runs: parseRuns(answer.body) }
     } catch (error) {
       ctx.repoErrors.set(repoKey(ref), `CI: ${error instanceof Error ? error.message : String(error)}`)
@@ -505,7 +505,7 @@ async function checkRepo($: EngineInterface, ctx: Context, key: string, entry: R
   if (seen !== undefined) {
     viewer = await viewerOf($, ctx, ref.host)
     // Without it the person's own activity would pass for someone else's: the repository waits for the next check.
-    if (viewer === "") throw new Error("the login gh uses is not known")
+    if (viewer === "") throw new Error(ctx.t.viewerUnknown)
     const pending = pendingEvents({ kinds: entry.kinds, events: cache.events, viewer }, seen, ctx.notifySelf)
     const isPrimed = entry.kinds.includes("ci-failure") && seen.has(ACTIONS_PRIMED)
     const failedRuns = isPrimed ? cache.runs.filter(run => !seen.has(run.id) && run.headSha !== watchedHead) : []
@@ -679,7 +679,7 @@ async function repoCommand($: EngineInterface, ctx: Context, words: readonly str
       if (entry !== undefined) return t.alreadyRegistered(shown, kindList(t, entry.kinds))
       if (Object.keys(repos).length >= ctx.maxRepos) return t.tooMany(ctx.maxRepos)
       const found = await $.process.run(repoArgv(ref))
-      if (found.exitCode !== 0) return t.cannotRead(shown, firstLine(found.stderr) || `gh api exited with ${found.exitCode}`)
+      if (found.exitCode !== 0) return t.cannotRead(shown, firstLine(found.stderr) || t.exitedWith("gh api", found.exitCode))
       // Registered as GitHub spells it, the key a pull request's URL gives, so their notices are told once.
       const [id = "", fullName = ""] = found.stdout.trim().split("\n")
       const named = parseRepo(`${ref.host}/${fullName}`) ?? ref
@@ -739,7 +739,7 @@ async function loadItems($: EngineInterface, ctx: Context, ref: PullRef) {
   let shown: GhPick
   try {
     const run = await $.process.run(pickArgv(ref))
-    if (run.exitCode !== 0) throw new Error(firstLine(run.stderr) || `gh api exited with ${run.exitCode}`)
+    if (run.exitCode !== 0) throw new Error(firstLine(run.stderr) || ctx.t.exitedWith("gh api", run.exitCode))
     const picked = parsePicked(ref, run.stdout, toNicknames(await $.store.get(NICKNAMES_KEY)), ctx.language)
     // Keyed as GitHub spells it, whatever case was typed, so a pull request is staged once.
     const key = pullKeyOfUrl(picked.url, ref)
@@ -775,7 +775,7 @@ async function loadPulls($: EngineInterface, ctx: Context, failure?: string) {
       if (argv === null) continue
       try {
         const run = await $.process.run(argv)
-        if (run.exitCode !== 0) throw new Error(firstLine(run.stderr) || `gh api exited with ${run.exitCode}`)
+        if (run.exitCode !== 0) throw new Error(firstLine(run.stderr) || t.exitedWith("gh api", run.exitCode))
         const found = parsePulls(run.stdout, ctx.language)
         pulls.push(...found.pulls.filter(pull => !pulls.some(one => one.key === pull.key)))
         notes.push(...found.notes)
@@ -805,7 +805,7 @@ async function pickCommand($: EngineInterface, ctx: Context, words: readonly str
     if (branch !== null && ctx.found?.branch === branch) ref = ctx.found.ref
     else if (branch !== null)
       // A branch with no pull request is not a failure; anything else is said above the list.
-      ref = await lookUp($, branch, now).then(
+      ref = await lookUp($, ctx, branch, now).then(
         found => found.ref,
         error => {
           failure = ctx.t.branchPullFailed(branch, message(error))

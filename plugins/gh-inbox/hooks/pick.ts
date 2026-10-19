@@ -106,8 +106,8 @@ export function pullsArgv(host: string, here: RepoRef | null, others: readonly R
   return [...ghGraphql(host), "-f", `query=query { ${searches.join(" ")} }`]
 }
 
-const throwErrors = (json: Json) => {
-  if (Array.isArray(json.errors) && json.errors.length > 0) throw new Error(text(object(json.errors[0]).message) || "GitHub answered with an error")
+const throwErrors = (t: Messages, json: Json) => {
+  if (Array.isArray(json.errors) && json.errors.length > 0) throw new Error(text(object(json.errors[0]).message) || t.githubError)
 }
 
 /**
@@ -118,7 +118,7 @@ const throwErrors = (json: Json) => {
 export function parsePulls(answer: string, language: Language = "en"): { pulls: GhPickPull[]; notes: string[] } {
   const t = MESSAGES[language]
   const json = object(JSON.parse(answer))
-  throwErrors(json)
+  throwErrors(t, json)
   const data = object(json.data)
   const pulls: GhPickPull[] = []
   const mine = Object.keys(MINE).flatMap(alias => nodes(data[alias])).sort((a, b) => text(b.updatedAt).localeCompare(text(a.updatedAt)))
@@ -200,9 +200,9 @@ const oid = (value: unknown) => text(object(value).abbreviatedOid)
 export function parsePicked(ref: PullRef, answer: string, nicknames: Nicknames, language: Language = "en"): Picked {
   const t = MESSAGES[language]
   const json = object(JSON.parse(answer))
-  throwErrors(json)
+  throwErrors(t, json)
   const pull = object(object(object(json.data).repository).pullRequest)
-  if (Object.keys(pull).length === 0) throw new Error(`${pullName(ref)} was not found`)
+  if (Object.keys(pull).length === 0) throw new Error(t.notFound(pullName(ref)))
   const who = (value: unknown) => displayName(login(value), nicknames, language)
 
   const allReviews = nodes(pull.reviews)

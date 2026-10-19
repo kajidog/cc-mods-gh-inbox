@@ -1,3 +1,5 @@
+import { type Language, MESSAGES } from "./i18n"
+
 export type PullRef = { host: string; owner: string; repo: string; number: number }
 export type PullState = "OPEN" | "CLOSED" | "MERGED"
 
@@ -116,14 +118,15 @@ export const login = (value: unknown) => {
 }
 
 /** Reads `PULL_QUERY`'s answer; throws with GitHub's own words when it carries errors. */
-export function parsePull(ref: PullRef, answer: string): Pull {
+export function parsePull(ref: PullRef, answer: string, language: Language = "en"): Pull {
+  const t = MESSAGES[language]
   const json = object(JSON.parse(answer))
   if (Array.isArray(json.errors) && json.errors.length > 0) {
-    throw new Error(text(object(json.errors[0]).message) || "GitHub answered with an error")
+    throw new Error(text(object(json.errors[0]).message) || t.githubError)
   }
   const data = object(json.data)
   const pull = object(object(data.repository).pullRequest)
-  if (Object.keys(pull).length === 0) throw new Error(`${pullName(ref)} was not found`)
+  if (Object.keys(pull).length === 0) throw new Error(t.notFound(pullName(ref)))
 
   const state = text(pull.state)
   const commits = nodes(pull.commits).map(node => {

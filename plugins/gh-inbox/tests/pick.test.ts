@@ -436,3 +436,9 @@ test("the pick pane and the band speak English by default", async ($, on) => {
   expect(await band.find({ text: "GitHub: 3 items of o/r#5 attached" })).toBeDefined()
   expect(await $.command.run({ ...PICK, args: "clear" })).toEqual({ text: "Detached 3 items." })
 })
+
+test("a pull request that does not exist is said so in the language set", () => {
+  const missing = JSON.stringify({ data: { repository: { pullRequest: null } } })
+  expect(() => parsePicked(REF, missing, {})).toThrow("o/r#5 was not found")
+  expect(() => parsePicked(REF, missing, {}, "ja")).toThrow("o/r#5 が見つかりません")
+})

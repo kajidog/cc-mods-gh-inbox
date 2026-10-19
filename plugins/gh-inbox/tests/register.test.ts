@@ -255,7 +255,7 @@ test("a repository whose name now leads to another one is not told about", JA, a
   await clock.advance(61_000)
   await $.command.run(CHECK)
   expect(github.toasts).toEqual([])
-  expect(await $.command.run({ ...CHECK, args: "repo" })).toMatchObject({ text: expect.stringContaining("another repository") })
+  expect(await $.command.run({ ...CHECK, args: "repo" })).toMatchObject({ text: expect.stringContaining("別のリポジトリを指しています") })
 })
 
 test("the failed steps of at most a few runs are looked up at one check, the rest told without", JA, async ($, on) => {
