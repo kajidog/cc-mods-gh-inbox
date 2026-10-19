@@ -2,18 +2,43 @@ import { expect, test } from "claude-code/testing"
 
 import type { GhEvent } from "../types"
 
-import { addToHistory, HISTORY_KEPT, latest, unheld } from "../hooks/history"
+import { HISTORY_KEPT, latest, mergeHistories, toKept, unheld } from "../hooks/history"
 
-const event = (id: string, at: string, pull = "o/r#1"): GhEvent => ({ id, kind: "comment", pull, author: "a", at, text: id, url: "u", items: [] })
+const event = (id: string, at: string, pull = "o/r#1", url = "https://github.com/o/r/pull/1"): GhEvent => ({
+  id,
+  kind: "comment",
+  pull,
+  author: "a",
+  at,
+  text: id,
+  url,
+  items: [{ body: "long body" }],
+})
 
-test("a notice another session added already is not added twice; the newest are kept", async () => {
+test("a notice another session listed already is listed once, the same repository on another host apart", async () => {
   const held = [event("1", "2026-10-16T00:00:00Z")]
-  const added = [event("1", "2026-10-16T00:00:00Z"), event("1", "2026-10-16T00:00:00Z", "o/r#2"), event("2", "2026-10-16T01:00:00Z")]
-  expect(unheld(held, added).map(one => `${one.pull} ${one.id}`)).toEqual(["o/r#2 1", "o/r#1 2"])
-  expect(addToHistory(held, added)).toHaveLength(3)
+  const added = [
+    event("1", "2026-10-16T00:00:00Z"),
+    event("1", "2026-10-16T00:00:00Z", "o/r#2"),
+    event("1", "2026-10-16T00:00:00Z", "o/r#1", "https://ghe.example.com/o/r/pull/1"),
+    event("2", "2026-10-16T01:00:00Z"),
+  ]
+  expect(unheld(held, added).map(one => `${one.url} ${one.pull} ${one.id}`)).toEqual([
+    "https://github.com/o/r/pull/1 o/r#2 1",
+    "https://ghe.example.com/o/r/pull/1 o/r#1 1",
+    "https://github.com/o/r/pull/1 o/r#1 2",
+  ])
+  expect(mergeHistories([held, added])).toHaveLength(4)
+})
 
-  const many = Array.from({ length: HISTORY_KEPT + 5 }, (_, i) => event(String(i), "2026-10-16T00:00:00Z"))
-  expect(addToHistory([], many).at(0)?.id).toBe("5")
+test("a session keeps its newest notices by when they happened, an old batch caught up late included, without their bodies", async () => {
+  const recent = Array.from({ length: HISTORY_KEPT }, (_, i) => event(`new${i}`, `2026-10-17T00:00:${String(i % 60).padStart(2, "0")}Z`))
+  const old = Array.from({ length: 10 }, (_, i) => event(`old${i}`, "2026-10-01T00:00:00Z"))
+  const kept = toKept([...recent, ...old], 5)
+  expect(kept.at).toBe(5)
+  expect(kept.events).toHaveLength(HISTORY_KEPT)
+  expect(kept.events.some(one => one.id.startsWith("old"))).toBe(false)
+  expect(kept.events.every(one => one.items.length === 0)).toBe(true)
 })
 
 test("latest lists by when it happened, one with no time beside the one added before it", async () => {

@@ -7,14 +7,17 @@ import { displayName, mergeSeen, newEvents, type Nicknames, plain, pullIds } fro
 import { type PullRef, type PullState, parsePull, parsePullUrl, pullArgv, pullName } from "./github"
 import {
   addSharedSeen,
-  addToHistory,
-  HISTORY_KEY,
+  HISTORIES_KEPT,
+  HISTORY_PREFIX,
   latest,
   logText,
+  MISSED_PREFIX,
+  mergeHistories,
   parseLog,
-  SHARED_SEEN_KEPT_MS,
+  SHARED_KEPT_MS,
   SHARED_SEEN_PREFIX,
-  toHistory,
+  toKept,
+  toSessionHistory,
   toSharedSeen,
   unheld,
 } from "./history"
@@ -163,6 +166,8 @@ type Context = {
 
 const pullKey = (ref: PullRef) => `${ref.host}/${pullName(ref)}`
 const presenceKey = (ctx: Context) => `${PRESENCE_PREFIX}${ctx.sessionId}`
+const historyKey = (ctx: Context) => `${HISTORY_PREFIX}${ctx.sessionId}`
+const missedKey = (ctx: Context) => `${MISSED_PREFIX}${ctx.sessionId}`
 const staleMs = (ctx: Context) => STALE_INTERVALS * ctx.intervalSeconds * 1000
 
 function toNicknames(value: unknown): Nicknames {
@@ -238,9 +243,21 @@ async function isShowing($: EngineInterface, ctx: Context, now: number) {
   return active === undefined || active === ctx.sessionId
 }
 
+/** Whether a session other than this one is alive: one that may not have told what came lately yet. */
+async function isAnotherAlive($: EngineInterface, ctx: Context, now: number) {
+  for (const key of await $.store.keys()) {
+    if (!key.startsWith(PRESENCE_PREFIX) || key === presenceKey(ctx)) continue
+    const presence = toPresence(await $.store.get(key))
+    if (presence !== undefined && now - presence.aliveAt <= staleMs(ctx)) return true
+  }
+
+  return false
+}
+
 /** Removes what sessions that never ended cleanly left behind. */
 async function tidy($: EngineInterface, now: number) {
   const repos = toRepos(await $.store.get(REPOS_KEY))
+  const histories: Array<[string, number]> = []
   for (const key of await $.store.keys()) {
     const value = await $.store.get(key)
     if (key.startsWith(PRESENCE_PREFIX)) {
@@ -252,7 +269,11 @@ async function tidy($: EngineInterface, now: number) {
     } else if (key.startsWith(REPO_CACHE_PREFIX)) {
       if (now - (toRepoCache(value)?.at ?? 0) > CACHE_KEPT_MS) await $.store.delete(key)
     } else if (key.startsWith(SHARED_SEEN_PREFIX)) {
-      if (now - (toSharedSeen(value)?.at ?? 0) > SHARED_SEEN_KEPT_MS) await $.store.delete(key)
+      if (now - (toSharedSeen(value)?.at ?? 0) > SHARED_KEPT_MS) await $.store.delete(key)
+    } else if (key.startsWith(HISTORY_PREFIX)) {
+      const at = toSessionHistory(value)?.at
+      if (at === undefined || now - at > SHARED_KEPT_MS) await $.store.delete(key)
+      else histories.push([key, at])
     } else if (key.startsWith(TITLES_PREFIX)) {
       if (!(key.slice(TITLES_PREFIX.length) in repos)) await $.store.delete(key)
     } else if (key.startsWith("seen:")) {
@@ -260,6 +281,37 @@ async function tidy($: EngineInterface, now: number) {
       await $.store.delete(key)
     }
   }
+  // The notices of the sessions written to last are kept.
+  histories.sort((a, b) => b[1] - a[1])
+  for (const [key] of histories.slice(HISTORIES_KEPT)) await $.store.delete(key)
+}
+
+/** Every session's notices, each once. */
+async function readHistory($: EngineInterface) {
+  const histories: GhEvent[][] = []
+  for (const key of await $.store.keys())
+    if (key.startsWith(HISTORY_PREFIX)) histories.push(toSessionHistory(await $.store.get(key))?.events ?? [])
+
+  return mergeHistories(histories)
+}
+
+/** Writes this session's notices where every session reads them. */
+async function writeHistory($: EngineInterface, ctx: Context, now: number) {
+  const { value: list = [] } = await $.state.get({ plugin: "gh-inbox", key: "events" })
+  if (list.length > 0) await $.store.set(historyKey(ctx), toKept(list, now))
+}
+
+/** How many notices sessions caught up while not showing them, taken off the store. */
+async function claimMissed($: EngineInterface) {
+  let count = 0
+  for (const key of await $.store.keys()) {
+    if (!key.startsWith(MISSED_PREFIX)) continue
+    const value = await $.store.get(key)
+    count += typeof value === "number" ? value : 0
+    await $.store.delete(key)
+  }
+
+  return count
 }
 
 /** The ids any session has seen, keyed as a session's own. */
@@ -302,7 +354,8 @@ async function fetchPull($: EngineInterface, ctx: Context, ref: PullRef, now: nu
 
 /**
  * Checks the branch's pull request; its notices go to `fresh`. At the session's first look, what came
- * since another session last looked (or while none was open) goes to `missed`.
+ * since a session last looked goes to `missed` while no other session is alive, to `fresh` while one is
+ * (it may not have told it yet, and this one may be the one showing).
  */
 async function checkPull($: EngineInterface, ctx: Context, fresh: InboxNotice[], missed: InboxNotice[], isForced: boolean) {
   try {
@@ -336,10 +389,11 @@ async function checkPull($: EngineInterface, ctx: Context, fresh: InboxNotice[],
     const { value: seenByKey = {} } = await $.state.get({ plugin: "gh-inbox", key: "seen" })
     const own = seenForPull(seenByKey, ref)
     const seen = own ?? seenForPull(await sharedSeen($), ref)
+    const isMissed = own === undefined && !(await isAnotherAlive($, ctx, now))
     const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
     const isSelf = (event: GhEvent) => event.author !== null && event.author === pull.viewer
     for (const event of newEvents(pull, seen, { nicknames, notifySelf: ctx.notifySelf, language: ctx.language }))
-      (own === undefined ? missed : fresh).push({ event, source: "pull", repo: repoKey(ref), label: null, isSelf: isSelf(event), text: plain(event.text) })
+      (isMissed ? missed : fresh).push({ event, source: "pull", repo: repoKey(ref), label: null, isSelf: isSelf(event), text: plain(event.text) })
     await update($, seenIds, held => ({ ...held, [key]: mergeSeen(held[key] ?? [], pullIds(pull)) }))
     await shareSeen($, key, pullIds(pull), now)
 
@@ -587,7 +641,7 @@ async function checkRepo(
     text: plain(event.text),
   }))
 
-  return { notices, isMissed: own === undefined }
+  return { notices, isMissed: own === undefined && !(await isAnotherAlive($, ctx, now)) }
 }
 
 /** Checks every registered repository; their notices go to `fresh`, or to `missed` (see `checkPull`). */
@@ -631,15 +685,18 @@ async function runCheck($: EngineInterface, ctx: Context, isForced: boolean) {
     await checkPull($, ctx, fresh, missed, isForced)
     await checkRepos($, ctx, fresh, missed)
     await touch($, ctx, false)
-    if (fresh.length === 0 && missed.length === 0) return
-    const added = [...missed, ...fresh].map(notice => notice.event)
-    await update($, events, list => [...list, ...added].slice(-EVENTS_KEPT))
-    // Every session adds to the shared history; a notice another session added already is not added twice.
-    const history = toHistory(await $.store.get(HISTORY_KEY))
-    const caughtUp = unheld(history, missed.map(notice => notice.event)).length
-    await $.store.set(HISTORY_KEY, addToHistory(history, added))
-    // Only the one touched last shows them. What no session had listed is only listed now: a toast says how much.
-    if (!(await isShowing($, ctx, await $.clock.now()))) return
+    const now = await $.clock.now()
+    if (fresh.length > 0 || missed.length > 0) {
+      const added = [...missed, ...fresh].map(notice => notice.event)
+      // What no session had listed is only listed now: a toast says how much, from the session showing.
+      const caughtUp = unheld(await readHistory($), missed.map(notice => notice.event)).length
+      await update($, events, list => latest([...list, ...added], EVENTS_KEPT))
+      await writeHistory($, ctx, now)
+      if (caughtUp > 0) await $.store.set(missedKey(ctx), Number((await $.store.get(missedKey(ctx))) ?? 0) + caughtUp)
+    }
+    // Only the one touched last shows them.
+    if (!(await isShowing($, ctx, now))) return
+    const caughtUp = await claimMissed($)
     if (caughtUp > 0) $.ui.toast(ctx.t.missed(caughtUp), { timeoutMs: TOAST_MS })
     if (fresh.length > 0) await show($, ctx, fresh)
   } catch (error) {
@@ -767,6 +824,7 @@ async function repoCommand($: EngineInterface, ctx: Context, words: readonly str
       await writeRepo($, key, () => undefined)
       await $.store.delete(`${REPO_CACHE_PREFIX}${key}`)
       await $.store.delete(`${TITLES_PREFIX}${key}`)
+      await $.store.delete(`${SHARED_SEEN_PREFIX}${repoSeenKey(refOfKey(key))}`)
       await update($, seenIds, ({ [repoSeenKey(refOfKey(key))]: _, ...others }) => others)
       ctx.repoErrors.delete(key)
       return t.removed(shown)
@@ -959,6 +1017,8 @@ export const register: Register = (on, options) => {
     ctx.sessionId = await $.session.id()
     const now = await $.clock.now()
     await tidy($, now)
+    // Notices a session listed before they were shared are shared as it opens again.
+    await writeHistory($, ctx, now)
     // A reload keeps the session's last touch; a new session counts as touched as it opens.
     ctx.activeAt = toPresence(await $.store.get(presenceKey(ctx)))?.activeAt ?? now
     await touch($, ctx, false)
@@ -1019,7 +1079,7 @@ export const register: Register = (on, options) => {
         await check($, ctx, true)
         return { text: await status($, ctx) }
       case "log": {
-        const list = latest(toHistory(await $.store.get(HISTORY_KEY)), LOG_SHOWN)
+        const list = latest(await readHistory($), LOG_SHOWN)
         if (list.length === 0) return { text: t.noLog }
         const now = await $.clock.now()
         const when = (event: GhEvent) => {

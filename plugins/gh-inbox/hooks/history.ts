@@ -4,14 +4,21 @@ import type { GhEvent } from "../types"
 
 import { mergeSeen } from "./events"
 
-export const HISTORY_KEY = "history"
-export const HISTORY_KEPT = 200
+/** Each session's own notices, under `history:<session id>`: no session writes another's, so none is lost to a race. */
+export const HISTORY_PREFIX = "history:"
+/** Notices kept per session, the newest by when they happened. */
+export const HISTORY_KEPT = 50
+/** Sessions whose notices are kept, those written to last. */
+export const HISTORIES_KEPT = 20
+/** How many notices a session caught up while it was not the one showing them, under `missed:<session id>`. */
+export const MISSED_PREFIX = "missed:"
 /** The ids any session has seen, one key per pull request or `repo:host/owner/repo`, as a session's own seen ids are keyed. */
 export const SHARED_SEEN_PREFIX = "shared-seen:"
-// Seen ids no session has looked at for this long are dropped: what came after is not caught up.
-export const SHARED_SEEN_KEPT_MS = 30 * 24 * 60 * 60 * 1000
+// What no session has written to for this long is dropped: seen ids, so what came after is not caught up; a session's notices.
+export const SHARED_KEPT_MS = 30 * 24 * 60 * 60 * 1000
 
 export type SharedSeen = { at: number; ids: string[] }
+export type SessionHistory = { at: number; events: GhEvent[] }
 
 const isEvent = (value: unknown): value is GhEvent => {
   if (typeof value !== "object" || value === null) return false
@@ -19,7 +26,12 @@ const isEvent = (value: unknown): value is GhEvent => {
   return typeof id === "string" && typeof pull === "string" && typeof text === "string" && typeof url === "string" && typeof at === "string"
 }
 
-export const toHistory = (value: unknown): GhEvent[] => (Array.isArray(value) ? value.filter(isEvent) : [])
+export function toSessionHistory(value: unknown): SessionHistory | undefined {
+  if (typeof value !== "object" || value === null) return undefined
+  const { at, events } = value as { at?: unknown; events?: unknown }
+  if (typeof at !== "number" || !Array.isArray(events)) return undefined
+  return { at, events: events.filter(isEvent) }
+}
 
 export function toSharedSeen(value: unknown): SharedSeen | undefined {
   if (typeof value !== "object" || value === null) return undefined
@@ -28,7 +40,9 @@ export function toSharedSeen(value: unknown): SharedSeen | undefined {
   return { at, ids: ids.filter((id): id is string => typeof id === "string") }
 }
 
-const eventKey = (event: GhEvent) => `${event.pull}|${event.id}`
+// `pull` names no host: the URL's tells apart the same repository on two hosts.
+const hostOf = (url: string) => /^https?:\/\/([^/]+)/.exec(url)?.[1] ?? ""
+const eventKey = (event: GhEvent) => `${hostOf(event.url)}|${event.pull}|${event.id}`
 
 /** The `added` that `held` does not hold yet, each once. */
 export function unheld(held: readonly GhEvent[], added: readonly GhEvent[]): GhEvent[] {
@@ -42,8 +56,14 @@ export function unheld(held: readonly GhEvent[], added: readonly GhEvent[]): GhE
   })
 }
 
-/** `held` with the `added` it does not hold yet, the newest `HISTORY_KEPT` kept. */
-export const addToHistory = (held: readonly GhEvent[], added: readonly GhEvent[]) => [...held, ...unheld(held, added)].slice(-HISTORY_KEPT)
+/** Every session's notices together, each once. */
+export const mergeHistories = (histories: readonly (readonly GhEvent[])[]) => unheld([], histories.flat())
+
+/** What a session keeps of its notices: the newest `HISTORY_KEPT`, without the bodies only a prompt reads. */
+export const toKept = (events: readonly GhEvent[], now: number): SessionHistory => ({
+  at: now,
+  events: latest(unheld([], events), HISTORY_KEPT).map(event => ({ ...event, items: [] })),
+})
 
 /** `seen` with `ids` added, looked at `now`. */
 export const addSharedSeen = (seen: SharedSeen | undefined, ids: readonly string[], now: number): SharedSeen => ({

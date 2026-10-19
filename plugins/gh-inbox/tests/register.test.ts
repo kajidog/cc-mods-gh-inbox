@@ -345,9 +345,47 @@ test("at a session's first look, what came since another session last looked is 
   expect(github.toasts).toHaveLength(1)
 })
 
+test("at a first look while another session is alive, what it has not told yet is notified as it comes", JA, async ($, on) => {
+  const now = Date.parse("2026-10-17T00:00:00Z")
+  mock.store(on, {
+    repos: { [KEY]: { kinds: ["comment"], alias: "r" } },
+    [`shared-seen:repo:${KEY}`]: { at: now - 30_000, ids: [] },
+    // Alive, but touched before this one opened: this one shows.
+    "presence:other": { activeAt: now - 600_000, aliveAt: now - 30_000 },
+    "presence:": { activeAt: now, aliveAt: now },
+  })
+  mock.clock(on, { now })
+  const github = fakeGitHub(on, [[COMMENT]])
+
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual(["[r] someoneさんが #3 にコメントしました。Looks good"])
+})
+
+test("what a session caught up while another showed is told by the one showing, once", JA, async ($, on) => {
+  mock.store(on, { "missed:other": 2 })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const github = fakeGitHub(on, [[]])
+
+  await $.command.run(CHECK)
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual(["GitHub: どの窓も見ていなかったあいだの通知が2件あります（/inbox log）"])
+})
+
+test("a repository removed and registered again starts from a first look, not from what was seen before", JA, async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } }, [`shared-seen:repo:${KEY}`]: { at: 999_000, ids: [] } })
+  mock.clock(on, { now: 1_000_000 })
+  const github = fakeGitHub(on, [[COMMENT]])
+
+  await $.command.run({ ...CHECK, args: "repo remove o/r" })
+  await $.command.run({ ...CHECK, args: "repo add o/r comment" })
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual([])
+})
+
 test("/inbox log lists what other sessions listed", JA, async ($, on) => {
   const event = { id: "x", kind: "comment", pull: "o/r#3", author: "a", at: "2026-10-16T23:00:00Z", text: "elsewhere", url: "u", items: [] }
-  mock.store(on, { history: [event] })
+  mock.store(on, { "history:other": { at: 1, events: [event] } })
   mock.clock(on, { now: Date.parse("2026-10-17T00:00:00Z") })
   fakeGitHub(on, [[]])
 
