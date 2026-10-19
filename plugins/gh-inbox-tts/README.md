@@ -1,39 +1,42 @@
 # gh-inbox-tts
 
-[gh-inbox](../gh-inbox/README.md) の通知を、[tts](https://github.com/kajidog/cc-mods-tts) で読み上げる Claude Code の mod です。
+English | [日本語](README.ja.md)
 
-- 通知が出る窓（最後に操作した窓）でだけ読みます。窓をいくつ開いていても、同じ通知を何度も読みません。
-- 他の mod が止めた通知は読みません。文が書き換えられた通知は、書き換えたあとの文（表示される文）で読みます。
-- 読み方（コード・URL を読まない、など）と声は tts の設定に従います。tts の読み上げモードが `notify` のときも読みます。
+A Claude Code mod that reads [gh-inbox](../gh-inbox/README.md)'s notices aloud through [tts](https://github.com/kajidog/cc-mods-tts).
 
-## インストール
+- It reads only in the window that shows notices (the one used last). However many windows are open, a notice is read once.
+- A notice another mod stopped is not read. A notice whose text was rewritten is read as rewritten (as it shows).
+- How it reads (skipping code and URLs, and so on) and the voice follow tts's settings. It reads even when tts's reading mode is `notify`.
+- It reads in the language of gh-inbox's notices: set **GitHub: Language** in `/config` (`en` by default, `ja` for Japanese) to match your tts voice.
 
-tts は別のマーケットプレイスにあるので、先にそのマーケットプレイスを登録します。
+## Install
+
+tts lives in another marketplace, so add that marketplace first.
 
 ```
 /plugin marketplace add kajidog/cc-mods-tts
 /plugin install gh-inbox-tts --marketplace kajidog/cc-mods-gh-inbox
 ```
 
-- 登録しておけば、gh-inbox と tts がまだないときは一緒に入ります。
-- 登録せずに入れると tts が入らず、gh-inbox-tts は読み込まれません。そのときは `/plugin marketplace add kajidog/cc-mods-tts` のあと `/reload-plugins` を実行してください。
-- tts のセットアップ（VOICEVOX などのエンジン）は [tts の README](https://github.com/kajidog/cc-mods-tts) を見てください。
+- With the marketplace added, gh-inbox and tts come along if they are not installed yet.
+- Installed without it, tts is not installed and gh-inbox-tts does not load. Run `/plugin marketplace add kajidog/cc-mods-tts`, then `/reload-plugins`.
+- For setting up tts (an engine such as VOICEVOX), see [tts's README](https://github.com/kajidog/cc-mods-tts).
 
-## 設定（`/config`）
+## Settings (`/config`)
 
-| 項目 | 初期値 | 内容 |
+| Setting | Default | What it does |
 | --- | --- | --- |
-| Kinds read | （空） | 読む種類をカンマ区切りで。`comment` `review` `commit` `ci` `merge` `close` `branch` `open` `push`。空ならすべて |
-| Repositories read | （空） | 読むリポジトリをカンマ区切りで。`owner/repo`、`host/owner/repo`、`/inbox repo alias` の別名のどれでも。空ならすべて（今のブランチの PR も含む） |
-| Read my own activity | false | 自分の操作の通知も読む |
-| What is said | `{text}` | 読む文。`{text}` 表示する文、`{body}` 先頭の `[別名]` を除いた文、`{label}` 別名、`{repo}` owner/repo、`{kind}` 種類、`{author}` GitHub のログイン名 |
-| Interrupt | false | tts が読んでいる途中でも止めて、すぐに読む |
+| Kinds read | (empty) | Comma-separated kinds to read: `comment` `review` `commit` `ci` `merge` `close` `branch` `open` `push`. Empty: every kind |
+| Repositories read | (empty) | Comma-separated repositories to read, each as `owner/repo`, `host/owner/repo` or its `/inbox repo alias`. Empty: every repository (the branch's pull request included) |
+| Read my own activity | false | Also read notices of your own activity |
+| What is said | `{text}` | The text read. `{text}` the line shown, `{body}` the same without its leading `[alias]`, `{label}` the alias, `{repo}` owner/repo, `{kind}` the kind, `{author}` the GitHub login |
+| Interrupt | false | Stop what tts is saying and read the notice at once |
 
-例: レビューと CI の失敗だけを、「tts、レビューさんが…」のように読む。
+Example: read only reviews and CI failures, as "tts, reviewer approved #18…".
 
 - Kinds read: `review,ci`
-- What is said: `{label}、{body}`
+- What is said: `{label}, {body}`
 
-## ライセンス
+## License
 
 MIT

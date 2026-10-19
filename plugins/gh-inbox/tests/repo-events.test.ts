@@ -31,7 +31,7 @@ import { addTitles, carryOver, toRepos } from "../hooks/repos"
 import { COMPARE, EVENTS, JOBS, RUNS, TITLES } from "./fixtures/repo-answers"
 
 const ref = { host: "github.com", owner: "kajidog", repo: "cc-mods-tts" }
-const options = { nicknames: { "long-reviewer-name": "レビ", kajidog: "かじ" }, notifySelf: false }
+const options = { nicknames: { "long-reviewer-name": "レビ", kajidog: "かじ" }, notifySelf: false, language: "ja" } as const
 const events = parseEvents(JSON.stringify(EVENTS))
 const titles = parseTitles(JSON.stringify(TITLES))
 
@@ -245,4 +245,22 @@ test("isAnswerOf tells an answer about another repository", async () => {
   expect(isAnswerOf(JSON.stringify([{ repo: { id: 2 } }]), 1)).toBe(false)
   expect(isAnswerOf(JSON.stringify({ workflow_runs: [{ repository: { id: 2 } }] }), 1)).toBe(false)
   expect(isAnswerOf(JSON.stringify(EVENTS), 1)).toBe(true)
+})
+
+describe("newRepoEvents in English, the default", () => {
+  test("every kind is told after the repository's short name", async () => {
+    const english = { nicknames: { kajidog: "kaji" }, notifySelf: false }
+    expect(newRepoEvents(inputWith({}), new Set(), english).map(event => event.text)).toEqual([
+      "[tts] chatgpt-codex-connector[bot] commented on #18: Codex Review: Didn't find any major issues.",
+      "[tts] reviewer commented on #18: hooks/config.js ローカルの型チェックで出力された .js が誤ってコミットに入っていました。",
+      "[tts] kaji pushed to main: feat: 要約だけ読む設定を既定でオフにする (#18) (+15 −10)",
+      "[tts] github-actions[bot] created a branch: changeset-release/main",
+      "[tts] github-actions[bot] opened a PR: #19 Version Packages",
+      "[tts] #19 was merged: Version Packages",
+      "[tts] long-reviewer-name approved #18: feat: 要約だけ読む設定を既定でオフにする",
+      "[tts] #17 was closed: WIP: try another engine",
+      "[tts] long-reviewer-name commented on issue #4: Same here",
+      "[tts] newbie pushed to feat/new: abcdef1",
+    ])
+  })
 })

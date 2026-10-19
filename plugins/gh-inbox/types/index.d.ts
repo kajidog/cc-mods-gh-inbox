@@ -101,6 +101,8 @@ export type GhStaged = {
   /** The head commit's short id when the items were fetched. */
   head: string
   items: GhPickItem[]
+  /** The language the items were written in, so what goes with them is in it too: `en` or `ja`. */
+  language?: string
 }
 
 /** One notice about to be shown, as `$.inbox.notify` takes it. */
@@ -132,7 +134,7 @@ export type Inbox = {
   notify: (notice: InboxNotice) => Promise<InboxNotice>
   /**
    * Once every hook on `inbox.notify` has answered: each notice none refused, as it shows, the ones
-   * counted in the "ほか N 件" line too. A hook on `inbox.notified` acts on what the person sees
+   * counted in the "N more updates" line too. A hook on `inbox.notified` acts on what the person sees
    * (reads it aloud, sends it elsewhere); its answer changes nothing.
    */
   notified: (notice: InboxNotice) => Promise<void>

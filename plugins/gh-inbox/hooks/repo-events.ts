@@ -2,21 +2,10 @@ import type { GhEvent, GhEventItem } from "../types"
 
 import { CLOSED_ID, displayName, MERGED_ID, type Nicknames, snippet } from "./events"
 import { type Json, login, object, type PullRef, pullName, text } from "./github"
+import { type Language, MESSAGES, type Messages } from "./i18n"
 
 export const KINDS = ["branch", "pr-open", "pr-merge", "pr-close", "comment", "review", "review-comment", "push", "ci-failure"] as const
 export type Kind = (typeof KINDS)[number]
-
-export const KIND_LABELS: Record<Kind, string> = {
-  branch: "ブランチ作成",
-  "pr-open": "PR 作成",
-  "pr-merge": "PR マージ",
-  "pr-close": "PR クローズ（マージなし）",
-  comment: "PR・Issue へのコメント",
-  review: "レビュー",
-  "review-comment": "行へのコメント",
-  push: "push",
-  "ci-failure": "CI の失敗",
-}
 
 // `branch`, `push` and `review-comment` tend to come in numbers, so they start off.
 export const DEFAULT_KINDS: readonly Kind[] = ["pr-open", "pr-merge", "comment", "review", "ci-failure"]
@@ -420,7 +409,7 @@ export type RepoInput = {
   watchedHead: string | null
 }
 
-export type RepoEventOptions = { nicknames: Nicknames; notifySelf: boolean }
+export type RepoEventOptions = { nicknames: Nicknames; notifySelf: boolean; language?: Language }
 
 /** The events `newRepoEvents` would notify, before any is turned into text: what the extra lookups are for. */
 export function pendingEvents(input: Pick<RepoInput, "kinds" | "events" | "viewer">, seen: ReadonlySet<string>, notifySelf: boolean): RepoEvent[] {
@@ -453,7 +442,8 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
   if (seen === undefined) return []
   const { ref } = input
   const prefix = `[${input.label}] `
-  const who = (actor: string | null) => `${displayName(actor, options.nicknames)}さん`
+  const t = MESSAGES[options.language ?? "en"]
+  const who = (actor: string | null) => t.who(displayName(actor, options.nicknames, options.language))
   const pullUrl = (at: number) => webUrl(ref, `pull/${at}`)
   const titleOf = (at: number) => input.titles[String(at)]?.title ?? ""
   const pending = pendingEvents(input, seen, options.notifySelf)
@@ -466,7 +456,7 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
   // A review's line comments go with the review when both are notified.
   const reviews = new Map<number, GhEventItem[]>()
   for (const event of pending) {
-    if (event.type === "review" && reviewText(event, "") !== null) reviews.set(event.reviewId, [])
+    if (event.type === "review" && reviewText(t, event, "", "") !== null) reviews.set(event.reviewId, [])
   }
   for (const event of pending) {
     if (event.type === "review-comment" && reviews.has(event.reviewId))
@@ -478,14 +468,14 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
     const base = { id: event.id, author: event.actor, at: event.at }
     switch (event.type) {
       case "branch":
-        add({ ...base, kind: "branch", text: `${who(event.actor)}がブランチを作りました。${event.ref}`, url: webUrl(ref, `tree/${branchPath(event.ref)}`), items: [] })
+        add({ ...base, kind: "branch", text: t.branchCreated(who(event.actor), event.ref), url: webUrl(ref, `tree/${branchPath(event.ref)}`), items: [] })
         break
       case "pull": {
         const title = titleOf(event.number)
         const common = { ...base, number: event.number, url: pullUrl(event.number), items: [] }
-        if (event.action === "opened") add({ ...common, kind: "open", text: `${who(event.actor)}が PR を作りました。#${event.number} ${title}` })
-        else if (event.action === "merged") add({ ...common, kind: "merge", text: `#${event.number} がマージされました。${title}` })
-        else add({ ...common, kind: "close", text: `#${event.number} がクローズされました。${title}` })
+        if (event.action === "opened") add({ ...common, kind: "open", text: t.pullOpened(who(event.actor), event.number, title) })
+        else if (event.action === "merged") add({ ...common, kind: "merge", text: t.merged(event.number, title) })
+        else add({ ...common, kind: "close", text: t.closed(event.number, title) })
         break
       }
       case "comment":
@@ -493,20 +483,20 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
           ...base,
           kind: "comment",
           number: event.number,
-          text: `${who(event.actor)}が${event.isPull ? "" : " Issue"} #${event.number} にコメントしました。${snippet(event.body)}`,
+          text: t.commentedOn(who(event.actor), event.number, event.isPull, snippet(event.body)),
           url: event.url,
           items: [{ body: event.body, url: event.url }],
         })
         break
       case "review": {
-        const said = reviewText(event, titleOf(event.number))
+        const said = reviewText(t, event, titleOf(event.number), who(event.actor))
         if (said === null) break
         const comments = reviews.get(event.reviewId) ?? []
         add({
           ...base,
           kind: "review",
           number: event.number,
-          text: `${who(event.actor)}${said}`,
+          text: said,
           url: event.url,
           items: [...(event.body.trim() === "" ? [] : [{ body: event.body, url: event.url }]), ...comments],
         })
@@ -518,7 +508,7 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
           ...base,
           kind: "comment",
           number: event.number,
-          text: `${who(event.actor)}が #${event.number} にコメントしました。${event.path}${event.line === null ? "" : `:${event.line}`} ${snippet(event.body)}`,
+          text: t.commentedOn(who(event.actor), event.number, true, `${event.path}${event.line === null ? "" : `:${event.line}`} ${snippet(event.body)}`.trimEnd()),
           url: event.url,
           items: [{ body: event.body, path: event.path, line: event.line, hunk: event.hunk, url: event.url }],
         })
@@ -528,19 +518,19 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
           unknownPushes.push(event)
           break
         }
-        const pushed = `${who(event.actor)}が ${event.branch} に push しました。`
+        const pushed = (detail: string) => t.pushed(who(event.actor), event.branch, detail)
         if (event.changes === null) {
-          add({ ...base, kind: "push", text: `${pushed}${event.head.slice(0, 7)}`, url: webUrl(ref, `commit/${event.head}`), items: [] })
+          add({ ...base, kind: "push", text: pushed(event.head.slice(0, 7)), url: webUrl(ref, `commit/${event.head}`), items: [] })
           break
         }
         const commits = event.changes.commits.filter(commit => !seen.has(commit.sha))
         if (commits.length === 0) break
         const titles = commits.slice(0, TITLES_SHOWN).map(commit => commit.title)
-        const more = commits.length > TITLES_SHOWN ? ` ほか${commits.length - TITLES_SHOWN}件` : ""
+        const more = commits.length > TITLES_SHOWN ? t.more(commits.length - TITLES_SHOWN) : ""
         add({
           ...base,
           kind: "push",
-          text: `${pushed}${titles.join(" / ")}${more} (+${event.changes.additions} −${event.changes.deletions})`,
+          text: pushed(`${titles.join(" / ")}${more} (+${event.changes.additions} −${event.changes.deletions})`),
           url: webUrl(ref, `compare/${event.before}...${event.head}`),
           items: commits.map(commit => ({ body: commit.title, url: webUrl(ref, `commit/${commit.sha}`) })),
         })
@@ -555,7 +545,7 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
       kind: "push",
       author: null,
       at: lastUnknown.at,
-      text: `ほか${unknownPushes.length}件の push がありました。`,
+      text: t.morePushes(unknownPushes.length),
       url: webUrl(ref, "activity"),
       items: [],
     })
@@ -570,7 +560,7 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
         kind: "ci",
         author: null,
         at: run.at,
-        text: `${name} の CI が失敗しました（${run.branch}）。${run.failure?.step ?? ""}`,
+        text: t.repoCiFailed(name, run.branch, run.failure?.step ?? ""),
         url: run.url,
         items: run.failure?.step ? [{ body: run.failure.step, url: run.url }] : [],
       })
@@ -581,12 +571,12 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
   return events.sort((a, b) => (order(a) < order(b) ? -1 : order(a) > order(b) ? 1 : 0))
 }
 
-/** What a review says after its author's name, or null for one not to notify. */
-function reviewText(review: RepoEvent & { type: "review" }, title: string): string | null {
+/** What a review's notice says, or null for one not to notify. */
+function reviewText(t: Messages, review: RepoEvent & { type: "review" }, title: string, who: string): string | null {
   const summary = snippet(review.body)
-  if (review.state === "approved") return `が #${review.number} を承認しました。${summary || title}`
-  if (review.state === "changes_requested") return `が #${review.number} で変更を依頼しました。${summary || title}`
+  if (review.state === "approved") return t.approvedPull(who, review.number, summary || title)
+  if (review.state === "changes_requested") return t.changesRequestedOn(who, review.number, summary || title)
   // A review of line comments alone says nothing itself: its comments are `review-comment`.
-  if (review.state === "commented" && summary !== "") return `が #${review.number} をレビューしました。${summary}`
+  if (review.state === "commented" && summary !== "") return t.reviewedPull(who, review.number, summary)
   return null
 }

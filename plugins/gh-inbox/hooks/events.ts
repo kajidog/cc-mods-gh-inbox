@@ -1,9 +1,10 @@
 import type { GhEvent } from "../types"
 
 import { type Commit, type Pull, pullName, type ReviewComment } from "./github"
+import { type Language, MESSAGES } from "./i18n"
 
 export type Nicknames = Record<string, string>
-export type EventOptions = { nicknames: Nicknames; notifySelf: boolean }
+export type EventOptions = { nicknames: Nicknames; notifySelf: boolean; language?: Language }
 
 const SNIPPET_LENGTH = 80
 const TITLES_SHOWN = 3
@@ -45,8 +46,8 @@ export function snippet(body: string, length = SNIPPET_LENGTH): string {
 /** `path:line` of a line comment. */
 const place = (comment: Pick<ReviewComment, "path" | "line">) => `${comment.path}${comment.line === null ? "" : `:${comment.line}`}`
 
-export const displayName = (login: string | null, nicknames: Nicknames) =>
-  login === null ? "誰か" : (nicknames[login] ?? login)
+export const displayName = (login: string | null, nicknames: Nicknames, language: Language = "en") =>
+  login === null ? MESSAGES[language].someone : (nicknames[login] ?? login)
 
 /** Every id the pull request shows now, as `newEvents` records them. */
 export function pullIds(pull: Pull): string[] {
@@ -66,7 +67,8 @@ export function pullIds(pull: Pull): string[] {
 export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, options: EventOptions): GhEvent[] {
   if (seen === undefined) return []
   const name = pullName(pull.ref)
-  const who = (login: string | null) => `${displayName(login, options.nicknames)}さん`
+  const t = MESSAGES[options.language ?? "en"]
+  const who = (login: string | null) => t.who(displayName(login, options.nicknames, options.language))
   const isMuted = (login: string | null) => !options.notifySelf && login !== null && login === pull.viewer
   const events: GhEvent[] = []
 
@@ -78,7 +80,7 @@ export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, opt
       pull: name,
       author: comment.author,
       at: comment.at,
-      text: `${who(comment.author)}がコメントしました。${snippet(comment.body)}`,
+      text: t.commented(who(comment.author), snippet(comment.body)),
       url: comment.url,
       items: [{ body: comment.body, url: comment.url }],
     })
@@ -95,7 +97,7 @@ export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, opt
           pull: name,
           author: comment.author,
           at: comment.at,
-          text: `${who(comment.author)}がコメントしました。${place(comment)} ${snippet(comment.body)}`.trimEnd(),
+          text: t.commented(who(comment.author), `${place(comment)} ${snippet(comment.body)}`.trimEnd()),
           url: comment.url,
           items: [{ body: comment.body, path: comment.path, line: comment.line, hunk: comment.hunk, url: comment.url }],
         })
@@ -118,14 +120,14 @@ export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, opt
     const first = review.comments[0]
     let text: string
     if (review.state === "APPROVED") {
-      text = `${who(review.author)}が承認しました。${summary}`
+      text = t.approved(who(review.author), summary)
     } else if (review.state === "CHANGES_REQUESTED") {
-      text = `${who(review.author)}が変更を依頼しました。${count > 0 ? `指摘${count}件 ` : ""}${summary}`
+      text = t.changesRequested(who(review.author), count, summary)
     } else if (review.state === "COMMENTED") {
-      if (summary !== "") text = `${who(review.author)}がレビューしました。${count > 0 ? `指摘${count}件 ` : ""}${summary}`
+      if (summary !== "") text = t.reviewed(who(review.author), count, summary)
       else if (count === 1 && first !== undefined)
-        text = `${who(review.author)}がコメントしました。${place(first)} ${snippet(first.body)}`
-      else if (count > 1) text = `${who(review.author)}が${count}件コメントしました。`
+        text = t.commented(who(review.author), `${place(first)} ${snippet(first.body)}`.trimEnd())
+      else if (count > 1) text = t.commentedMany(who(review.author), count)
       else continue
     } else {
       // PENDING is a draft not yet sent; DISMISSED is a review taken back.
@@ -153,7 +155,7 @@ export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, opt
     const last = commits.at(-1)
     if (last === undefined) continue
     const titles = commits.slice(0, TITLES_SHOWN).map(commit => commit.title)
-    const more = commits.length > TITLES_SHOWN ? ` ほか${commits.length - TITLES_SHOWN}件` : ""
+    const more = commits.length > TITLES_SHOWN ? t.more(commits.length - TITLES_SHOWN) : ""
     const additions = commits.reduce((sum, commit) => sum + commit.additions, 0)
     const deletions = commits.reduce((sum, commit) => sum + commit.deletions, 0)
     events.push({
@@ -162,7 +164,7 @@ export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, opt
       pull: name,
       author: last.author,
       at: last.at,
-      text: `${who(last.author)}がコミットしました。${titles.join(" / ")}${more} (+${additions} −${deletions})`,
+      text: t.committed(who(last.author), `${titles.join(" / ")}${more} (+${additions} −${deletions})`),
       url: last.url,
       items: commits.map(commit => ({ body: commit.title, url: commit.url })),
     })
@@ -177,7 +179,7 @@ export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, opt
       pull: name,
       author: null,
       at: stamp,
-      text: `${check.name}のCIが失敗しました。${check.failedStep ?? ""}`.trimEnd(),
+      text: t.ciFailed(check.name, check.failedStep ?? "").trimEnd(),
       url: check.url,
       items: check.failedStep === null ? [] : [{ body: check.failedStep, url: check.url }],
     })
@@ -190,7 +192,7 @@ export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, opt
       pull: name,
       author: pull.mergedBy,
       at: pull.closedAt ?? stamp,
-      text: `#${pull.ref.number} がマージされました。`,
+      text: t.merged(pull.ref.number),
       url: pull.url,
       items: [],
     })
@@ -201,7 +203,7 @@ export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, opt
       pull: name,
       author: pull.closedBy,
       at: pull.closedAt ?? stamp,
-      text: `#${pull.ref.number} がクローズされました。`,
+      text: t.closed(pull.ref.number),
       url: pull.url,
       items: [],
     })

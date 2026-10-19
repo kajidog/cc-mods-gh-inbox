@@ -23,7 +23,7 @@ function pullWith(changes: Partial<Pull>): Pull {
   }
 }
 
-const options = { nicknames: { "long-reviewer-name": "レビ" }, notifySelf: false }
+const options = { nicknames: { "long-reviewer-name": "レビ" }, notifySelf: false, language: "ja" } as const
 const texts = (pull: Pull, seen: string[] = []) => newEvents(pull, new Set(seen), options).map(event => event.text)
 
 describe("newEvents", () => {
@@ -182,4 +182,35 @@ test("parsePull reads checks of the newest commit", async () => {
   expect(pull.commits[0]?.author).toBe("N")
   expect(pull.checks).toEqual([{ id: "run:5", name: "CI / test", isFailed: true, failedStep: "Run tests", url: "" }])
   expect(() => parsePull(ref, JSON.stringify({ errors: [{ message: "Bad credentials" }] }))).toThrow("Bad credentials")
+})
+
+describe("newEvents in English, the default", () => {
+  const english = { nicknames: {}, notifySelf: false }
+  const told = (pull: Pull, seen: string[] = []) => newEvents(pull, new Set(seen), english).map(event => event.text)
+
+  test("each kind reads as a sentence, its detail after a colon", async () => {
+    const inline = { id: "rc", author: "reviewer", at: "", path: "src/a.ts", line: 12, hunk: "@@", body: "Why **this**?", url: "" }
+    const review = (id: string, state: string, body: string, comments = [inline]) => ({ id, author: "b", state, body, at: `2026-01-01T00:00:0${id}Z`, url: "", comments })
+    const commit = (oid: string, title: string) => ({ oid, author: "a", title, additions: 2, deletions: 1, at: `2026-01-01T00:00:1${oid}Z`, url: "" })
+    const pull = pullWith({
+      comments: [{ id: "c1", author: null, body: "hi", at: "2026-01-01T00:00:00Z", url: "" }],
+      reviews: [review("1", "APPROVED", "LGTM", []), review("2", "CHANGES_REQUESTED", "Please fix"), review("3", "COMMENTED", ""), review("4", "COMMENTED", "Notes", [inline, inline])],
+      commits: [commit("1", "a"), commit("2", "b"), commit("3", "c"), commit("4", "d")],
+      checks: [{ id: "run:1", name: "CI / test", isFailed: true, failedStep: "Run npm test", url: "" }],
+    })
+    expect(told(pull)).toEqual([
+      "someone commented: hi",
+      "b approved: LGTM",
+      "b requested changes (1 comment): Please fix",
+      "b commented: src/a.ts:12 Why this?",
+      "b reviewed (2 comments): Notes",
+      "a committed: a / b / c and 1 more (+8 −4)",
+      "CI failed: CI / test: Run npm test",
+    ])
+  })
+
+  test("a merge and a close with nothing more end in a full stop", async () => {
+    expect(told(pullWith({ state: "MERGED", mergedBy: "me", closedAt: "2026-01-02T00:00:00Z" }))).toEqual(["#7 was merged."])
+    expect(told(pullWith({ state: "CLOSED", closedBy: "someone", closedAt: "2026-01-02T00:00:00Z" }))).toEqual(["#7 was closed."])
+  })
 })

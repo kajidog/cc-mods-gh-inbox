@@ -3,6 +3,8 @@ import { expect, mock, test } from "claude-code/testing"
 
 import { RUNS } from "./fixtures/repo-answers"
 
+// Most tests read the Japanese lines; those in English, the default, are at the end.
+const JA = { options: { language: "ja" } }
 const KEY = "github.com/o/r"
 const CHECK = { command: "inbox", args: "check", origin: { kind: "composer" }, presentation: { isFullscreen: false, columns: 120 } } as const
 const COMMENT = {
@@ -60,7 +62,7 @@ function fakeGitHub(on: On, answers: unknown[][], other: (argv: string[]) => Ans
   return { asked, toasts, logs }
 }
 
-test("a registered repository notifies only what came after its first look, and a 304 changes nothing", async ($, on) => {
+test("a registered repository notifies only what came after its first look, and a 304 changes nothing", JA, async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["comment", "ci-failure"], alias: "r" } } })
   const clock = mock.clock(on, { now: 1_000_000 })
   const github = fakeGitHub(on, [[], [COMMENT]])
@@ -84,7 +86,7 @@ test("a registered repository notifies only what came after its first look, and 
   expect(github.asked.filter(argv => argv.some(word => word.startsWith("If-None-Match")))).toHaveLength(4)
 })
 
-test("within the poll interval the shared answer is used, GitHub not asked", async ($, on) => {
+test("within the poll interval the shared answer is used, GitHub not asked", JA, async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["comment"] } } })
   const clock = mock.clock(on, { now: 1_000_000 })
   const github = fakeGitHub(on, [[]])
@@ -95,7 +97,7 @@ test("within the poll interval the shared answer is used, GitHub not asked", asy
   expect(github.asked.filter(argv => (argv.at(-1) ?? "").includes("/events"))).toHaveLength(1)
 })
 
-test("the picker turns kinds on and off, saved at once", async ($, on) => {
+test("the picker turns kinds on and off, saved at once", JA, async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["comment"] } } })
   mock.clock(on, { now: 1_000_000 })
   fakeGitHub(on, [[]])
@@ -116,7 +118,7 @@ test("the picker turns kinds on and off, saved at once", async ($, on) => {
   expect(await $.command.run({ ...CHECK, args: "repo" })).toMatchObject({ text: expect.stringContaining("o/r: push") })
 })
 
-test("runs that cannot be read leave the other notices coming, the error shown", async ($, on) => {
+test("runs that cannot be read leave the other notices coming, the error shown", JA, async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["comment", "ci-failure"] } } })
   const clock = mock.clock(on, { now: 1_000_000 })
   const forbidden = { stderr: "gh: Resource not accessible by integration (HTTP 403)", exitCode: 1 }
@@ -129,7 +131,7 @@ test("runs that cannot be read leave the other notices coming, the error shown",
   expect(await $.command.run({ ...CHECK, args: "repo" })).toMatchObject({ text: expect.stringContaining("エラー: CI: gh: Resource not accessible") })
 })
 
-test("a repository with no kind chosen is not asked about", async ($, on) => {
+test("a repository with no kind chosen is not asked about", JA, async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: [] } } })
   mock.clock(on, { now: 1_000_000 })
   const github = fakeGitHub(on, [[]])
@@ -139,7 +141,7 @@ test("a repository with no kind chosen is not asked about", async ($, on) => {
   expect(await $.command.run({ ...CHECK, args: "repo" })).toMatchObject({ text: expect.stringContaining("種類を選ぶまで確認しません") })
 })
 
-test("a push whose compare fails for now is told at a later check, with its commits", async ($, on) => {
+test("a push whose compare fails for now is told at a later check, with its commits", JA, async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["push"] } } })
   const clock = mock.clock(on, { now: 1_000_000 })
   const push = {
@@ -167,7 +169,7 @@ test("a push whose compare fails for now is told at a later check, with its comm
   expect(github.toasts).toEqual(["[r] someoneさんが main に push しました。fix: x (+1 −2)"])
 })
 
-test("a repository is registered as GitHub spells it and found whatever the case typed", async ($, on) => {
+test("a repository is registered as GitHub spells it and found whatever the case typed", JA, async ($, on) => {
   mock.store(on, {})
   mock.clock(on, { now: 1_000_000 })
   fakeGitHub(on, [[]], argv => (argv.includes(".id, .full_name") ? { stdout: "42\nOwner/Repo\n" } : undefined))
@@ -177,7 +179,7 @@ test("a repository is registered as GitHub spells it and found whatever the case
   expect(await $.command.run({ ...CHECK, args: "repo remove owner/repo" })).toEqual({ text: "Owner/Repo の登録を外しました。" })
 })
 
-test("while the login gh uses is not known, the repository waits instead of telling the person's own activity", async ($, on) => {
+test("while the login gh uses is not known, the repository waits instead of telling the person's own activity", JA, async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["comment"] } } })
   const clock = mock.clock(on, { now: 1_000_000 })
   const mine = { ...COMMENT, actor: { login: "me" } }
@@ -193,7 +195,7 @@ test("while the login gh uses is not known, the repository waits instead of tell
   expect(github.toasts).toEqual([])
 })
 
-test("choosing ci-failure again asks for the runs before taking them as seen", async ($, on) => {
+test("choosing ci-failure again asks for the runs before taking them as seen", JA, async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["comment", "ci-failure"] } } })
   const clock = mock.clock(on, { now: 1_000_000 })
   const failed = { id: 39000000003, name: "test", head_branch: "main", head_sha: "a12", html_url: "", updated_at: "2026-10-16T12:00:00Z", run_attempt: 1, conclusion: "failure" }
@@ -219,7 +221,7 @@ test("choosing ci-failure again asks for the runs before taking them as seen", a
   expect(github.toasts).toEqual([])
 })
 
-test("titles are asked for in batches, so every notice has its own", async ($, on) => {
+test("titles are asked for in batches, so every notice has its own", JA, async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["pr-open"] } } })
   const clock = mock.clock(on, { now: 1_000_000 })
   const opened = Array.from({ length: 60 }, (_, index) => ({
@@ -244,7 +246,7 @@ test("titles are asked for in batches, so every notice has its own", async ($, o
   expect(await $.command.run({ ...CHECK, args: "log" })).toMatchObject({ text: expect.stringContaining("#60 t60") })
 })
 
-test("a repository whose name now leads to another one is not told about", async ($, on) => {
+test("a repository whose name now leads to another one is not told about", JA, async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["comment"], id: 1 } } })
   const clock = mock.clock(on, { now: 1_000_000 })
   const github = fakeGitHub(on, [[], [{ ...COMMENT, repo: { id: 2, name: "o/r" } }]])
@@ -253,10 +255,10 @@ test("a repository whose name now leads to another one is not told about", async
   await clock.advance(61_000)
   await $.command.run(CHECK)
   expect(github.toasts).toEqual([])
-  expect(await $.command.run({ ...CHECK, args: "repo" })).toMatchObject({ text: expect.stringContaining("another repository") })
+  expect(await $.command.run({ ...CHECK, args: "repo" })).toMatchObject({ text: expect.stringContaining("別のリポジトリを指しています") })
 })
 
-test("the failed steps of at most a few runs are looked up at one check, the rest told without", async ($, on) => {
+test("the failed steps of at most a few runs are looked up at one check, the rest told without", JA, async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["ci-failure"] } } })
   const clock = mock.clock(on, { now: 1_000_000 })
   const run = (id: number) => ({ id, name: "test", head_branch: "main", head_sha: "a", html_url: "", updated_at: "", run_attempt: 1, conclusion: "failure" })
@@ -276,7 +278,7 @@ test("the failed steps of at most a few runs are looked up at one check, the res
   expect((await $.command.run({ ...CHECK, args: "log" })).text?.match(/CI が失敗しました/g)).toHaveLength(8)
 })
 
-test("a hook on inbox.notify sees each notice first, rewrites what shows or keeps it from showing, and the log keeps it", async ($, on) => {
+test("a hook on inbox.notify sees each notice first, rewrites what shows or keeps it from showing, and the log keeps it", JA, async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } } })
   const clock = mock.clock(on, { now: 1_000_000 })
   const github = fakeGitHub(on, [[], [COMMENT, { ...COMMENT, id: "2", actor: { login: "bot" }, payload: { ...COMMENT.payload, comment: { ...COMMENT.payload.comment, node_id: "IC_2" } } }]])
@@ -298,7 +300,7 @@ test("a hook on inbox.notify sees each notice first, rewrites what shows or keep
   expect(await $.command.run({ ...CHECK, args: "log" })).toMatchObject({ text: expect.stringContaining("botさん") })
 })
 
-test("inbox.notified tells each notice no hook refused, as it shows, once every hook on inbox.notify answered", async ($, on) => {
+test("inbox.notified tells each notice no hook refused, as it shows, once every hook on inbox.notify answered", JA, async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } } })
   const clock = mock.clock(on, { now: 1_000_000 })
   const BOT = { ...COMMENT, id: "2", actor: { login: "bot" }, payload: { ...COMMENT.payload, comment: { ...COMMENT.payload.comment, node_id: "IC_2" } } }
@@ -323,3 +325,38 @@ test("inbox.notified tells each notice no hook refused, as it shows, once every 
   // As it shows: the escape a hook wrote loses its control character.
   expect(told).toEqual(["[r] someoneさんが #3 にコメントしました。Looks good[31m!"])
 })
+
+test("notices and commands speak English by default", async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const github = fakeGitHub(on, [[], [COMMENT]], argv => (argv.includes(".id, .full_name") ? { stdout: "42\nOwner/Repo\n" } : undefined))
+
+  await $.command.run(CHECK)
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual(["[r] someone commented on #3: Looks good"])
+  expect(await $.command.run({ ...CHECK, args: "repo" })).toMatchObject({ text: expect.stringContaining("o/r [r]: Comments on PRs and issues") })
+  expect(await $.command.run({ ...CHECK, args: "repo add owner/repo comment,push" })).toEqual({ text: "Registered Owner/Repo (Comments on PRs and issues, Pushes)." })
+  expect(await $.command.run({ ...CHECK, args: "nick" })).toEqual({ text: "No nicknames yet. Add one with /inbox nick <login> <nickname>." })
+})
+
+for (const [language, hint] of [["en", "nick [login [nickname]]"], ["ja", "nick [login [ニックネーム]]"]] as const) {
+  test(`/inbox is listed in the command picker in ${language}`, { options: { language } }, async ($, on) => {
+    mock.store(on, {})
+    mock.clock(on, { now: 1_000_000 })
+    fakeGitHub(on, [[]])
+    const registered: Array<{ description: string; argumentHint?: string }> = []
+    on("command.register", async (_$, e) => {
+      registered.push(e)
+      return { value: { command: e.name } }
+    })
+
+    on("session.id", async () => ({ value: "s1" }))
+    on("session.start", async (_$, e) => ({ cwd: e.cwd }))
+
+    await $.session.start({ cwd: "/repo", surface: "terminal", isInteractive: true })
+    expect(registered).toHaveLength(1)
+    expect(registered[0]?.argumentHint).toContain(hint)
+    expect(registered[0]?.description.startsWith(language === "en" ? "GitHub notices" : "このブランチの PR")).toBe(true)
+  })
+}
