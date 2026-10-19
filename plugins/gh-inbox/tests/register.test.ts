@@ -1,4 +1,4 @@
-import type { On } from "claude-code"
+import type { On, RenderElement } from "claude-code"
 import { expect, mock, test } from "claude-code/testing"
 
 import { RUNS } from "./fixtures/repo-answers"
@@ -352,6 +352,32 @@ test("/inbox log lists what other sessions listed", JA, async ($, on) => {
   fakeGitHub(on, [[]])
 
   expect(await $.command.run({ ...CHECK, args: "log" })).toEqual({ text: "elsewhere\n  u（1時間前）" })
+})
+
+test("/inbox log's row draws each notice as a link to it, when it happened beside it", JA, async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: 1_000_000 })
+  fakeGitHub(on, [[]])
+  // The engine's own row, beneath the plugin.
+  on("ui.render", { component: "CommandOutput" }, async (_$, e) => {
+    const { Text } = _$.ui.resolve(e)
+    return h(Text, null, "engine's own") as RenderElement
+  })
+  const row = (args: string, text: string) =>
+    $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "CommandOutput", props: { command: "inbox", args, text, isErrored: false } })
+
+  const log = await row("log", "[r] a\n  https://github.com/o/r/pull/3（1日前）\nb\n  https://github.com/o/r/pull/4 (2h ago)")
+  const links = await log.findAll({ type: "Link" })
+  expect(links.map(link => [link.props.href, link.children.join("")])).toEqual([
+    ["https://github.com/o/r/pull/3", "[r] a"],
+    ["https://github.com/o/r/pull/4", "b"],
+  ])
+  expect(await log.find({ type: "Text", text: "（1日前）" })).toBeDefined()
+  expect(await log.find({ type: "Text", text: " (2h ago)" })).toBeDefined()
+
+  // Any other row is the engine's own.
+  expect(await (await row("log", "通知はまだありません。")).find({ text: "engine's own" })).toBeDefined()
+  expect(await (await row("status", "[r] a\n  https://x")).find({ text: "engine's own" })).toBeDefined()
 })
 
 test("notices and commands speak English by default", async ($, on) => {

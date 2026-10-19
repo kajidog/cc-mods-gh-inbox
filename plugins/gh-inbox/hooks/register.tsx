@@ -10,6 +10,8 @@ import {
   addToHistory,
   HISTORY_KEY,
   latest,
+  logText,
+  parseLog,
   SHARED_SEEN_KEPT_MS,
   SHARED_SEEN_PREFIX,
   toHistory,
@@ -1024,7 +1026,7 @@ export const register: Register = (on, options) => {
           const at = Date.parse(event.at)
           return Number.isNaN(at) ? "" : t.paren(ago(t, now - at))
         }
-        return { text: list.map(event => `${plain(event.text)}\n  ${plain(event.url)}${when(event)}`).join("\n") }
+        return { text: logText(list.map(event => ({ text: plain(event.text), url: plain(event.url), when: when(event) }))) }
       }
       case "repo":
         return { text: await repoCommand($, ctx, rest) }
@@ -1056,6 +1058,24 @@ export const register: Register = (on, options) => {
       default:
         return { text: t.usage }
     }
+  })
+
+  // `/inbox log`'s row draws each notice as a link to it; the text, URLs written out, is what the model reads.
+  on("ui.render", { component: "CommandOutput", props: { command: COMMAND } }, async ($, e, next) => {
+    const isLog = e.props.args.trim().split(/\s+/)[0] === "log"
+    const rows = isLog && !e.props.isErrored ? parseLog(e.props.text) : undefined
+    if (rows === undefined) return next(e)
+    const { Box, Text, Link } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="column">
+        {rows.map(row => (
+          <Text>
+            <Link href={row.url}>{row.text}</Link>
+            {row.when === "" ? null : <Text dimColor>{row.when}</Text>}
+          </Text>
+        ))}
+      </Box>
+    )
   })
 
   on("ui.render", { component: "Pane", requestId: PICKER_PANE }, async ($, e) => {

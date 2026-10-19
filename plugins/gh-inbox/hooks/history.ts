@@ -63,3 +63,23 @@ export function latest(history: readonly GhEvent[], count: number): GhEvent[] {
 
   return timed.slice(-count).map(({ event }) => event)
 }
+
+/** One notice as `/inbox log` lists it: `when` as `t.paren` wrote it, or empty. */
+export type LogRow = { text: string; url: string; when: string }
+
+/** `/inbox log`'s text: each notice on a line, its URL and when it happened under it. */
+export const logText = (rows: readonly LogRow[]) => rows.map(row => `${row.text}\n  ${row.url}${row.when}`).join("\n")
+
+/** The rows `logText` wrote, or undefined for any other text. */
+export function parseLog(text: string): LogRow[] | undefined {
+  const lines = text.split("\n")
+  if (lines.length % 2 !== 0) return undefined
+  const rows: LogRow[] = []
+  for (let i = 0; i < lines.length; i += 2) {
+    const match = /^ {2}(\S+?)((?: \(|（).*)?$/.exec(lines[i + 1] ?? "")
+    if (match === null) return undefined
+    rows.push({ text: lines[i] ?? "", url: match[1] ?? "", when: match[2] ?? "" })
+  }
+
+  return rows
+}

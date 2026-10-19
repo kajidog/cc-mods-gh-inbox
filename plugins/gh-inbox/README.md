@@ -89,7 +89,7 @@ Apart from the branch's pull request, you can register repositories and be notif
 | --- | --- |
 | `/inbox` | The pull request watched and when it was last checked |
 | `/inbox check` | Check now |
-| `/inbox log` | The notices of every window (the newest 20, each with when it happened) |
+| `/inbox log` | The notices of every window (the newest 20, each line a link to it on GitHub, with when it happened) |
 | `/inbox pick [PR]` | Choose threads, reviews and comments to hand to Claude |
 | `/inbox clear` | Detach what is attached |
 | `/inbox repo` | The registered repositories and the kinds they notify |
