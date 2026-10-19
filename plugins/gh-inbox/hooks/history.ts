@@ -59,19 +59,26 @@ const eventKey = (event: GhEvent) => `${hostOf(event.url)}|${event.pull}|${sameI
 const partsOf = (event: GhEvent) =>
   (Array.isArray(event.items) ? event.items : []).map(item => item.url ?? "").filter(url => url !== "")
 
-/** The `added` that `held` does not hold yet, each once: one telling a comment or a commit another tells is the same. */
+/**
+ * The `added` that `held` does not hold yet, each once. One whose comments and commits are all told by another
+ * is the same; one telling more than another (a review with its approval and line comments, the line comment
+ * alone) is kept over it, whichever came first.
+ */
 export function unheld(held: readonly GhEvent[], added: readonly GhEvent[]): GhEvent[] {
   const keys = new Set(held.map(eventKey))
   const parts = new Set(held.flatMap(partsOf))
-
-  return added.filter(event => {
+  const told = new Set<GhEvent>()
+  // The ones telling the most claim their parts first.
+  const byParts = added.map((event, index) => ({ event, index, own: partsOf(event) })).sort((a, b) => b.own.length - a.own.length || a.index - b.index)
+  for (const { event, own } of byParts) {
     const key = eventKey(event)
-    const own = partsOf(event)
-    if (keys.has(key) || own.some(url => parts.has(url))) return false
+    if (keys.has(key) || (own.length > 0 && own.every(url => parts.has(url)))) continue
     keys.add(key)
     for (const url of own) parts.add(url)
-    return true
-  })
+    told.add(event)
+  }
+
+  return added.filter(event => told.has(event))
 }
 
 /** Every session's notices together, each once. */
@@ -82,6 +89,12 @@ export const toKept = (events: readonly GhEvent[], now: number): SessionHistory 
   at: now,
   events: latest(unheld([], events), HISTORY_KEPT).map(event => ({ ...event, items: partsOf(event).map(url => ({ body: "", url })) })),
 })
+
+/** When the newest of a session's notices happened, or when it was written where none says. */
+export function newestAt(history: SessionHistory): number {
+  const times = history.events.map(event => Date.parse(event.at)).filter(at => !Number.isNaN(at))
+  return times.length === 0 ? history.at : Math.max(...times)
+}
 
 /** `seen` with `ids` added, looked at `now`. */
 export const addSharedSeen = (seen: SharedSeen | undefined, ids: readonly string[], now: number): SharedSeen => ({

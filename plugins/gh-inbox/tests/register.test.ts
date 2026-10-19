@@ -423,6 +423,23 @@ test("a notice with no time of its own is listed as of when it was seen, not beh
   expect(await $.command.run({ ...CHECK, args: "log" })).toMatchObject({ text: expect.stringContaining("Looks good") })
 })
 
+test("of more sessions than are kept, those whose notices are newest are kept, not those written to last", JA, async ($, on) => {
+  const now = Date.parse("2026-10-17T00:00:00Z")
+  const one = (id: string, at: string) => ({ id, kind: "comment", pull: "o/r#1", author: "a", at, text: id, url: "u", items: [] })
+  // Written to first, but holding the newest notice.
+  const histories: Record<string, unknown> = { "history:late": { at: now - 3_600_000, events: [one("newest", "2026-10-16T23:00:00Z")] } }
+  for (let i = 0; i < 20; i += 1) histories[`history:s${i}`] = { at: now - 60_000, events: [one(`old${i}`, "2026-10-01T00:00:00Z")] }
+  mock.store(on, histories)
+  mock.clock(on, { now })
+  fakeGitHub(on, [[]])
+  on("command.register", async (_$, e) => ({ value: { command: e.name } }))
+  on("session.id", async () => ({ value: "s1" }))
+  on("session.start", async (_$, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: "/repo", surface: "terminal", isInteractive: true })
+  expect(await $.command.run({ ...CHECK, args: "log" })).toMatchObject({ text: expect.stringContaining("newest") })
+})
+
 test("/inbox log lists what other sessions listed", JA, async ($, on) => {
   const event = { id: "x", kind: "comment", pull: "o/r#3", author: "a", at: "2026-10-16T23:00:00Z", text: "elsewhere", url: "u", items: [] }
   mock.store(on, { "history:other": { at: 1, events: [event] } })

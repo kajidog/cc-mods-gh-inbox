@@ -65,6 +65,21 @@ test("a review told with its line comments and the line comment told alone are l
   expect(mergeHistories([toKept(fromPull, 1).events, toKept(fromRepo, 1).events]).map(one => one.id)).toEqual(["PRR_1", "c2", "PRRC_2"])
 })
 
+test("a notice telling more than another is kept over it, whichever was listed first", async () => {
+  const comment = "https://github.com/o/r/pull/3#discussion_r1"
+  const lineComment = { ...event("PRRC_1", "2026-10-16T00:00:00Z", "o/r#3"), items: [{ body: "", url: comment }] }
+  const review: GhEvent = {
+    ...event("PRR_1", "2026-10-16T00:00:00Z", "o/r#3"),
+    kind: "review",
+    items: [
+      { body: "", url: "https://github.com/o/r/pull/3#pullrequestreview-1" },
+      { body: "", url: comment },
+    ],
+  }
+  expect(mergeHistories([[lineComment], [review]]).map(one => one.id)).toEqual(["PRR_1"])
+  expect(mergeHistories([[review], [lineComment]]).map(one => one.id)).toEqual(["PRR_1"])
+})
+
 test("latest lists by when it happened, one with no time beside the one added before it", async () => {
   const history = [event("b", "2026-10-16T02:00:00Z"), event("none", ""), event("a", "2026-10-16T01:00:00Z"), event("c", "2026-10-16T03:00:00Z")]
   expect(latest(history, 10).map(one => one.id)).toEqual(["a", "b", "none", "c"])

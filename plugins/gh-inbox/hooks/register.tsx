@@ -13,6 +13,7 @@ import {
   logText,
   MISSED_PREFIX,
   mergeHistories,
+  newestAt,
   parseLog,
   SHARED_KEPT_MS,
   SHARED_SEEN_PREFIX,
@@ -284,9 +285,9 @@ async function tidy($: EngineInterface, now: number) {
     } else if (key.startsWith(MISSED_PREFIX)) {
       if (now - (toMissed(value)?.at ?? 0) > SHARED_KEPT_MS) await $.store.delete(key)
     } else if (key.startsWith(HISTORY_PREFIX)) {
-      const at = toSessionHistory(value)?.at
-      if (at === undefined || now - at > SHARED_KEPT_MS) await $.store.delete(key)
-      else histories.push([key, at])
+      const history = toSessionHistory(value)
+      if (history === undefined || now - history.at > SHARED_KEPT_MS) await $.store.delete(key)
+      else histories.push([key, newestAt(history)])
     } else if (key.startsWith(TITLES_PREFIX)) {
       if (!(key.slice(TITLES_PREFIX.length) in repos)) await $.store.delete(key)
     } else if (key.startsWith("seen:")) {
@@ -294,7 +295,8 @@ async function tidy($: EngineInterface, now: number) {
       await $.store.delete(key)
     }
   }
-  // The notices of the sessions written to last are kept.
+  // The sessions whose newest notices are the newest are kept: each kept one has a notice newer than any dropped one's,
+  // so the log's newest `HISTORIES_KEPT` are all still there.
   histories.sort((a, b) => b[1] - a[1])
   for (const [key] of histories.slice(HISTORIES_KEPT)) await $.store.delete(key)
 }
