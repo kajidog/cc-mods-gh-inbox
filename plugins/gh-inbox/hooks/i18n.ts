@@ -20,7 +20,14 @@ const en = {
   paren: (text: string) => ` (${text})`,
   listSeparator: ", ",
   more: (n: number) => ` and ${n} more`,
-  ago: (seconds: number) => (seconds < 60 ? `${seconds}s ago` : `${Math.round(seconds / 60)}m ago`),
+  ago: (seconds: number) =>
+    seconds < 60
+      ? `${seconds}s ago`
+      : seconds < 3600
+        ? `${Math.round(seconds / 60)}m ago`
+        : seconds < 86400
+          ? `${Math.round(seconds / 3600)}h ago`
+          : `${Math.round(seconds / 86400)}d ago`,
 
   // Notices
   commented: (who: string, detail: string) => say(`${who} commented`, detail),
@@ -43,6 +50,7 @@ const en = {
   repoCiFailed: (name: string, branch: string, step: string) => say(`CI failed on ${branch}: ${name}`, step),
   moreUpdates: (n: number) => `GitHub: ${count(n, "more update")} (/inbox log)`,
   startWatching: (number: number, title: string) => `GitHub: watching #${number}: ${title}`,
+  missed: (n: number) => `GitHub: ${count(n, "notice")} while no window was watching (/inbox log)`,
 
   kinds: {
     branch: "Branch created",
@@ -69,7 +77,7 @@ const en = {
   registeredCount: (n: number) => `Registered repositories: ${n} (/inbox repo)`,
   showsHere: "Notices show in this window.",
   showsElsewhere: "Notices show in the other window used last (/inbox log lists them here too).",
-  noLog: "No notices in this session yet.",
+  noLog: "No notices yet.",
   usage: "Usage: /inbox [status|check|log|pick [PR]|clear|repo|nick [login [nickname]]]",
 
   // `/inbox repo`
@@ -191,7 +199,14 @@ const ja: Messages = {
   paren: text => `（${text}）`,
   listSeparator: "、",
   more: n => ` ほか${n}件`,
-  ago: seconds => (seconds < 60 ? `${seconds}秒前` : `${Math.round(seconds / 60)}分前`),
+  ago: seconds =>
+    seconds < 60
+      ? `${seconds}秒前`
+      : seconds < 3600
+        ? `${Math.round(seconds / 60)}分前`
+        : seconds < 86400
+          ? `${Math.round(seconds / 3600)}時間前`
+          : `${Math.round(seconds / 86400)}日前`,
 
   commented: (who, detail) => `${who}がコメントしました。${detail}`,
   commentedMany: (who, n) => `${who}が${n}件コメントしました。`,
@@ -213,6 +228,7 @@ const ja: Messages = {
   repoCiFailed: (name, branch, step) => `${name} の CI が失敗しました（${branch}）。${step}`,
   moreUpdates: n => `GitHub: ほか${n}件の更新があります（/inbox log）`,
   startWatching: (number, title) => `GitHub: #${number} の通知を始めます。${title}`,
+  missed: n => `GitHub: どの窓も見ていなかったあいだの通知が${n}件あります（/inbox log）`,
 
   kinds: {
     branch: "ブランチ作成",
@@ -237,7 +253,7 @@ const ja: Messages = {
   registeredCount: n => `登録したリポジトリ: ${n}件（/inbox repo）`,
   showsHere: "通知はこの窓に出します。",
   showsElsewhere: "通知は最後に操作した別の窓に出します（/inbox log で一覧を見られます）。",
-  noLog: "このセッションの通知はまだありません。",
+  noLog: "通知はまだありません。",
   usage: "使い方: /inbox [status|check|log|pick [PR]|clear|repo|nick [login [ニックネーム]]]",
 
   repoUsage: kinds =>

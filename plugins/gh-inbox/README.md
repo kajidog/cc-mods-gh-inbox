@@ -21,6 +21,8 @@ Posting comments, merging, labelling and the like are out of its scope: it never
 - On a pull request seen for the first time, what is already there is not notified.
 - Your own activity is not notified by default. A merge is notified even when it is yours.
 - Notices show only in the window used last among those alive. `/inbox log` lists them in every window.
+- `/inbox log` is shared by every window (session): it lists the notices of other windows, closed ones too.
+- What came while no window was open is listed by the next window that opens, at its first check, with one line saying how many (they are not shown one by one). That covers what GitHub still returns, within 30 days of the last look.
 - Notices, commands and panes are in English by default; set **Language** to `ja` in `/config` for Japanese (see [Settings](#settings-config)).
 
 ## Requirements
@@ -87,7 +89,7 @@ Apart from the branch's pull request, you can register repositories and be notif
 | --- | --- |
 | `/inbox` | The pull request watched and when it was last checked |
 | `/inbox check` | Check now |
-| `/inbox log` | This session's notices (the newest 20) |
+| `/inbox log` | The notices of every window (the newest 20, each line a link to it on GitHub, with when it happened) |
 | `/inbox pick [PR]` | Choose threads, reviews and comments to hand to Claude |
 | `/inbox clear` | Detach what is attached |
 | `/inbox repo` | The registered repositories and the kinds they notify |

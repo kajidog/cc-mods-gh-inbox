@@ -1,4 +1,4 @@
-import type { On } from "claude-code"
+import type { On, RenderElement } from "claude-code"
 import { expect, mock, test } from "claude-code/testing"
 
 import { RUNS } from "./fixtures/repo-answers"
@@ -326,6 +326,157 @@ test("inbox.notified tells each notice no hook refused, as it shows, once every 
   expect(told).toEqual(["[r] someoneさんが #3 にコメントしました。Looks good[31m!"])
 })
 
+test("at a session's first look, what came since another session last looked is listed, not shown", JA, async ($, on) => {
+  // Another session looked at o/r before this one opened, and saw nothing then.
+  mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } }, [`shared-seen:repo:${KEY}`]: { at: 999_000, ids: [] } })
+  const now = Date.parse("2026-10-17T00:00:00Z")
+  const clock = mock.clock(on, { now })
+  const github = fakeGitHub(on, [[COMMENT], []])
+
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual(["GitHub: どの窓も見ていなかったあいだの通知が1件あります（/inbox log）"])
+  expect(await $.command.run({ ...CHECK, args: "log" })).toEqual({
+    text: "[r] someoneさんが #3 にコメントしました。Looks good\n  u（1日前）",
+  })
+
+  // Seen now: the next check tells nothing of it.
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(github.toasts).toHaveLength(1)
+})
+
+test("at a first look while another session is alive, what it has not told yet is notified as it comes", JA, async ($, on) => {
+  const now = Date.parse("2026-10-17T00:00:00Z")
+  mock.store(on, {
+    repos: { [KEY]: { kinds: ["comment"], alias: "r" } },
+    [`shared-seen:repo:${KEY}`]: { at: now - 30_000, ids: [] },
+    // Alive, but touched before this one opened: this one shows.
+    "presence:other": { activeAt: now - 600_000, aliveAt: now - 30_000 },
+    "presence:": { activeAt: now, aliveAt: now },
+  })
+  mock.clock(on, { now })
+  const github = fakeGitHub(on, [[COMMENT]])
+
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual(["[r] someoneさんが #3 にコメントしました。Looks good"])
+})
+
+test("at a first look while another session is alive and showing, what it has not listed yet is left for it to tell how many", JA, async ($, on) => {
+  const now = Date.parse("2026-10-17T00:00:00Z")
+  mock.store(on, {
+    repos: { [KEY]: { kinds: ["comment"], alias: "r" } },
+    [`shared-seen:repo:${KEY}`]: { at: now - 30_000, ids: [] },
+    // Touched after this one: that one shows.
+    "presence:other": { activeAt: now, aliveAt: now },
+    "presence:": { activeAt: now - 600_000, aliveAt: now },
+  })
+  mock.clock(on, { now })
+  const github = fakeGitHub(on, [[COMMENT]])
+
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual([])
+  expect(await $.command.run({ ...CHECK, args: "log" })).toMatchObject({ text: expect.stringContaining("Looks good") })
+})
+
+test("what a session caught up while another showed is told by the one showing, once", JA, async ($, on) => {
+  // One left before what the log keeps is dropped.
+  mock.store(on, { "missed:other": { at: 1_000_000, count: 2 }, "missed:old": { at: 1_000_000 - 31 * 24 * 60 * 60 * 1000, count: 5 } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const github = fakeGitHub(on, [[]])
+
+  await $.command.run(CHECK)
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual(["GitHub: どの窓も見ていなかったあいだの通知が2件あります（/inbox log）"])
+})
+
+for (const registered of [true, false]) {
+  test(`a repository registered again starts from a first look, not from what was seen before (${registered ? "removed here" : "written back by another window"})`, JA, async ($, on) => {
+    // Seen ids from before, while it was registered.
+    mock.store(on, { ...(registered ? { repos: { [KEY]: { kinds: ["comment"] } } } : {}), [`shared-seen:repo:${KEY}`]: { at: 999_000, ids: [] } })
+    const clock = mock.clock(on, { now: 1_000_000 })
+    const github = fakeGitHub(on, [[COMMENT], []], argv => (argv.includes(".id, .full_name") ? { stdout: "42\no/r\n" } : undefined))
+
+    if (registered) await $.command.run({ ...CHECK, args: "repo remove o/r" })
+    expect(await $.command.run({ ...CHECK, args: "repo add o/r comment" })).toMatchObject({ text: expect.stringContaining("o/r") })
+    await clock.advance(61_000)
+    await $.command.run(CHECK)
+    expect(github.toasts).toEqual([])
+    expect(github.asked.some(argv => (argv.at(-1) ?? "").includes("/events"))).toBe(true)
+  })
+}
+
+test("a notice with no time of its own is listed as of when it was seen, not behind every other", JA, async ($, on) => {
+  const now = Date.parse("2026-10-17T00:00:00Z")
+  const old = Array.from({ length: 20 }, (_, i) => ({ id: `o${i}`, kind: "comment", pull: "o/r#1", author: "a", at: "2026-10-16T00:00:00Z", text: `old${i}`, url: "u", items: [] }))
+  mock.store(on, {
+    // This session's notices are read before the other's, so nothing before them lends them a time.
+    "history:": { at: 1, events: [] },
+    "history:other": { at: 1, events: old },
+    repos: { [KEY]: { kinds: ["comment"], alias: "r" } },
+    [`shared-seen:repo:${KEY}`]: { at: now - 30_000, ids: [] },
+  })
+  mock.clock(on, { now })
+  fakeGitHub(on, [[{ ...COMMENT, created_at: "" }]])
+
+  await $.command.run(CHECK)
+  expect(await $.command.run({ ...CHECK, args: "log" })).toMatchObject({ text: expect.stringContaining("Looks good") })
+})
+
+test("of more sessions than are kept, those whose notices are newest are kept, not those written to last", JA, async ($, on) => {
+  const now = Date.parse("2026-10-17T00:00:00Z")
+  const one = (id: string, at: string) => ({ id, kind: "comment", pull: "o/r#1", author: "a", at, text: id, url: "u", items: [] })
+  // Written to first, but holding the newest notice.
+  const histories: Record<string, unknown> = { "history:late": { at: now - 3_600_000, events: [one("newest", "2026-10-16T23:00:00Z")] } }
+  for (let i = 0; i < 20; i += 1) histories[`history:s${i}`] = { at: now - 60_000, events: [one(`old${i}`, "2026-10-01T00:00:00Z")] }
+  mock.store(on, histories)
+  mock.clock(on, { now })
+  fakeGitHub(on, [[]])
+  on("command.register", async (_$, e) => ({ value: { command: e.name } }))
+  on("session.id", async () => ({ value: "s1" }))
+  on("session.start", async (_$, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: "/repo", surface: "terminal", isInteractive: true })
+  expect(await $.command.run({ ...CHECK, args: "log" })).toMatchObject({ text: expect.stringContaining("newest") })
+})
+
+test("/inbox log lists what other sessions listed", JA, async ($, on) => {
+  const event = { id: "x", kind: "comment", pull: "o/r#3", author: "a", at: "2026-10-16T23:00:00Z", text: "elsewhere", url: "u", items: [] }
+  mock.store(on, { "history:other": { at: 1, events: [event] } })
+  mock.clock(on, { now: Date.parse("2026-10-17T00:00:00Z") })
+  fakeGitHub(on, [[]])
+
+  expect(await $.command.run({ ...CHECK, args: "log" })).toEqual({ text: "elsewhere\n  u（1時間前）" })
+})
+
+test("/inbox log's row draws each notice as a link to it, when it happened beside it", JA, async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: 1_000_000 })
+  fakeGitHub(on, [[]])
+  // The engine's own row, beneath the plugin.
+  on("ui.render", { component: "CommandOutput" }, async (_$, e) => {
+    const { Text } = _$.ui.resolve(e)
+    return h(Text, null, "engine's own") as RenderElement
+  })
+  const row = (args: string, text: string) =>
+    $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "CommandOutput", props: { command: "inbox", args, text, isErrored: false } })
+
+  const log = await row("log", "[r] a\n  https://github.com/o/r/pull/3（1日前）\nno url\n  （3日前）\nb\n  https://github.com/o/r/pull/4 (2h ago)")
+  const links = await log.findAll({ type: "Link" })
+  expect(links.map(link => [link.props.href, link.children.join("")])).toEqual([
+    ["https://github.com/o/r/pull/3", "[r] a"],
+    ["https://github.com/o/r/pull/4", "b"],
+  ])
+  expect(await log.find({ type: "Text", text: "（1日前）" })).toBeDefined()
+  expect(await log.find({ type: "Text", text: " (2h ago)" })).toBeDefined()
+  // One with no URL is drawn as text, the others still links.
+  expect(await log.find({ type: "Text", text: "no url（3日前）" })).toBeDefined()
+
+  // Any other row is the engine's own.
+  expect(await (await row("log", "通知はまだありません。")).find({ text: "engine's own" })).toBeDefined()
+  expect(await (await row("status", "[r] a\n  https://x")).find({ text: "engine's own" })).toBeDefined()
+})
+
 test("notices and commands speak English by default", async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } } })
   const clock = mock.clock(on, { now: 1_000_000 })
@@ -338,6 +489,36 @@ test("notices and commands speak English by default", async ($, on) => {
   expect(await $.command.run({ ...CHECK, args: "repo" })).toMatchObject({ text: expect.stringContaining("o/r [r]: Comments on PRs and issues") })
   expect(await $.command.run({ ...CHECK, args: "repo add owner/repo comment,push" })).toEqual({ text: "Registered Owner/Repo (Comments on PRs and issues, Pushes)." })
   expect(await $.command.run({ ...CHECK, args: "nick" })).toEqual({ text: "No nicknames yet. Add one with /inbox nick <login> <nickname>." })
+})
+
+test("a session that has ended is not marked alive again by a check still under way", JA, async ($, on) => {
+  // The store, by hand, to see what is written to it.
+  const store = new Map<string, unknown>()
+  const written: string[] = []
+  on("store.get", async (_$, e) => ({ value: store.get(e.key) }))
+  on("store.set", async (_$, e) => {
+    written.push(e.key)
+    store.set(e.key, e.value)
+    return { value: undefined }
+  })
+  on("store.delete", async (_$, e) => {
+    store.delete(e.key)
+    return { value: undefined }
+  })
+  on("store.keys", async () => ({ value: [...store.keys()] }))
+  mock.clock(on, { now: 1_000_000 })
+  fakeGitHub(on, [[]])
+  on("command.register", async (_$, e) => ({ value: { command: e.name } }))
+  on("session.id", async () => ({ value: "s1" }))
+  on("session.start", async (_$, e) => ({ cwd: e.cwd }))
+  on("session.end", async () => ({ sessionId: "s1" }))
+
+  await $.session.start({ cwd: "/repo", surface: "terminal", isInteractive: true })
+  expect(written).toContain("presence:s1")
+  await $.session.end({ reason: "prompt_input_exit", sessionId: "s1", resume: { id: "s1" } })
+  written.length = 0
+  await $.command.run(CHECK)
+  expect(written).not.toContain("presence:s1")
 })
 
 for (const [language, hint] of [["en", "nick [login [nickname]]"], ["ja", "nick [login [ニックネーム]]"]] as const) {

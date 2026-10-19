@@ -5,6 +5,24 @@ import type { GhEvent, GhPick, GhPicker, GhPickPull, GhStaged, GhWatch, Inbox, I
 
 import { displayName, mergeSeen, newEvents, type Nicknames, plain, pullIds } from "./events"
 import { type PullRef, type PullState, parsePull, parsePullUrl, pullArgv, pullName } from "./github"
+import {
+  addSharedSeen,
+  HISTORIES_KEPT,
+  HISTORY_PREFIX,
+  latest,
+  logText,
+  MISSED_PREFIX,
+  mergeHistories,
+  newestAt,
+  parseLog,
+  SHARED_KEPT_MS,
+  SHARED_SEEN_PREFIX,
+  toKept,
+  toMissed,
+  toSessionHistory,
+  toSharedSeen,
+  unheld,
+} from "./history"
 import { type Language, MESSAGES, type Messages, toLanguage } from "./i18n"
 import {
   CONTEXT_LIMIT,
@@ -80,6 +98,7 @@ import {
 const COMMAND = "inbox"
 const NICKNAMES_KEY = "nicknames"
 const EVENTS_KEPT = 100
+const LOG_SHOWN = 20
 const SHOWN_AT_ONCE = 5
 const TOAST_MS = 8000
 // A branch with no open pull request is looked up again this often, not at every check.
@@ -145,10 +164,21 @@ type Context = {
   toggling: Promise<void>
   /** How many loads the pick pane has started: a load that is no longer the last one is not shown. */
   picking: number
+  /** Whether the session has ended: a check still under way then does not mark it alive again. */
+  isEnded: boolean
 }
 
 const pullKey = (ref: PullRef) => `${ref.host}/${pullName(ref)}`
+/**
+ * A check's notices: `fresh` came since this session last looked. At its first look, what came since any
+ * session last looked is `missed` while no other session is alive, `adopted` while one is: that one may not
+ * have told it yet, and this one may be the one showing.
+ */
+type Checked = { fresh: InboxNotice[]; missed: InboxNotice[]; adopted: InboxNotice[] }
+
 const presenceKey = (ctx: Context) => `${PRESENCE_PREFIX}${ctx.sessionId}`
+const historyKey = (ctx: Context) => `${HISTORY_PREFIX}${ctx.sessionId}`
+const missedKey = (ctx: Context) => `${MISSED_PREFIX}${ctx.sessionId}`
 const staleMs = (ctx: Context) => STALE_INTERVALS * ctx.intervalSeconds * 1000
 
 function toNicknames(value: unknown): Nicknames {
@@ -203,8 +233,9 @@ async function show($: EngineInterface, ctx: Context, notices: readonly InboxNot
 
 /** Writes this session's presence: touched now when `isTouch`, alive now either way. */
 async function touch($: EngineInterface, ctx: Context, isTouch: boolean) {
-  if (ctx.sessionId === "") return
+  if (ctx.sessionId === "" || ctx.isEnded) return
   const now = await $.clock.now()
+  if (ctx.isEnded) return
   if (isTouch) ctx.activeAt = now
   ctx.touchedAt = now
   const presence: Presence = { activeAt: ctx.activeAt, aliveAt: now }
@@ -224,9 +255,21 @@ async function isShowing($: EngineInterface, ctx: Context, now: number) {
   return active === undefined || active === ctx.sessionId
 }
 
+/** Whether a session other than this one is alive: one that may not have told what came lately yet. */
+async function isAnotherAlive($: EngineInterface, ctx: Context, now: number) {
+  for (const key of await $.store.keys()) {
+    if (!key.startsWith(PRESENCE_PREFIX) || key === presenceKey(ctx)) continue
+    const presence = toPresence(await $.store.get(key))
+    if (presence !== undefined && now - presence.aliveAt <= staleMs(ctx)) return true
+  }
+
+  return false
+}
+
 /** Removes what sessions that never ended cleanly left behind. */
 async function tidy($: EngineInterface, now: number) {
   const repos = toRepos(await $.store.get(REPOS_KEY))
+  const histories: Array<[string, number]> = []
   for (const key of await $.store.keys()) {
     const value = await $.store.get(key)
     if (key.startsWith(PRESENCE_PREFIX)) {
@@ -237,6 +280,14 @@ async function tidy($: EngineInterface, now: number) {
       if (typeof at !== "number" || now - at > CACHE_KEPT_MS) await $.store.delete(key)
     } else if (key.startsWith(REPO_CACHE_PREFIX)) {
       if (now - (toRepoCache(value)?.at ?? 0) > CACHE_KEPT_MS) await $.store.delete(key)
+    } else if (key.startsWith(SHARED_SEEN_PREFIX)) {
+      if (now - (toSharedSeen(value)?.at ?? 0) > SHARED_KEPT_MS) await $.store.delete(key)
+    } else if (key.startsWith(MISSED_PREFIX)) {
+      if (now - (toMissed(value)?.at ?? 0) > SHARED_KEPT_MS) await $.store.delete(key)
+    } else if (key.startsWith(HISTORY_PREFIX)) {
+      const history = toSessionHistory(value)
+      if (history === undefined || now - history.at > SHARED_KEPT_MS) await $.store.delete(key)
+      else histories.push([key, newestAt(history)])
     } else if (key.startsWith(TITLES_PREFIX)) {
       if (!(key.slice(TITLES_PREFIX.length) in repos)) await $.store.delete(key)
     } else if (key.startsWith("seen:")) {
@@ -244,6 +295,56 @@ async function tidy($: EngineInterface, now: number) {
       await $.store.delete(key)
     }
   }
+  // The sessions whose newest notices are the newest are kept: each kept one has a notice newer than any dropped one's,
+  // so the log's newest `HISTORIES_KEPT` are all still there.
+  histories.sort((a, b) => b[1] - a[1])
+  for (const [key] of histories.slice(HISTORIES_KEPT)) await $.store.delete(key)
+}
+
+/** Every session's notices, each once. */
+async function readHistory($: EngineInterface) {
+  const histories: GhEvent[][] = []
+  for (const key of await $.store.keys())
+    if (key.startsWith(HISTORY_PREFIX)) histories.push(toSessionHistory(await $.store.get(key))?.events ?? [])
+
+  return mergeHistories(histories)
+}
+
+/** Writes this session's notices where every session reads them. */
+async function writeHistory($: EngineInterface, ctx: Context, now: number) {
+  const { value: list = [] } = await $.state.get({ plugin: "gh-inbox", key: "events" })
+  if (list.length > 0) await $.store.set(historyKey(ctx), toKept(list, now))
+}
+
+/** How many notices sessions caught up while not showing them, taken off the store; a count older than what the log keeps is dropped. */
+async function claimMissed($: EngineInterface, now: number) {
+  let count = 0
+  for (const key of await $.store.keys()) {
+    if (!key.startsWith(MISSED_PREFIX)) continue
+    const missed = toMissed(await $.store.get(key))
+    if (missed !== undefined && now - missed.at <= SHARED_KEPT_MS) count += missed.count
+    await $.store.delete(key)
+  }
+
+  return count
+}
+
+/** The ids any session has seen, keyed as a session's own. */
+async function sharedSeen($: EngineInterface) {
+  const byKey: Record<string, string[]> = {}
+  for (const key of await $.store.keys()) {
+    if (!key.startsWith(SHARED_SEEN_PREFIX)) continue
+    const seen = toSharedSeen(await $.store.get(key))
+    if (seen !== undefined) byKey[key.slice(SHARED_SEEN_PREFIX.length)] = seen.ids
+  }
+
+  return byKey
+}
+
+/** Adds `ids` to what every session has seen under `key`; `keep` filters what was there. */
+async function shareSeen($: EngineInterface, key: string, ids: readonly string[], now: number, keep: (id: string) => boolean = () => true) {
+  const held = toSharedSeen(await $.store.get(`${SHARED_SEEN_PREFIX}${key}`))
+  await $.store.set(`${SHARED_SEEN_PREFIX}${key}`, addSharedSeen(held && { ...held, ids: held.ids.filter(keep) }, ids, now))
 }
 
 /**
@@ -266,8 +367,14 @@ async function fetchPull($: EngineInterface, ctx: Context, ref: PullRef, now: nu
   return pull
 }
 
-/** Checks the branch's pull request; its notices go to `fresh`. */
-async function checkPull($: EngineInterface, ctx: Context, fresh: InboxNotice[], isForced: boolean) {
+/** Which of a check's lists a first look (`own` undefined) or a later one puts its notices in. */
+async function bucketOf($: EngineInterface, ctx: Context, own: unknown, now: number): Promise<keyof Checked> {
+  if (own !== undefined) return "fresh"
+  return (await isAnotherAlive($, ctx, now)) ? "adopted" : "missed"
+}
+
+/** Checks the branch's pull request; its notices go to `checked`. */
+async function checkPull($: EngineInterface, ctx: Context, checked: Checked, isForced: boolean) {
   try {
     const branch = await currentBranch($)
     if (branch === null) {
@@ -297,12 +404,15 @@ async function checkPull($: EngineInterface, ctx: Context, fresh: InboxNotice[],
     // Those a registered repository's notices took count too, so nothing is notified twice.
     const key = pullKey(ref)
     const { value: seenByKey = {} } = await $.state.get({ plugin: "gh-inbox", key: "seen" })
-    const seen = seenForPull(seenByKey, ref)
+    const own = seenForPull(seenByKey, ref)
+    const seen = own ?? seenForPull(await sharedSeen($), ref)
+    const bucket = checked[await bucketOf($, ctx, own, now)]
     const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
     const isSelf = (event: GhEvent) => event.author !== null && event.author === pull.viewer
     for (const event of newEvents(pull, seen, { nicknames, notifySelf: ctx.notifySelf, language: ctx.language }))
-      fresh.push({ event, source: "pull", repo: repoKey(ref), label: null, isSelf: isSelf(event), text: plain(event.text) })
+      bucket.push({ event, source: "pull", repo: repoKey(ref), label: null, isSelf: isSelf(event), text: plain(event.text) })
     await update($, seenIds, held => ({ ...held, [key]: mergeSeen(held[key] ?? [], pullIds(pull)) }))
+    await shareSeen($, key, pullIds(pull), now)
 
     ctx.found.head = pull.commits.at(-1)?.oid
     if (pull.state !== "OPEN") {
@@ -318,7 +428,7 @@ async function checkPull($: EngineInterface, ctx: Context, fresh: InboxNotice[],
       checkedAt: now,
       error: null,
     }))
-    if (seen === undefined && pull.state === "OPEN" && (await isShowing($, ctx, now)))
+    if (own === undefined && pull.state === "OPEN" && (await isShowing($, ctx, now)))
       $.ui.toast(ctx.t.startWatching(ref.number, plain(pull.title)), { timeoutMs: TOAST_MS })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -487,13 +597,21 @@ async function titlesFor($: EngineInterface, ref: RepoRef, pending: ReturnType<t
   return titles
 }
 
-/** Checks one registered repository; its notices are returned. */
-async function checkRepo($: EngineInterface, ctx: Context, key: string, entry: RepoEntry, nicknames: Nicknames, now: number): Promise<InboxNotice[]> {
+/** Checks one registered repository; its notices are returned, and the list of a check they go in. */
+async function checkRepo(
+  $: EngineInterface,
+  ctx: Context,
+  key: string,
+  entry: RepoEntry,
+  nicknames: Nicknames,
+  now: number,
+): Promise<{ notices: InboxNotice[]; bucket: keyof Checked }> {
   const ref = refOfKey(key)
   let cache = await fetchRepo($, ctx, ref, entry, now)
   const seenKey = repoSeenKey(ref)
   const { value: seenByKey = {} } = await $.state.get({ plugin: "gh-inbox", key: "seen" })
-  const seen = seenForRepo(seenByKey, ref)
+  const own = seenForRepo(seenByKey, ref)
+  const seen = own ?? seenForRepo(await sharedSeen($), ref)
   const watched = ctx.found
   // The check that sees the pull request merged or closed tells its failed checks too: their runs are not told twice.
   const isWatched = watched !== undefined && (!watched.isDone || watched.doneAt === ctx.checks)
@@ -529,19 +647,22 @@ async function checkRepo($: EngineInterface, ctx: Context, key: string, entry: R
     // Not choosing `ci-failure` drops the mark, so choosing it again starts from the runs there by then.
     [seenKey]: mergeSeen((held[seenKey] ?? []).filter(id => wantsRuns || id !== ACTIONS_PRIMED), ids),
   }))
+  await shareSeen($, seenKey, ids, now, id => wantsRuns || id !== ACTIONS_PRIMED)
 
-  return fresh.map(event => ({
+  const notices = fresh.map(event => ({
     event,
-    source: "repo",
+    source: "repo" as const,
     repo: key,
     label,
     isSelf: viewer !== "" && event.author === viewer,
     text: plain(event.text),
   }))
+
+  return { notices, bucket: await bucketOf($, ctx, own, now) }
 }
 
-/** Checks every registered repository; their notices go to `fresh`. */
-async function checkRepos($: EngineInterface, ctx: Context, fresh: InboxNotice[]) {
+/** Checks every registered repository; their notices go to `checked`. */
+async function checkRepos($: EngineInterface, ctx: Context, checked: Checked) {
   const repos = Object.entries(toRepos(await $.store.get(REPOS_KEY))).slice(0, ctx.maxRepos)
   if (repos.length === 0) return
   const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
@@ -551,10 +672,12 @@ async function checkRepos($: EngineInterface, ctx: Context, fresh: InboxNotice[]
     // With no kind chosen GitHub is not asked; chosen again, the repository starts over from a first look.
     if (entry.kinds.length === 0) {
       await update($, seenIds, ({ [repoSeenKey(refOfKey(key))]: _, ...others }) => others)
+      await $.store.delete(`${SHARED_SEEN_PREFIX}${repoSeenKey(refOfKey(key))}`)
       continue
     }
     try {
-      fresh.push(...(await checkRepo($, ctx, key, entry, nicknames, now)))
+      const { notices, bucket } = await checkRepo($, ctx, key, entry, nicknames, now)
+      checked[bucket].push(...notices)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       ctx.repoErrors.set(key, message)
@@ -574,14 +697,30 @@ async function check($: EngineInterface, ctx: Context, isForced = false) {
 async function runCheck($: EngineInterface, ctx: Context, isForced: boolean) {
   ctx.checks += 1
   try {
-    const fresh: InboxNotice[] = []
-    await checkPull($, ctx, fresh, isForced)
-    await checkRepos($, ctx, fresh)
+    const checked: Checked = { fresh: [], missed: [], adopted: [] }
+    await checkPull($, ctx, checked, isForced)
+    await checkRepos($, ctx, checked)
     await touch($, ctx, false)
-    if (fresh.length === 0) return
-    await update($, events, list => [...list, ...fresh.map(notice => notice.event)].slice(-EVENTS_KEPT))
-    // Every session lists the notices; only the one touched last shows them.
-    if (await isShowing($, ctx, await $.clock.now())) await show($, ctx, fresh)
+    const { fresh, missed, adopted } = checked
+    const now = await $.clock.now()
+    // Only the one touched last shows them.
+    const isShown = await isShowing($, ctx, now)
+    if (fresh.length > 0 || missed.length > 0 || adopted.length > 0) {
+      // What no session had listed and this one does not show is only listed: a toast says how much, from the session showing.
+      const unshown = isShown ? missed : [...missed, ...adopted]
+      const caughtUp = unheld(await readHistory($), unshown.map(notice => notice.event)).length
+      // One with no time of its own (a failed check of a commit with none) is kept as of when it was seen.
+      const seenAt = new Date(now).toISOString()
+      const added = [...missed, ...adopted, ...fresh].map(({ event }) => (event.at === "" ? { ...event, at: seenAt } : event))
+      await update($, events, list => latest([...list, ...added], EVENTS_KEPT))
+      await writeHistory($, ctx, now)
+      if (caughtUp > 0) await $.store.set(missedKey(ctx), { at: now, count: (toMissed(await $.store.get(missedKey(ctx)))?.count ?? 0) + caughtUp })
+    }
+    if (!isShown) return
+    const caughtUp = await claimMissed($, now)
+    if (caughtUp > 0) $.ui.toast(ctx.t.missed(caughtUp), { timeoutMs: TOAST_MS })
+    const shown = [...adopted, ...fresh]
+    if (shown.length > 0) await show($, ctx, shown)
   } catch (error) {
     $.ui.log(`gh-inbox: ${error instanceof Error ? error.message : String(error)}`, { to: "debug" })
   } finally {
@@ -686,6 +825,8 @@ async function repoCommand($: EngineInterface, ctx: Context, words: readonly str
       const held = repos[repoKey(named)]
       if (held !== undefined) return t.alreadyRegistered(repoName(named), kindList(t, held.kinds))
       const chosen = kinds ?? [...DEFAULT_KINDS]
+      // What another window's check under way at the removal wrote back is not the first look's baseline.
+      await $.store.delete(`${SHARED_SEEN_PREFIX}${repoSeenKey(named)}`)
       await writeRepo($, repoKey(named), () => ({ kinds: chosen, ...(Number(id) > 0 ? { id: Number(id) } : {}) }))
       // The first look takes what is there as seen, so the notices start from now.
       void check($, ctx)
@@ -707,6 +848,7 @@ async function repoCommand($: EngineInterface, ctx: Context, words: readonly str
       await writeRepo($, key, () => undefined)
       await $.store.delete(`${REPO_CACHE_PREFIX}${key}`)
       await $.store.delete(`${TITLES_PREFIX}${key}`)
+      await $.store.delete(`${SHARED_SEEN_PREFIX}${repoSeenKey(refOfKey(key))}`)
       await update($, seenIds, ({ [repoSeenKey(refOfKey(key))]: _, ...others }) => others)
       ctx.repoErrors.delete(key)
       return t.removed(shown)
@@ -879,6 +1021,7 @@ export const register: Register = (on, options) => {
     retries: new Map(),
     toggling: Promise.resolve(),
     picking: 0,
+    isEnded: false,
   }
   let timer: Timer | undefined
 
@@ -897,8 +1040,11 @@ export const register: Register = (on, options) => {
       argumentHint: t.commandHint,
     })
     ctx.sessionId = await $.session.id()
+    ctx.isEnded = false
     const now = await $.clock.now()
     await tidy($, now)
+    // Notices a session listed before they were shared are shared as it opens again.
+    await writeHistory($, ctx, now)
     // A reload keeps the session's last touch; a new session counts as touched as it opens.
     ctx.activeAt = toPresence(await $.store.get(presenceKey(ctx)))?.activeAt ?? now
     await touch($, ctx, false)
@@ -913,6 +1059,7 @@ export const register: Register = (on, options) => {
   on("session.end", async ($, e, next) => {
     timer?.cancel()
     timer = undefined
+    ctx.isEnded = true
     if (ctx.sessionId !== "") await $.store.delete(presenceKey(ctx))
 
     return next(e)
@@ -959,9 +1106,14 @@ export const register: Register = (on, options) => {
         await check($, ctx, true)
         return { text: await status($, ctx) }
       case "log": {
-        const { value: list = [] } = await $.state.get({ plugin: "gh-inbox", key: "events" })
+        const list = latest(await readHistory($), LOG_SHOWN)
         if (list.length === 0) return { text: t.noLog }
-        return { text: list.slice(-20).map(event => `${plain(event.text)}\n  ${plain(event.url)}`).join("\n") }
+        const now = await $.clock.now()
+        const when = (event: GhEvent) => {
+          const at = Date.parse(event.at)
+          return Number.isNaN(at) ? "" : t.paren(ago(t, now - at))
+        }
+        return { text: logText(list.map(event => ({ text: plain(event.text), url: plain(event.url), when: when(event) }))) }
       }
       case "repo":
         return { text: await repoCommand($, ctx, rest) }
@@ -993,6 +1145,24 @@ export const register: Register = (on, options) => {
       default:
         return { text: t.usage }
     }
+  })
+
+  // `/inbox log`'s row draws each notice as a link to it; the text, URLs written out, is what the model reads.
+  on("ui.render", { component: "CommandOutput", props: { command: COMMAND } }, async ($, e, next) => {
+    const isLog = e.props.args.trim().split(/\s+/)[0] === "log"
+    const rows = isLog && !e.props.isErrored ? parseLog(e.props.text) : undefined
+    if (rows === undefined) return next(e)
+    const { Box, Text, Link } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="column">
+        {rows.map(row => (
+          <Text>
+            {row.url === "" ? row.text : <Link href={row.url}>{row.text}</Link>}
+            {row.when === "" ? null : <Text dimColor>{row.when}</Text>}
+          </Text>
+        ))}
+      </Box>
+    )
   })
 
   on("ui.render", { component: "Pane", requestId: PICKER_PANE }, async ($, e) => {
