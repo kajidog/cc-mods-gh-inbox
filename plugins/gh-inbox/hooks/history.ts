@@ -54,14 +54,22 @@ const hostOf = (url: string) => /^https?:\/\/([^/]+)/.exec(url)?.[1] ?? ""
 const sameId = (id: string) => id.replace(/^(merged|closed):#\d+$/, "state:$1")
 const eventKey = (event: GhEvent) => `${hostOf(event.url)}|${event.pull}|${sameId(event.id)}`
 
-/** The `added` that `held` does not hold yet, each once. */
+// The comments and commits a notice tells, by their GitHub URL: the branch's pull request tells a review with its line
+// comments or a run of commits as one notice, a registered repository a line comment or a push as another.
+const partsOf = (event: GhEvent) =>
+  (Array.isArray(event.items) ? event.items : []).map(item => item.url ?? "").filter(url => url !== "")
+
+/** The `added` that `held` does not hold yet, each once: one telling a comment or a commit another tells is the same. */
 export function unheld(held: readonly GhEvent[], added: readonly GhEvent[]): GhEvent[] {
   const keys = new Set(held.map(eventKey))
+  const parts = new Set(held.flatMap(partsOf))
 
   return added.filter(event => {
     const key = eventKey(event)
-    if (keys.has(key)) return false
+    const own = partsOf(event)
+    if (keys.has(key) || own.some(url => parts.has(url))) return false
     keys.add(key)
+    for (const url of own) parts.add(url)
     return true
   })
 }
@@ -69,10 +77,10 @@ export function unheld(held: readonly GhEvent[], added: readonly GhEvent[]): GhE
 /** Every session's notices together, each once. */
 export const mergeHistories = (histories: readonly (readonly GhEvent[])[]) => unheld([], histories.flat())
 
-/** What a session keeps of its notices: the newest `HISTORY_KEPT`, without the bodies only a prompt reads. */
+/** What a session keeps of its notices: the newest `HISTORY_KEPT`, of their parts only the URLs `unheld` compares. */
 export const toKept = (events: readonly GhEvent[], now: number): SessionHistory => ({
   at: now,
-  events: latest(unheld([], events), HISTORY_KEPT).map(event => ({ ...event, items: [] })),
+  events: latest(unheld([], events), HISTORY_KEPT).map(event => ({ ...event, items: partsOf(event).map(url => ({ body: "", url })) })),
 })
 
 /** `seen` with `ids` added, looked at `now`. */
