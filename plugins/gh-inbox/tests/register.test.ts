@@ -379,7 +379,8 @@ test("at a first look while another session is alive and showing, what it has no
 })
 
 test("what a session caught up while another showed is told by the one showing, once", JA, async ($, on) => {
-  mock.store(on, { "missed:other": 2 })
+  // One left before what the log keeps is dropped.
+  mock.store(on, { "missed:other": { at: 1_000_000, count: 2 }, "missed:old": { at: 1_000_000 - 31 * 24 * 60 * 60 * 1000, count: 5 } })
   const clock = mock.clock(on, { now: 1_000_000 })
   const github = fakeGitHub(on, [[]])
 
@@ -389,16 +390,21 @@ test("what a session caught up while another showed is told by the one showing, 
   expect(github.toasts).toEqual(["GitHub: どの窓も見ていなかったあいだの通知が2件あります（/inbox log）"])
 })
 
-test("a repository removed and registered again starts from a first look, not from what was seen before", JA, async ($, on) => {
-  mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } }, [`shared-seen:repo:${KEY}`]: { at: 999_000, ids: [] } })
-  mock.clock(on, { now: 1_000_000 })
-  const github = fakeGitHub(on, [[COMMENT]])
+for (const registered of [true, false]) {
+  test(`a repository registered again starts from a first look, not from what was seen before (${registered ? "removed here" : "written back by another window"})`, JA, async ($, on) => {
+    // Seen ids from before, while it was registered.
+    mock.store(on, { ...(registered ? { repos: { [KEY]: { kinds: ["comment"] } } } : {}), [`shared-seen:repo:${KEY}`]: { at: 999_000, ids: [] } })
+    const clock = mock.clock(on, { now: 1_000_000 })
+    const github = fakeGitHub(on, [[COMMENT], []], argv => (argv.includes(".id, .full_name") ? { stdout: "42\no/r\n" } : undefined))
 
-  await $.command.run({ ...CHECK, args: "repo remove o/r" })
-  await $.command.run({ ...CHECK, args: "repo add o/r comment" })
-  await $.command.run(CHECK)
-  expect(github.toasts).toEqual([])
-})
+    if (registered) await $.command.run({ ...CHECK, args: "repo remove o/r" })
+    expect(await $.command.run({ ...CHECK, args: "repo add o/r comment" })).toMatchObject({ text: expect.stringContaining("o/r") })
+    await clock.advance(61_000)
+    await $.command.run(CHECK)
+    expect(github.toasts).toEqual([])
+    expect(github.asked.some(argv => (argv.at(-1) ?? "").includes("/events"))).toBe(true)
+  })
+}
 
 test("/inbox log lists what other sessions listed", JA, async ($, on) => {
   const event = { id: "x", kind: "comment", pull: "o/r#3", author: "a", at: "2026-10-16T23:00:00Z", text: "elsewhere", url: "u", items: [] }
@@ -421,7 +427,7 @@ test("/inbox log's row draws each notice as a link to it, when it happened besid
   const row = (args: string, text: string) =>
     $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "CommandOutput", props: { command: "inbox", args, text, isErrored: false } })
 
-  const log = await row("log", "[r] a\n  https://github.com/o/r/pull/3（1日前）\nb\n  https://github.com/o/r/pull/4 (2h ago)")
+  const log = await row("log", "[r] a\n  https://github.com/o/r/pull/3（1日前）\nno url\n  （3日前）\nb\n  https://github.com/o/r/pull/4 (2h ago)")
   const links = await log.findAll({ type: "Link" })
   expect(links.map(link => [link.props.href, link.children.join("")])).toEqual([
     ["https://github.com/o/r/pull/3", "[r] a"],
@@ -429,6 +435,8 @@ test("/inbox log's row draws each notice as a link to it, when it happened besid
   ])
   expect(await log.find({ type: "Text", text: "（1日前）" })).toBeDefined()
   expect(await log.find({ type: "Text", text: " (2h ago)" })).toBeDefined()
+  // One with no URL is drawn as text, the others still links.
+  expect(await log.find({ type: "Text", text: "no url（3日前）" })).toBeDefined()
 
   // Any other row is the engine's own.
   expect(await (await row("log", "通知はまだありません。")).find({ text: "engine's own" })).toBeDefined()

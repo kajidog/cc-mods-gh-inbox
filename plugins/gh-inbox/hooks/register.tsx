@@ -17,6 +17,7 @@ import {
   SHARED_KEPT_MS,
   SHARED_SEEN_PREFIX,
   toKept,
+  toMissed,
   toSessionHistory,
   toSharedSeen,
   unheld,
@@ -277,6 +278,8 @@ async function tidy($: EngineInterface, now: number) {
       if (now - (toRepoCache(value)?.at ?? 0) > CACHE_KEPT_MS) await $.store.delete(key)
     } else if (key.startsWith(SHARED_SEEN_PREFIX)) {
       if (now - (toSharedSeen(value)?.at ?? 0) > SHARED_KEPT_MS) await $.store.delete(key)
+    } else if (key.startsWith(MISSED_PREFIX)) {
+      if (now - (toMissed(value)?.at ?? 0) > SHARED_KEPT_MS) await $.store.delete(key)
     } else if (key.startsWith(HISTORY_PREFIX)) {
       const at = toSessionHistory(value)?.at
       if (at === undefined || now - at > SHARED_KEPT_MS) await $.store.delete(key)
@@ -308,13 +311,13 @@ async function writeHistory($: EngineInterface, ctx: Context, now: number) {
   if (list.length > 0) await $.store.set(historyKey(ctx), toKept(list, now))
 }
 
-/** How many notices sessions caught up while not showing them, taken off the store. */
-async function claimMissed($: EngineInterface) {
+/** How many notices sessions caught up while not showing them, taken off the store; a count older than what the log keeps is dropped. */
+async function claimMissed($: EngineInterface, now: number) {
   let count = 0
   for (const key of await $.store.keys()) {
     if (!key.startsWith(MISSED_PREFIX)) continue
-    const value = await $.store.get(key)
-    count += typeof value === "number" ? value : 0
+    const missed = toMissed(await $.store.get(key))
+    if (missed !== undefined && now - missed.at <= SHARED_KEPT_MS) count += missed.count
     await $.store.delete(key)
   }
 
@@ -703,10 +706,10 @@ async function runCheck($: EngineInterface, ctx: Context, isForced: boolean) {
       const caughtUp = unheld(await readHistory($), unshown.map(notice => notice.event)).length
       await update($, events, list => latest([...list, ...[...missed, ...adopted, ...fresh].map(notice => notice.event)], EVENTS_KEPT))
       await writeHistory($, ctx, now)
-      if (caughtUp > 0) await $.store.set(missedKey(ctx), Number((await $.store.get(missedKey(ctx))) ?? 0) + caughtUp)
+      if (caughtUp > 0) await $.store.set(missedKey(ctx), { at: now, count: (toMissed(await $.store.get(missedKey(ctx)))?.count ?? 0) + caughtUp })
     }
     if (!isShown) return
-    const caughtUp = await claimMissed($)
+    const caughtUp = await claimMissed($, now)
     if (caughtUp > 0) $.ui.toast(ctx.t.missed(caughtUp), { timeoutMs: TOAST_MS })
     const shown = [...adopted, ...fresh]
     if (shown.length > 0) await show($, ctx, shown)
@@ -814,6 +817,8 @@ async function repoCommand($: EngineInterface, ctx: Context, words: readonly str
       const held = repos[repoKey(named)]
       if (held !== undefined) return t.alreadyRegistered(repoName(named), kindList(t, held.kinds))
       const chosen = kinds ?? [...DEFAULT_KINDS]
+      // What another window's check under way at the removal wrote back is not the first look's baseline.
+      await $.store.delete(`${SHARED_SEEN_PREFIX}${repoSeenKey(named)}`)
       await writeRepo($, repoKey(named), () => ({ kinds: chosen, ...(Number(id) > 0 ? { id: Number(id) } : {}) }))
       // The first look takes what is there as seen, so the notices start from now.
       void check($, ctx)
@@ -1141,7 +1146,7 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column">
         {rows.map(row => (
           <Text>
-            <Link href={row.url}>{row.text}</Link>
+            {row.url === "" ? row.text : <Link href={row.url}>{row.text}</Link>}
             {row.when === "" ? null : <Text dimColor>{row.when}</Text>}
           </Text>
         ))}

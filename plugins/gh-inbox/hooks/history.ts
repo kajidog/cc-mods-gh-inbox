@@ -18,6 +18,8 @@ export const SHARED_SEEN_PREFIX = "shared-seen:"
 export const SHARED_KEPT_MS = 30 * 24 * 60 * 60 * 1000
 
 export type SharedSeen = { at: number; ids: string[] }
+/** What a session left under `missed:<session id>`. */
+export type Missed = { at: number; count: number }
 export type SessionHistory = { at: number; events: GhEvent[] }
 
 const isEvent = (value: unknown): value is GhEvent => {
@@ -31,6 +33,12 @@ export function toSessionHistory(value: unknown): SessionHistory | undefined {
   const { at, events } = value as { at?: unknown; events?: unknown }
   if (typeof at !== "number" || !Array.isArray(events)) return undefined
   return { at, events: events.filter(isEvent) }
+}
+
+export function toMissed(value: unknown): Missed | undefined {
+  if (typeof value !== "object" || value === null) return undefined
+  const { at, count } = value as { at?: unknown; count?: unknown }
+  return typeof at === "number" && typeof count === "number" ? { at, count } : undefined
 }
 
 export function toSharedSeen(value: unknown): SharedSeen | undefined {
@@ -86,7 +94,7 @@ export function latest(history: readonly GhEvent[], count: number): GhEvent[] {
   return timed.slice(-count).map(({ event }) => event)
 }
 
-/** One notice as `/inbox log` lists it: `when` as `t.paren` wrote it, or empty. */
+/** One notice as `/inbox log` lists it: `url` empty where it has none, `when` as `t.paren` wrote it or empty. */
 export type LogRow = { text: string; url: string; when: string }
 
 /** `/inbox log`'s text: each notice on a line, its URL and when it happened under it. */
@@ -98,7 +106,7 @@ export function parseLog(text: string): LogRow[] | undefined {
   if (lines.length % 2 !== 0) return undefined
   const rows: LogRow[] = []
   for (let i = 0; i < lines.length; i += 2) {
-    const match = /^ {2}(\S+?)((?: \(|（).*)?$/.exec(lines[i + 1] ?? "")
+    const match = /^ {2}(\S*?)((?: \(|（).*)?$/.exec(lines[i + 1] ?? "")
     if (match === null) return undefined
     rows.push({ text: lines[i] ?? "", url: match[1] ?? "", when: match[2] ?? "" })
   }
