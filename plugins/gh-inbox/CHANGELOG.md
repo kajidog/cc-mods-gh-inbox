@@ -1,5 +1,13 @@
 # gh-inbox
 
+## 0.4.0
+
+### Minor Changes
+
+- 2ebc339: Notices, commands, panes and what is handed to Claude now come in English or Japanese, chosen by the new **Language** setting in `/config`. English is the default: to keep the Japanese lines, set it to `ja`.
+  
+  通知・コマンド・ペインと Claude に渡す文を、英語と日本語から選べるようにしました（`/config` の **Language**）。初期値は英語です。これまでどおり日本語で出すには `ja` にしてください。
+
 ## 0.3.0
 
 ### Minor Changes
