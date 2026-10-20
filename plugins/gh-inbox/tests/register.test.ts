@@ -491,6 +491,46 @@ test("/inbox repo tells when each repository's last event happened", JA, async (
   expect(await $.command.run({ ...CHECK, args: "repo" })).toMatchObject({ text: expect.stringContaining("最後の確認: 0秒前、最後のイベント: 5分前") })
 })
 
+test("the tray under the prompt tells how long ago each repository's last event happened, kept up each check", JA, async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" }, "github.com/o/quiet": { kinds: ["push"] }, "github.com/o/off": { kinds: [] } } })
+  const clock = mock.clock(on, { now: Date.parse(COMMENT.created_at) + 5 * 60_000 })
+  fakeGitHub(on, [[COMMENT]], argv => {
+    const path = argv.at(-1) ?? ""
+    if (path.includes("/actions/runs")) return { stdout: 'HTTP/2.0 200 OK\nEtag: "r"\n\n{"workflow_runs":[]}' }
+    if (path.includes("o/quiet/events")) return { stdout: 'HTTP/2.0 200 OK\nEtag: "q"\n\n[]' }
+    return undefined
+  })
+  const lines: Array<string | undefined> = []
+  on("ui.status", async (_$, e) => {
+    lines.push(e.text)
+    return { value: undefined }
+  })
+
+  await $.command.run(CHECK)
+  expect(lines.at(-1)).toBe("GitHub: r 5分前 · quiet -")
+  await clock.advance(55 * 60_000)
+  await $.command.run(CHECK)
+  expect(lines.at(-1)).toBe("GitHub: r 1時間前 · quiet -")
+  await $.command.run({ ...CHECK, args: "repo remove o/r" })
+  expect(lines.at(-1)).toBe("GitHub: quiet -")
+  await $.command.run({ ...CHECK, args: "repo remove o/quiet" })
+  expect(lines.at(-1)).toBeUndefined()
+})
+
+test("the tray can be turned off", { options: { language: "ja", tray: false } }, async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: ["comment"] } } })
+  mock.clock(on, { now: 1_000_000 })
+  fakeGitHub(on, [[COMMENT]])
+  const lines: Array<string | undefined> = []
+  on("ui.status", async (_$, e) => {
+    lines.push(e.text)
+    return { value: undefined }
+  })
+
+  await $.command.run(CHECK)
+  expect(lines.every(line => line === undefined)).toBe(true)
+})
+
 test("notices and commands speak English by default", async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } } })
   const clock = mock.clock(on, { now: 1_000_000 })

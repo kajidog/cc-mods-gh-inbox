@@ -141,6 +141,7 @@ on("inbox.notified", async ($, e, next) => {
 | Repositories checked | 20 | 登録できるリポジトリの数 |
 | Language | en | `en`: 英語 / `ja`: 日本語。通知・コマンド・ペインと、Claude に渡す文の言語 |
 | Notify my own activity | false | 自分の操作も通知する |
+| Tray | true | プロンプトの下に、登録したリポジトリごとの最後のイベントが何分前かを常に出す（`GitHub: r 5分前 · other 2時間前`）。確認のたびに更新 |
 
 <details>
 <summary>GitHub への負荷</summary>

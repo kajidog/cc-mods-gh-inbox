@@ -142,6 +142,7 @@ on("inbox.notified", async ($, e, next) => {
 | Repositories checked | 20 | How many repositories can be registered |
 | Language | en | `en`: English / `ja`: Japanese. For notices, commands, panes, and what is handed to Claude |
 | Notify my own activity | false | Also notify your own activity |
+| Tray | true | A line under the prompt telling how long ago each registered repository's last event happened (`GitHub: r 5m ago · other 2h ago`), kept up each check |
 
 <details>
 <summary>Load on GitHub</summary>

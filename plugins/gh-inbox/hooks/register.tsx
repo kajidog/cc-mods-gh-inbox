@@ -147,6 +147,8 @@ type Context = {
   maxRepos: number
   channel: string
   notifySelf: boolean
+  /** Whether the line under the prompt tells each repository's last event. */
+  tray: boolean
   language: Language
   /** What the mod says, in `language`. */
   t: Messages
@@ -728,8 +730,30 @@ async function runCheck($: EngineInterface, ctx: Context, isForced: boolean) {
   } catch (error) {
     $.ui.log(`gh-inbox: ${error instanceof Error ? error.message : String(error)}`, { to: "debug" })
   } finally {
+    // Drawn again each check, so how long ago keeps up; also where nothing was shown.
+    if (!ctx.isEnded) await drawTray($, ctx).catch(() => undefined)
     ctx.running = undefined
   }
+}
+
+/** What the tray says of a time `ms` ago: to the minute, as it is drawn again once a check. */
+const trayAgo = (t: Messages, ms: number) => (ms < 60_000 ? t.justNow : ago(t, ms))
+
+/** The line under the prompt: how long ago each repository checked had its last event; none where none is checked. */
+async function drawTray($: EngineInterface, ctx: Context) {
+  const { t } = ctx
+  const repos = Object.entries(await readRepos($))
+    .slice(0, ctx.maxRepos)
+    .filter(([, entry]) => entry.kinds.length > 0)
+  if (!ctx.tray || repos.length === 0) return $.ui.status(undefined)
+  const now = await $.clock.now()
+  const items: string[] = []
+  for (const [key, entry] of repos) {
+    const cache = toRepoCache(await $.store.get(`${REPO_CACHE_PREFIX}${key}`))
+    const at = cache === undefined ? undefined : newestEventAt(cache)
+    items.push(t.trayItem(repoLabel(key, entry), at === undefined ? t.trayNoEvent : trayAgo(t, now - at)))
+  }
+  $.ui.status(plain(t.tray(items)))
 }
 
 async function status($: EngineInterface, ctx: Context) {
@@ -1015,6 +1039,7 @@ export const register: Register = (on, options) => {
     maxRepos: Math.max(1, Number(options.maxRepos) || 20),
     channel: String(options.channel),
     notifySelf: options.notifySelf === true,
+    tray: options.tray !== false,
     language,
     t,
     found: undefined,
@@ -1067,6 +1092,7 @@ export const register: Register = (on, options) => {
     timer?.cancel()
     timer = undefined
     ctx.isEnded = true
+    $.ui.status(undefined)
     if (ctx.sessionId !== "") await $.store.delete(presenceKey(ctx))
 
     return next(e)
@@ -1122,8 +1148,11 @@ export const register: Register = (on, options) => {
         }
         return { text: logText(list.map(event => ({ text: plain(event.text), url: plain(event.url), when: when(event) }))) }
       }
-      case "repo":
-        return { text: await repoCommand($, ctx, rest) }
+      case "repo": {
+        const text = await repoCommand($, ctx, rest)
+        await drawTray($, ctx)
+        return { text }
+      }
       case "pick":
         return { text: await pickCommand($, ctx, rest) }
       case "clear": {
