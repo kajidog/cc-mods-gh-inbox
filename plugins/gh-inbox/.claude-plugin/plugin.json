@@ -40,6 +40,12 @@
         "ja"
       ]
     },
+    "tray": {
+      "type": "boolean",
+      "title": "GitHub: Tray",
+      "description": "Keep a line under the prompt telling how long ago each registered repository's last event happened.",
+      "default": true
+    },
     "notifySelf": {
       "type": "boolean",
       "title": "GitHub: Notify my own activity",

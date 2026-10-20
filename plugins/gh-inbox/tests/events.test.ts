@@ -42,6 +42,17 @@ describe("newEvents", () => {
     expect(texts(pull)).toEqual(["レビさんがコメントしました。Looks good"])
   })
 
+  test("a notice keeps its head apart from what a person wrote", async () => {
+    const pull = pullWith({
+      comments: [{ id: "c1", author: "long-reviewer-name", body: "了解。直します", at: "2026-01-01T00:00:00Z", url: "" }],
+      commits: [{ oid: "1", author: "a", title: "fix。b", additions: 1, deletions: 0, at: "2026-01-01T00:00:01Z", url: "" }],
+    })
+    expect(newEvents(pull, new Set(), options).map(event => [event.who, event.head])).toEqual([
+      ["レビさん", "レビさんがコメントしました"],
+      ["aさん", "aさんがコミットしました"],
+    ])
+  })
+
   test("my own activity is left out unless asked for", async () => {
     const pull = pullWith({ comments: [{ id: "c1", author: "me", body: "note", at: "2026-01-01T00:00:00Z", url: "" }] })
     expect(texts(pull)).toEqual([])

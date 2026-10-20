@@ -59,6 +59,18 @@ describe("newRepoEvents", () => {
     ])
   })
 
+  test("each notice says its head, and who did it where it starts with them", async () => {
+    const told = newRepoEvents(inputWith({}), new Set(), options)
+    for (const event of told) {
+      if (event.who !== undefined) expect(event.text.startsWith(`[tts] ${event.who}`)).toBe(true)
+      expect(event.text.startsWith(`[tts] ${event.head}`)).toBe(true)
+      expect(event.label).toBe("tts")
+    }
+    expect(told.map(event => event.head)).toContain("かじさんが main に push しました")
+    expect(told.map(event => event.who)).toContain("レビさん")
+    expect(told.filter(event => event.kind === "merge" || event.kind === "close").map(event => event.who)).toEqual([undefined, undefined])
+  })
+
   test("merged and closed are told apart", async () => {
     const pulls = events.filter(event => event.type === "pull")
     expect(pulls.map(event => event.id)).toEqual(["opened:#19", "merged:#19", "closed:#17"])

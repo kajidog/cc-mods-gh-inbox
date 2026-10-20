@@ -16,6 +16,7 @@ import {
   newestAt,
   parseLog,
   SHARED_KEPT_MS,
+  splitLabel,
   SHARED_SEEN_PREFIX,
   toKept,
   toMissed,
@@ -23,7 +24,7 @@ import {
   toSharedSeen,
   unheld,
 } from "./history"
-import { type Language, MESSAGES, type Messages, toLanguage } from "./i18n"
+import { type Language, MESSAGES, type Messages, splitNotice, toLanguage } from "./i18n"
 import {
   CONTEXT_LIMIT,
   idsOf,
@@ -86,6 +87,7 @@ import {
   REPOS_KEY,
   type RepoCache,
   type RepoEntry,
+  newestEventAt,
   type Repos,
   refOfKey,
   repoLabel,
@@ -100,6 +102,8 @@ const NICKNAMES_KEY = "nicknames"
 const EVENTS_KEPT = 100
 const LOG_SHOWN = 20
 const SHOWN_AT_ONCE = 5
+/** The theme color `/inbox log` draws a repository's short name in. */
+const LABEL_COLOR = "suggestion"
 const TOAST_MS = 8000
 // A branch with no open pull request is looked up again this often, not at every check.
 const LOOKUP_MS = 5 * 60 * 1000
@@ -143,6 +147,8 @@ type Context = {
   maxRepos: number
   channel: string
   notifySelf: boolean
+  /** Whether the line under the prompt tells each repository's last event. */
+  tray: boolean
   language: Language
   /** What the mod says, in `language`. */
   t: Messages
@@ -724,8 +730,32 @@ async function runCheck($: EngineInterface, ctx: Context, isForced: boolean) {
   } catch (error) {
     $.ui.log(`gh-inbox: ${error instanceof Error ? error.message : String(error)}`, { to: "debug" })
   } finally {
+    // Drawn again each check, so how long ago keeps up; also where nothing was shown.
+    await drawTray($, ctx).catch(() => undefined)
     ctx.running = undefined
   }
+}
+
+/** What the tray says of a time `ms` ago: to the minute, as it is drawn again once a check. */
+const trayAgo = (t: Messages, ms: number) => (ms < 60_000 ? t.justNow : ago(t, ms))
+
+/** The line under the prompt: how long ago each repository checked had its last event; none where none is checked. */
+async function drawTray($: EngineInterface, ctx: Context) {
+  const { t } = ctx
+  const repos = Object.entries(await readRepos($))
+    .slice(0, ctx.maxRepos)
+    .filter(([, entry]) => entry.kinds.length > 0)
+  if (ctx.isEnded) return
+  if (!ctx.tray || repos.length === 0) return $.ui.status(undefined)
+  const now = await $.clock.now()
+  const items: string[] = []
+  for (const [key, entry] of repos) {
+    const cache = toRepoCache(await $.store.get(`${REPO_CACHE_PREFIX}${key}`))
+    const at = cache === undefined ? undefined : newestEventAt(cache)
+    items.push(t.trayItem(repoLabel(key, entry), at === undefined ? t.trayNoEvent : trayAgo(t, now - at)))
+  }
+  // The session may have ended while the store was read: its line is not drawn again.
+  if (!ctx.isEnded) $.ui.status(plain(t.tray(items)))
 }
 
 async function status($: EngineInterface, ctx: Context) {
@@ -791,7 +821,10 @@ async function repoCommand($: EngineInterface, ctx: Context, words: readonly str
       const label = entry.alias === undefined ? "" : ` [${entry.alias}]`
       const paused = index >= ctx.maxRepos ? t.overLimit(ctx.maxRepos) : entry.kinds.length === 0 ? t.noKindsChosen : ""
       lines.push(`${repoName(refOfKey(key))}${label}: ${kindList(t, entry.kinds)}${paused}`)
-      if (cache !== undefined) lines.push(`  ${t.lastCheckedRepo(ago(t, now - cache.at))}`)
+      if (cache !== undefined) {
+        const eventAt = newestEventAt(cache)
+        lines.push(`  ${t.lastCheckedRepo(ago(t, now - cache.at), eventAt === undefined ? undefined : ago(t, now - eventAt))}`)
+      }
       const error = ctx.repoErrors.get(key)
       if (error !== undefined) lines.push(`  ${t.error(plain(error))}`)
     }
@@ -1008,6 +1041,7 @@ export const register: Register = (on, options) => {
     maxRepos: Math.max(1, Number(options.maxRepos) || 20),
     channel: String(options.channel),
     notifySelf: options.notifySelf === true,
+    tray: options.tray !== false,
     language,
     t,
     found: undefined,
@@ -1060,6 +1094,7 @@ export const register: Register = (on, options) => {
     timer?.cancel()
     timer = undefined
     ctx.isEnded = true
+    $.ui.status(undefined)
     if (ctx.sessionId !== "") await $.store.delete(presenceKey(ctx))
 
     return next(e)
@@ -1115,8 +1150,11 @@ export const register: Register = (on, options) => {
         }
         return { text: logText(list.map(event => ({ text: plain(event.text), url: plain(event.url), when: when(event) }))) }
       }
-      case "repo":
-        return { text: await repoCommand($, ctx, rest) }
+      case "repo": {
+        const text = await repoCommand($, ctx, rest)
+        await drawTray($, ctx)
+        return { text }
+      }
       case "pick":
         return { text: await pickCommand($, ctx, rest) }
       case "clear": {
@@ -1147,20 +1185,41 @@ export const register: Register = (on, options) => {
     }
   })
 
-  // `/inbox log`'s row draws each notice as a link to it; the text, URLs written out, is what the model reads.
+  // `/inbox log`'s row draws each notice with its repository's short name in color and what was done as a link to it;
+  // the text, URLs written out, is what the model reads.
   on("ui.render", { component: "CommandOutput", props: { command: COMMAND } }, async ($, e, next) => {
     const isLog = e.props.args.trim().split(/\s+/)[0] === "log"
     const rows = isLog && !e.props.isErrored ? parseLog(e.props.text) : undefined
     if (rows === undefined) return next(e)
     const { Box, Text, Link } = $.ui.resolve(e)
+    // Who did each as its notice named them, from the log the rows were listed from: a row it no longer keeps is read as it reads.
+    const known = new Map(
+      (await readHistory($)).map(event => [
+        `${plain(event.text)}\n${plain(event.url)}`,
+        {
+          who: event.who === undefined ? undefined : plain(event.who),
+          head: event.head === undefined ? undefined : plain(event.head),
+          label: event.label === undefined ? undefined : plain(event.label),
+        },
+      ]),
+    )
     return (
       <Box flexDirection="column">
-        {rows.map(row => (
-          <Text>
-            {row.url === "" ? row.text : <Link href={row.url}>{row.text}</Link>}
-            {row.when === "" ? null : <Text dimColor>{row.when}</Text>}
-          </Text>
-        ))}
+        {rows.map(row => {
+          const made = known.get(`${row.text}\n${row.url}`)
+          // A notice kept with its head says its short name, or that it has none.
+          const { label, rest } = splitLabel(row.text, made?.head === undefined ? undefined : (made.label ?? null))
+          const { who, action, detail } = splitNotice(rest, language, made)
+          return (
+            <Text>
+              {label === "" ? null : <Text color={LABEL_COLOR}>{label}</Text>}
+              {who}
+              {row.url === "" || action === "" ? action : <Link href={row.url}>{action}</Link>}
+              {detail}
+              {row.when === "" ? null : <Text dimColor>{row.when}</Text>}
+            </Text>
+          )
+        })}
       </Box>
     )
   })
@@ -1182,7 +1241,7 @@ export const register: Register = (on, options) => {
             label={`[${kinds.includes(kind) ? "x" : " "}] ${t.kinds[kind]}${t.paren(kind)}`}
             onPress={() => {
               // Keys pressed in a row each read what the one before saved.
-              ctx.toggling = ctx.toggling.then(() => toggleKind($, kind)).catch(() => undefined)
+              ctx.toggling = ctx.toggling.then(() => toggleKind($, kind)).then(() => drawTray($, ctx)).catch(() => undefined)
             }}
           />
         ))}

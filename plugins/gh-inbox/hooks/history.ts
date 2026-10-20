@@ -134,3 +134,14 @@ export function parseLog(text: string): LogRow[] | undefined {
 
   return rows
 }
+
+/**
+ * A notice's `[short name] ` of its registered repository, and what follows it; `label` empty where it has none.
+ * `known` is the short name it was made with, null for a notice made with none (a nickname in brackets is no
+ * short name); only a notice kept from before either was kept (undefined) is read as it reads.
+ */
+export function splitLabel(text: string, known?: string | null): { label: string; rest: string } {
+  const named = known === undefined || known === null ? "" : `[${known}]`
+  const label = known === undefined ? (/^\[[^\]]*\](?= )/.exec(text)?.[0] ?? "") : named !== "" && text.startsWith(`${named} `) ? named : ""
+  return { label, rest: text.slice(label.length) }
+}

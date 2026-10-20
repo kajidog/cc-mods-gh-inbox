@@ -89,10 +89,10 @@ Apart from the branch's pull request, you can register repositories and be notif
 | --- | --- |
 | `/inbox` | The pull request watched and when it was last checked |
 | `/inbox check` | Check now |
-| `/inbox log` | The notices of every window (the newest 20, each line a link to it on GitHub, with when it happened) |
+| `/inbox log` | The notices of every window (the newest 20, with when each happened; the repository's short name in color, what was done a link to it on GitHub) |
 | `/inbox pick [PR]` | Choose threads, reviews and comments to hand to Claude |
 | `/inbox clear` | Detach what is attached |
-| `/inbox repo` | The registered repositories and the kinds they notify |
+| `/inbox repo` | The registered repositories, the kinds they notify, and when each was last checked and last had an event |
 | `/inbox repo add owner/repo [kind,...]` | Register (without kinds, opens a pane to choose them) |
 | `/inbox repo set owner/repo [kind,...]` | Change the kinds (without kinds, opens the pane) |
 | `/inbox repo remove owner/repo` | Unregister |
@@ -142,6 +142,7 @@ on("inbox.notified", async ($, e, next) => {
 | Repositories checked | 20 | How many repositories can be registered |
 | Language | en | `en`: English / `ja`: Japanese. For notices, commands, panes, and what is handed to Claude |
 | Notify my own activity | false | Also notify your own activity |
+| Tray | true | A line under the prompt telling how long ago each registered repository's last event happened (`GitHub: r 5m ago · other 2h ago`), kept up each check |
 
 <details>
 <summary>Load on GitHub</summary>

@@ -118,6 +118,31 @@ test("the picker turns kinds on and off, saved at once", JA, async ($, on) => {
   expect(await $.command.run({ ...CHECK, args: "repo" })).toMatchObject({ text: expect.stringContaining("o/r: push") })
 })
 
+test("the tray follows the picker: a repository with no kind left goes from it at once", JA, async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } } })
+  mock.clock(on, { now: 1_000_000 })
+  fakeGitHub(on, [[]])
+  on("ui.open", async () => ({ value: { isPlaced: true } }))
+  const lines: Array<string | undefined> = []
+  on("ui.status", async (_$, e) => {
+    lines.push(e.text)
+    return { value: undefined }
+  })
+
+  await $.command.run({ ...CHECK, args: "repo set o/r" })
+  expect(lines.at(-1)).toBe("GitHub: r -")
+  const pane = await $.ui.mount({
+    plugin: "gh-inbox",
+    surface: "terminal",
+    component: "Pane",
+    requestId: "gh-inbox-kinds",
+    props: { title: "", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 20 }, view: {} },
+  })
+  await pane.press({ key: "comment" })
+  await $.command.run({ ...CHECK, args: "status" })
+  expect(lines.at(-1)).toBeUndefined()
+})
+
 test("runs that cannot be read leave the other notices coming, the error shown", JA, async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["comment", "ci-failure"] } } })
   const clock = mock.clock(on, { now: 1_000_000 })
@@ -449,7 +474,7 @@ test("/inbox log lists what other sessions listed", JA, async ($, on) => {
   expect(await $.command.run({ ...CHECK, args: "log" })).toEqual({ text: "elsewhere\n  u（1時間前）" })
 })
 
-test("/inbox log's row draws each notice as a link to it, when it happened beside it", JA, async ($, on) => {
+test("/inbox log's row draws the repository's short name in color and what was done as a link, when it happened beside it", JA, async ($, on) => {
   mock.store(on, {})
   mock.clock(on, { now: 1_000_000 })
   fakeGitHub(on, [[]])
@@ -461,12 +486,17 @@ test("/inbox log's row draws each notice as a link to it, when it happened besid
   const row = (args: string, text: string) =>
     $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "CommandOutput", props: { command: "inbox", args, text, isErrored: false } })
 
-  const log = await row("log", "[r] a\n  https://github.com/o/r/pull/3（1日前）\nno url\n  （3日前）\nb\n  https://github.com/o/r/pull/4 (2h ago)")
+  const log = await row(
+    "log",
+    "[r] aさんが #3 にコメントしました。Looks good\n  https://github.com/o/r/pull/3（1日前）\nno url\n  （3日前）\n#4 がマージされました。\n  https://github.com/o/r/pull/4 (2h ago)",
+  )
   const links = await log.findAll({ type: "Link" })
   expect(links.map(link => [link.props.href, link.children.join("")])).toEqual([
-    ["https://github.com/o/r/pull/3", "[r] a"],
-    ["https://github.com/o/r/pull/4", "b"],
+    ["https://github.com/o/r/pull/3", "#3 にコメントしました"],
+    ["https://github.com/o/r/pull/4", "#4 がマージされました"],
   ])
+  const colored = (await log.findAll({ type: "Text" })).filter(text => text.props.color !== undefined)
+  expect(colored.map(text => [text.props.color, text.children.join("")])).toEqual([["suggestion", "[r]"]])
   expect(await log.find({ type: "Text", text: "（1日前）" })).toBeDefined()
   expect(await log.find({ type: "Text", text: " (2h ago)" })).toBeDefined()
   // One with no URL is drawn as text, the others still links.
@@ -475,6 +505,94 @@ test("/inbox log's row draws each notice as a link to it, when it happened besid
   // Any other row is the engine's own.
   expect(await (await row("log", "通知はまだありません。")).find({ text: "engine's own" })).toBeDefined()
   expect(await (await row("status", "[r] a\n  https://x")).find({ text: "engine's own" })).toBeDefined()
+})
+
+test("/inbox log links what was done and colors the short name, a person's own words not taken for either", async ($, on) => {
+  const event = {
+    id: "x",
+    kind: "comment",
+    pull: "o/r#3",
+    author: "a",
+    who: "Team commented",
+    head: "Team commented commented on #3",
+    label: "x] y",
+    at: "2026-10-16T23:00:00Z",
+    text: "[x] y] Team commented commented on #3: hi",
+    url: "https://github.com/o/r/pull/3",
+    items: [],
+  }
+  mock.store(on, { "history:other": { at: 1, events: [event] } })
+  mock.clock(on, { now: Date.parse("2026-10-17T00:00:00Z") })
+  fakeGitHub(on, [[]])
+
+  const { text = "" } = await $.command.run({ ...CHECK, args: "log" })
+  const log = await $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "CommandOutput", props: { command: "inbox", args: "log", text, isErrored: false } })
+  const links = await log.findAll({ type: "Link" })
+  expect(links.map(link => link.children.join(""))).toEqual(["commented on #3"])
+  // A short name with "]" in it is colored whole.
+  const colored = (await log.findAll({ type: "Text" })).filter(one => one.props.color !== undefined)
+  expect(colored.map(one => one.children.join(""))).toEqual(["[x] y]"])
+})
+
+test("/inbox log does not color a nickname in brackets on a notice with no short name", async ($, on) => {
+  const event = { id: "x", kind: "comment", pull: "o/r#3", author: "a", who: "[bot]", head: "[bot] commented", at: "2026-10-16T23:00:00Z", text: "[bot] commented: hi", url: "u", items: [] }
+  mock.store(on, { "history:other": { at: 1, events: [event] } })
+  mock.clock(on, { now: Date.parse("2026-10-17T00:00:00Z") })
+  fakeGitHub(on, [[]])
+
+  const { text = "" } = await $.command.run({ ...CHECK, args: "log" })
+  const log = await $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "CommandOutput", props: { command: "inbox", args: "log", text, isErrored: false } })
+  expect((await log.findAll({ type: "Text" })).filter(one => one.props.color !== undefined)).toEqual([])
+  expect((await log.findAll({ type: "Link" })).map(link => link.children.join(""))).toEqual(["commented"])
+})
+
+test("/inbox repo tells when each repository's last event happened", JA, async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } } })
+  mock.clock(on, { now: Date.parse(COMMENT.created_at) + 5 * 60_000 })
+  fakeGitHub(on, [[COMMENT]], argv => ((argv.at(-1) ?? "").includes("/actions/runs") ? { stdout: 'HTTP/2.0 200 OK\nEtag: "r"\n\n{"workflow_runs":[]}' } : undefined))
+
+  await $.command.run(CHECK)
+  expect(await $.command.run({ ...CHECK, args: "repo" })).toMatchObject({ text: expect.stringContaining("最後の確認: 0秒前、最後のイベント: 5分前") })
+})
+
+test("the tray under the prompt tells how long ago each repository's last event happened, kept up each check", JA, async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" }, "github.com/o/quiet": { kinds: ["push"] }, "github.com/o/off": { kinds: [] } } })
+  const clock = mock.clock(on, { now: Date.parse(COMMENT.created_at) + 5 * 60_000 })
+  fakeGitHub(on, [[COMMENT]], argv => {
+    const path = argv.at(-1) ?? ""
+    if (path.includes("/actions/runs")) return { stdout: 'HTTP/2.0 200 OK\nEtag: "r"\n\n{"workflow_runs":[]}' }
+    if (path.includes("o/quiet/events")) return { stdout: 'HTTP/2.0 200 OK\nEtag: "q"\n\n[]' }
+    return undefined
+  })
+  const lines: Array<string | undefined> = []
+  on("ui.status", async (_$, e) => {
+    lines.push(e.text)
+    return { value: undefined }
+  })
+
+  await $.command.run(CHECK)
+  expect(lines.at(-1)).toBe("GitHub: r 5分前 · quiet -")
+  await clock.advance(55 * 60_000)
+  await $.command.run(CHECK)
+  expect(lines.at(-1)).toBe("GitHub: r 1時間前 · quiet -")
+  await $.command.run({ ...CHECK, args: "repo remove o/r" })
+  expect(lines.at(-1)).toBe("GitHub: quiet -")
+  await $.command.run({ ...CHECK, args: "repo remove o/quiet" })
+  expect(lines.at(-1)).toBeUndefined()
+})
+
+test("the tray can be turned off", { options: { language: "ja", tray: false } }, async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: ["comment"] } } })
+  mock.clock(on, { now: 1_000_000 })
+  fakeGitHub(on, [[COMMENT]])
+  const lines: Array<string | undefined> = []
+  on("ui.status", async (_$, e) => {
+    lines.push(e.text)
+    return { value: undefined }
+  })
+
+  await $.command.run(CHECK)
+  expect(lines.every(line => line === undefined)).toBe(true)
 })
 
 test("notices and commands speak English by default", async ($, on) => {

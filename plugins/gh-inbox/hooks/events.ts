@@ -70,6 +70,8 @@ export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, opt
   const t = MESSAGES[options.language ?? "en"]
   const who = (login: string | null) => t.who(displayName(login, options.nicknames, options.language))
   const isMuted = (login: string | null) => !options.notifySelf && login !== null && login === pull.viewer
+  // A notice's line, and its head: the free text a person wrote (a comment, a title) goes last, after the head.
+  const told = (text: string, detail: string) => ({ text, head: t.head(text, detail) })
   const events: GhEvent[] = []
 
   for (const comment of pull.comments) {
@@ -79,8 +81,9 @@ export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, opt
       kind: "comment",
       pull: name,
       author: comment.author,
+      who: who(comment.author),
       at: comment.at,
-      text: t.commented(who(comment.author), snippet(comment.body)),
+      ...told(t.commented(who(comment.author), snippet(comment.body)), snippet(comment.body)),
       url: comment.url,
       items: [{ body: comment.body, url: comment.url }],
     })
@@ -96,8 +99,9 @@ export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, opt
           kind: "comment",
           pull: name,
           author: comment.author,
+          who: who(comment.author),
           at: comment.at,
-          text: t.commented(who(comment.author), `${place(comment)} ${snippet(comment.body)}`.trimEnd()),
+          ...told(t.commented(who(comment.author), `${place(comment)} ${snippet(comment.body)}`.trimEnd()), snippet(comment.body)),
           url: comment.url,
           items: [{ body: comment.body, path: comment.path, line: comment.line, hunk: comment.hunk, url: comment.url }],
         })
@@ -119,15 +123,17 @@ export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, opt
     const summary = snippet(review.body)
     const first = review.comments[0]
     let text: string
+    let detail = summary
     if (review.state === "APPROVED") {
       text = t.approved(who(review.author), summary)
     } else if (review.state === "CHANGES_REQUESTED") {
       text = t.changesRequested(who(review.author), count, summary)
     } else if (review.state === "COMMENTED") {
       if (summary !== "") text = t.reviewed(who(review.author), count, summary)
-      else if (count === 1 && first !== undefined)
-        text = t.commented(who(review.author), `${place(first)} ${snippet(first.body)}`.trimEnd())
-      else if (count > 1) text = t.commentedMany(who(review.author), count)
+      else if (count === 1 && first !== undefined) {
+        detail = snippet(first.body)
+        text = t.commented(who(review.author), `${place(first)} ${detail}`.trimEnd())
+      } else if (count > 1) text = t.commentedMany(who(review.author), count)
       else continue
     } else {
       // PENDING is a draft not yet sent; DISMISSED is a review taken back.
@@ -138,8 +144,9 @@ export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, opt
       kind: "review",
       pull: name,
       author: review.author,
+      who: who(review.author),
       at: review.at,
-      text: text.trimEnd(),
+      ...told(text.trimEnd(), detail),
       url: review.url,
       items,
     })
@@ -163,8 +170,9 @@ export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, opt
       kind: "commit",
       pull: name,
       author: last.author,
+      who: who(last.author),
       at: last.at,
-      text: t.committed(who(last.author), `${titles.join(" / ")}${more} (+${additions} −${deletions})`),
+      ...told(t.committed(who(last.author), `${titles.join(" / ")}${more} (+${additions} −${deletions})`), `${titles.join(" / ")}${more} (+${additions} −${deletions})`),
       url: last.url,
       items: commits.map(commit => ({ body: commit.title, url: commit.url })),
     })
@@ -179,7 +187,7 @@ export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, opt
       pull: name,
       author: null,
       at: stamp,
-      text: t.ciFailed(check.name, check.failedStep ?? "").trimEnd(),
+      ...told(t.ciFailed(check.name, check.failedStep ?? "").trimEnd(), check.failedStep ?? ""),
       url: check.url,
       items: check.failedStep === null ? [] : [{ body: check.failedStep, url: check.url }],
     })
@@ -192,7 +200,7 @@ export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, opt
       pull: name,
       author: pull.mergedBy,
       at: pull.closedAt ?? stamp,
-      text: t.merged(pull.ref.number),
+      ...told(t.merged(pull.ref.number), ""),
       url: pull.url,
       items: [],
     })
@@ -203,7 +211,7 @@ export function newEvents(pull: Pull, seen: ReadonlySet<string> | undefined, opt
       pull: name,
       author: pull.closedBy,
       at: pull.closedAt ?? stamp,
-      text: t.closed(pull.ref.number),
+      ...told(t.closed(pull.ref.number), ""),
       url: pull.url,
       items: [],
     })

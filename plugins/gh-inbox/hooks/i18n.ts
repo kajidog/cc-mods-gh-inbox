@@ -13,9 +13,89 @@ const say = (head: string, detail = "") => (detail.trim() === "" ? `${head}.` : 
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 const reviewCount = (n: number) => (n > 0 ? ` (${count(n, "comment")})` : "")
 
+/** A notice cut where `/inbox log` draws it apart: who did it, what they did (the link), the rest; together the text again. */
+export type NoticeParts = { who: string; action: string; detail: string }
+
+/**
+ * How a language's notices read: `who` finds who did it at the start, `unnamed` a notice with no one
+ * (a failed CI, a merge) in its head, and `end` where what was done ends in what follows who did it.
+ */
+type NoticeShape = { who: RegExp; after: RegExp; unnamed: RegExp; end: (rest: string) => number }
+
+/** `text` cut by `shape` as it reads, and whether it reads as one of its notices: for a notice kept with no head. */
+function cutBy(text: string, shape: NoticeShape): { parts: NoticeParts; isShaped: boolean } {
+  const lead = /^\s*/.exec(text)?.[0] ?? ""
+  const isUnnamed = shape.unnamed.test(text.slice(lead.length, lead.length + shape.end(text.slice(lead.length))))
+  // Who did it is found before where the action ends: a display name's punctuation is the person's.
+  const named = isUnnamed ? "" : (shape.who.exec(text)?.[0] ?? "")
+  // The space after who did it, or after a repository's short name, is not part of the link.
+  const who = named + (/^\s*/.exec(text.slice(named.length))?.[0] ?? "")
+  const end = who.length + shape.end(text.slice(who.length))
+  return { parts: { who, action: text.slice(who.length, end), detail: text.slice(end) }, isShaped: isUnnamed || named !== "" }
+}
+
+/** `text` cut by the head and who did it its notice was made with; undefined where the line no longer starts with them (a hook rewrote it). */
+function cutByKnown(text: string, known: { who?: string; head?: string }): NoticeParts | undefined {
+  const { who, head } = known
+  const lead = /^\s*/.exec(text)?.[0] ?? ""
+  if (head === undefined || head === "" || !text.startsWith(head, lead.length)) return undefined
+  // Who did it, with what joins them to the action (Japanese 「が」) and the space after.
+  const after = who === undefined || !head.startsWith(who) ? undefined : head.slice(who.length)
+  const joined = after === undefined ? "" : `${who}${LANGUAGES.map(one => SHAPES[one].after.exec(after)?.[0]).find(found => found !== undefined) ?? ""}`
+  const named = lead + joined + (/^\s*/.exec(head.slice(joined.length))?.[0] ?? "")
+  const end = lead.length + head.length
+  return { who: named, action: text.slice(named.length, end), detail: text.slice(end) }
+}
+
+/** `text` with `detail` off its end, and `separator` (what comes between the head and a detail, or ends a head alone). */
+const headOf = (text: string, detail: string, separator: RegExp) =>
+  (detail.trim() !== "" && text.endsWith(detail) ? text.slice(0, -detail.length) : text).trimEnd().replace(separator, "")
+
+const SHAPES: Record<Language, NoticeShape> = {
+  // `say`'s head ends at its first ": " or its closing "."; who did it comes before the verbs the notices below use.
+  en: {
+    who: /^.+? (?=(?:commented|left|approved|requested|reviewed|committed|created|opened|pushed)\b)/,
+    after: /^(?= )/,
+    unnamed: /^(?:CI failed\b|#\d+ was (?:merged|closed)\b)/,
+    end: rest => {
+      const colon = rest.indexOf(": ")
+      return colon >= 0 ? colon : rest.endsWith(".") ? rest.length - 1 : rest.length
+    },
+  },
+  // 何をしたかは最初の「。」まで、した人は「〜さんが」。
+  ja: {
+    who: /^.+?さんが/,
+    after: /^が/,
+    unnamed: /^(?:#\d+ が(?:マージ|クローズ)されました|.+?の ?CI ?が失敗しました)/,
+    end: rest => {
+      const period = rest.indexOf("。")
+      return period >= 0 ? period : rest.length
+    },
+  },
+}
+
+/**
+ * A notice cut where `/inbox log` draws it apart: by the head and who did it its notice was made with, which
+ * a person's words (a nickname, a branch name) never move; a notice kept with none is read as it reads,
+ * as `language`'s first, else as the language it reads as (the log keeps notices from before a change).
+ */
+export function splitNotice(text: string, language: Language, known: { who?: string; head?: string } = {}): NoticeParts {
+  const byKnown = cutByKnown(text, known)
+  if (byKnown !== undefined) return byKnown
+  const first = cutBy(text, SHAPES[language])
+  if (first.isShaped) return first.parts
+  for (const other of LANGUAGES) {
+    const cut = cutBy(text, SHAPES[other])
+    if (cut.isShaped) return cut.parts
+  }
+  return first.parts
+}
+
 const en = {
   someone: "someone",
   who: (name: string) => name,
+  /** The head of `text` made with `detail` last: who did it and what, as the notice wrote it. */
+  head: (text: string, detail: string) => headOf(text, detail, /(?::|\.)$/),
   /** A remark in brackets after what it is about. */
   paren: (text: string) => ` (${text})`,
   listSeparator: ", ",
@@ -48,6 +128,10 @@ const en = {
   pushed: (who: string, branch: string, detail: string) => say(`${who} pushed to ${branch}`, detail),
   morePushes: (n: number) => `${count(n, "more push", "more pushes")}.`,
   repoCiFailed: (name: string, branch: string, step: string) => say(`CI failed on ${branch}: ${name}`, step),
+  tray: (items: readonly string[]) => `GitHub: ${items.join(" · ")}`,
+  trayItem: (label: string, ago: string) => `${label} ${ago}`,
+  trayNoEvent: "-",
+  justNow: "now",
   moreUpdates: (n: number) => `GitHub: ${count(n, "more update")} (/inbox log)`,
   startWatching: (number: number, title: string) => `GitHub: watching #${number}: ${title}`,
   missed: (n: number) => `GitHub: ${count(n, "notice")} while no window was watching (/inbox log)`,
@@ -94,7 +178,7 @@ const en = {
   noRepos: "No repositories are registered.",
   overLimit: (max: number) => ` (not checked: over the limit of ${max})`,
   noKindsChosen: " (not checked until kinds are chosen)",
-  lastCheckedRepo: (ago: string) => `Last checked ${ago}`,
+  lastCheckedRepo: (ago: string, eventAgo?: string) => `Last checked ${ago}${eventAgo === undefined ? "" : `; last event ${eventAgo}`}`,
   repoFormat: "Name the repository as owner/repo.",
   notRegistered: (name: string) => `${name} is not registered.`,
   unknownKinds: (unknown: string, kinds: string) => `Unknown kinds: ${unknown}\nKinds: ${kinds}`,
@@ -196,6 +280,7 @@ export type Messages = typeof en
 const ja: Messages = {
   someone: "誰か",
   who: name => `${name}さん`,
+  head: (text, detail) => headOf(text, detail, /。$/),
   paren: text => `（${text}）`,
   listSeparator: "、",
   more: n => ` ほか${n}件`,
@@ -226,6 +311,10 @@ const ja: Messages = {
   pushed: (who, branch, detail) => `${who}が ${branch} に push しました。${detail}`,
   morePushes: n => `ほか${n}件の push がありました。`,
   repoCiFailed: (name, branch, step) => `${name} の CI が失敗しました（${branch}）。${step}`,
+  tray: items => `GitHub: ${items.join(" · ")}`,
+  trayItem: (label, ago) => `${label} ${ago}`,
+  trayNoEvent: "-",
+  justNow: "たった今",
   moreUpdates: n => `GitHub: ほか${n}件の更新があります（/inbox log）`,
   startWatching: (number, title) => `GitHub: #${number} の通知を始めます。${title}`,
   missed: n => `GitHub: どの窓も見ていなかったあいだの通知が${n}件あります（/inbox log）`,
@@ -269,7 +358,7 @@ const ja: Messages = {
   noRepos: "登録したリポジトリはありません。",
   overLimit: max => `（上限${max}件を超えたため確認しません）`,
   noKindsChosen: "（種類を選ぶまで確認しません）",
-  lastCheckedRepo: ago => `最後の確認: ${ago}`,
+  lastCheckedRepo: (ago, eventAgo) => `最後の確認: ${ago}${eventAgo === undefined ? "" : `、最後のイベント: ${eventAgo}`}`,
   repoFormat: "リポジトリは owner/repo の形で指定します。",
   notRegistered: name => `${name} は登録されていません。`,
   unknownKinds: (unknown, kinds) => `知らない種類です: ${unknown}\n種類: ${kinds}`,
