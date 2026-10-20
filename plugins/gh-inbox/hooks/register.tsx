@@ -731,7 +731,7 @@ async function runCheck($: EngineInterface, ctx: Context, isForced: boolean) {
     $.ui.log(`gh-inbox: ${error instanceof Error ? error.message : String(error)}`, { to: "debug" })
   } finally {
     // Drawn again each check, so how long ago keeps up; also where nothing was shown.
-    if (!ctx.isEnded) await drawTray($, ctx).catch(() => undefined)
+    await drawTray($, ctx).catch(() => undefined)
     ctx.running = undefined
   }
 }
@@ -745,6 +745,7 @@ async function drawTray($: EngineInterface, ctx: Context) {
   const repos = Object.entries(await readRepos($))
     .slice(0, ctx.maxRepos)
     .filter(([, entry]) => entry.kinds.length > 0)
+  if (ctx.isEnded) return
   if (!ctx.tray || repos.length === 0) return $.ui.status(undefined)
   const now = await $.clock.now()
   const items: string[] = []
@@ -753,7 +754,8 @@ async function drawTray($: EngineInterface, ctx: Context) {
     const at = cache === undefined ? undefined : newestEventAt(cache)
     items.push(t.trayItem(repoLabel(key, entry), at === undefined ? t.trayNoEvent : trayAgo(t, now - at)))
   }
-  $.ui.status(plain(t.tray(items)))
+  // The session may have ended while the store was read: its line is not drawn again.
+  if (!ctx.isEnded) $.ui.status(plain(t.tray(items)))
 }
 
 async function status($: EngineInterface, ctx: Context) {
@@ -1191,12 +1193,17 @@ export const register: Register = (on, options) => {
     if (rows === undefined) return next(e)
     const { Box, Text, Link } = $.ui.resolve(e)
     // Who did each as its notice named them, from the log the rows were listed from: a row it no longer keeps is read as it reads.
-    const named = new Map((await readHistory($)).flatMap(event => (event.who === undefined ? [] : [[`${plain(event.text)}\n${plain(event.url)}`, plain(event.who)]])))
+    const known = new Map(
+      (await readHistory($)).map(event => [
+        `${plain(event.text)}\n${plain(event.url)}`,
+        { who: event.who === undefined ? undefined : plain(event.who), head: event.head === undefined ? undefined : plain(event.head) },
+      ]),
+    )
     return (
       <Box flexDirection="column">
         {rows.map(row => {
           const { label, rest } = splitLabel(row.text)
-          const { who, action, detail } = splitNotice(rest, language, named.get(`${row.text}\n${row.url}`))
+          const { who, action, detail } = splitNotice(rest, language, known.get(`${row.text}\n${row.url}`))
           return (
             <Text>
               {label === "" ? null : <Text color={LABEL_COLOR}>{label}</Text>}
@@ -1228,7 +1235,7 @@ export const register: Register = (on, options) => {
             label={`[${kinds.includes(kind) ? "x" : " "}] ${t.kinds[kind]}${t.paren(kind)}`}
             onPress={() => {
               // Keys pressed in a row each read what the one before saved.
-              ctx.toggling = ctx.toggling.then(() => toggleKind($, kind)).catch(() => undefined)
+              ctx.toggling = ctx.toggling.then(() => toggleKind($, kind)).then(() => drawTray($, ctx)).catch(() => undefined)
             }}
           />
         ))}

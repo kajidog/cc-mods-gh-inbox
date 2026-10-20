@@ -59,11 +59,13 @@ describe("newRepoEvents", () => {
     ])
   })
 
-  test("each notice that starts with who did it says who, as it names them", async () => {
+  test("each notice says its head, and who did it where it starts with them", async () => {
     const told = newRepoEvents(inputWith({}), new Set(), options)
     for (const event of told) {
       if (event.who !== undefined) expect(event.text.startsWith(`[tts] ${event.who}`)).toBe(true)
+      expect(event.text.startsWith(`[tts] ${event.head}`)).toBe(true)
     }
+    expect(told.map(event => event.head)).toContain("かじさんが main に push しました")
     expect(told.map(event => event.who)).toContain("レビさん")
     expect(told.filter(event => event.kind === "merge" || event.kind === "close").map(event => event.who)).toEqual([undefined, undefined])
   })

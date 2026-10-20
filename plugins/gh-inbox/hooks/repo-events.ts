@@ -448,9 +448,10 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
   const titleOf = (at: number) => input.titles[String(at)]?.title ?? ""
   const pending = pendingEvents(input, seen, options.notifySelf)
   const events: GhEvent[] = []
-  const add = (event: Omit<GhEvent, "text" | "pull"> & { text: string; number?: number }) => {
-    const { number: at, ...rest } = event
-    events.push({ ...rest, pull: at === undefined ? repoName(ref) : `${repoName(ref)}#${at}`, text: `${prefix}${event.text}`.trimEnd() })
+  // The detail is the free text the notice ends with; the head, what comes before it, is kept apart.
+  const add = (event: Omit<GhEvent, "text" | "pull"> & { text: string; detail: string; number?: number }) => {
+    const { number: at, detail, ...rest } = event
+    events.push({ ...rest, head: t.head(event.text, detail), pull: at === undefined ? repoName(ref) : `${repoName(ref)}#${at}`, text: `${prefix}${event.text}`.trimEnd() })
   }
 
   // A review's line comments go with the review when both are notified.
@@ -468,16 +469,16 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
     const base = { id: event.id, author: event.actor, who: who(event.actor), at: event.at }
     switch (event.type) {
       case "branch":
-        add({ ...base, kind: "branch", text: t.branchCreated(who(event.actor), event.ref), url: webUrl(ref, `tree/${branchPath(event.ref)}`), items: [] })
+        add({ ...base, kind: "branch", text: t.branchCreated(who(event.actor), event.ref), detail: event.ref, url: webUrl(ref, `tree/${branchPath(event.ref)}`), items: [] })
         break
       case "pull": {
         const title = titleOf(event.number)
         const common = { ...base, number: event.number, url: pullUrl(event.number), items: [] }
         // A merge or a close is told with no one at its start.
         const { who: _, ...unnamed } = common
-        if (event.action === "opened") add({ ...common, kind: "open", text: t.pullOpened(who(event.actor), event.number, title) })
-        else if (event.action === "merged") add({ ...unnamed, kind: "merge", text: t.merged(event.number, title) })
-        else add({ ...unnamed, kind: "close", text: t.closed(event.number, title) })
+        if (event.action === "opened") add({ ...common, kind: "open", text: t.pullOpened(who(event.actor), event.number, title), detail: title })
+        else if (event.action === "merged") add({ ...unnamed, kind: "merge", text: t.merged(event.number, title), detail: title })
+        else add({ ...unnamed, kind: "close", text: t.closed(event.number, title), detail: title })
         break
       }
       case "comment":
@@ -486,6 +487,7 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
           kind: "comment",
           number: event.number,
           text: t.commentedOn(who(event.actor), event.number, event.isPull, snippet(event.body)),
+          detail: snippet(event.body),
           url: event.url,
           items: [{ body: event.body, url: event.url }],
         })
@@ -499,6 +501,7 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
           kind: "review",
           number: event.number,
           text: said,
+          detail: snippet(event.body) || titleOf(event.number),
           url: event.url,
           items: [...(event.body.trim() === "" ? [] : [{ body: event.body, url: event.url }]), ...comments],
         })
@@ -511,6 +514,7 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
           kind: "comment",
           number: event.number,
           text: t.commentedOn(who(event.actor), event.number, true, `${event.path}${event.line === null ? "" : `:${event.line}`} ${snippet(event.body)}`.trimEnd()),
+          detail: snippet(event.body),
           url: event.url,
           items: [{ body: event.body, path: event.path, line: event.line, hunk: event.hunk, url: event.url }],
         })
@@ -522,7 +526,7 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
         }
         const pushed = (detail: string) => t.pushed(who(event.actor), event.branch, detail)
         if (event.changes === null) {
-          add({ ...base, kind: "push", text: pushed(event.head.slice(0, 7)), url: webUrl(ref, `commit/${event.head}`), items: [] })
+          add({ ...base, kind: "push", text: pushed(event.head.slice(0, 7)), detail: event.head.slice(0, 7), url: webUrl(ref, `commit/${event.head}`), items: [] })
           break
         }
         const commits = event.changes.commits.filter(commit => !seen.has(commit.sha))
@@ -533,6 +537,7 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
           ...base,
           kind: "push",
           text: pushed(`${titles.join(" / ")}${more} (+${event.changes.additions} −${event.changes.deletions})`),
+          detail: `${titles.join(" / ")}${more} (+${event.changes.additions} −${event.changes.deletions})`,
           url: webUrl(ref, `compare/${event.before}...${event.head}`),
           items: commits.map(commit => ({ body: commit.title, url: webUrl(ref, `commit/${commit.sha}`) })),
         })
@@ -548,6 +553,7 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
       author: null,
       at: lastUnknown.at,
       text: t.morePushes(unknownPushes.length),
+      detail: "",
       url: webUrl(ref, "activity"),
       items: [],
     })
@@ -563,6 +569,7 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
         author: null,
         at: run.at,
         text: t.repoCiFailed(name, run.branch, run.failure?.step ?? ""),
+        detail: run.failure?.step ?? "",
         url: run.url,
         items: run.failure?.step ? [{ body: run.failure.step, url: run.url }] : [],
       })

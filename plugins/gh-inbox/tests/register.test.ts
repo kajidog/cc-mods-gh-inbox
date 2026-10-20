@@ -118,6 +118,31 @@ test("the picker turns kinds on and off, saved at once", JA, async ($, on) => {
   expect(await $.command.run({ ...CHECK, args: "repo" })).toMatchObject({ text: expect.stringContaining("o/r: push") })
 })
 
+test("the tray follows the picker: a repository with no kind left goes from it at once", JA, async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } } })
+  mock.clock(on, { now: 1_000_000 })
+  fakeGitHub(on, [[]])
+  on("ui.open", async () => ({ value: { isPlaced: true } }))
+  const lines: Array<string | undefined> = []
+  on("ui.status", async (_$, e) => {
+    lines.push(e.text)
+    return { value: undefined }
+  })
+
+  await $.command.run({ ...CHECK, args: "repo set o/r" })
+  expect(lines.at(-1)).toBe("GitHub: r -")
+  const pane = await $.ui.mount({
+    plugin: "gh-inbox",
+    surface: "terminal",
+    component: "Pane",
+    requestId: "gh-inbox-kinds",
+    props: { title: "", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 20 }, view: {} },
+  })
+  await pane.press({ key: "comment" })
+  await $.command.run({ ...CHECK, args: "status" })
+  expect(lines.at(-1)).toBeUndefined()
+})
+
 test("runs that cannot be read leave the other notices coming, the error shown", JA, async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["comment", "ci-failure"] } } })
   const clock = mock.clock(on, { now: 1_000_000 })
@@ -489,6 +514,7 @@ test("/inbox log links what was done, a nickname's own words not taken for it", 
     pull: "o/r#3",
     author: "a",
     who: "Team commented",
+    head: "Team commented commented on #3",
     at: "2026-10-16T23:00:00Z",
     text: "[r] Team commented commented on #3: hi",
     url: "https://github.com/o/r/pull/3",

@@ -1,6 +1,6 @@
 import { expect, test } from "claude-code/testing"
 
-import { splitNotice } from "../hooks/i18n"
+import { MESSAGES, splitNotice } from "../hooks/i18n"
 
 test("splitNotice cuts who did it, what they did and the rest, together the text again", () => {
   const cases = [
@@ -27,11 +27,25 @@ test("splitNotice cuts who did it, what they did and the rest, together the text
   }
 })
 
-test("splitNotice takes who did it as the notice named them, whatever words their nickname has", () => {
-  expect(splitNotice(" Team commented commented: hi", "en", "Team commented")).toEqual({ who: " Team commented ", action: "commented", detail: ": hi" })
-  expect(splitNotice("がさんがコメントしました。x", "ja", "がさん")).toEqual({ who: "がさんが", action: "コメントしました", detail: "。x" })
-  // Named in the other language, from before the language was changed.
-  expect(splitNotice("Team approved approved.", "ja", "Team approved")).toEqual({ who: "Team approved ", action: "approved", detail: "." })
-  // A name the line does not start with (a hook rewrote it) is read as the line reads.
-  expect(splitNotice("bob commented: hi", "en", "alice")).toEqual({ who: "bob ", action: "commented", detail: ": hi" })
+test("splitNotice cuts by the head and who did it the notice was made with, whatever a person's words say", () => {
+  const cases = [
+    // A nickname with the verbs in it.
+    [" Team commented commented on #3: hi", "en", { who: "Team commented", head: "Team commented commented on #3" }, { who: " Team commented ", action: "commented on #3", detail: ": hi" }],
+    // A branch name with Japanese punctuation.
+    ["aliceさんが release。next に push しました。abc", "ja", { who: "aliceさん", head: "aliceさんが release。next に push しました" }, { who: "aliceさんが ", action: "release。next に push しました", detail: "。abc" }],
+    // A Japanese notice whose nickname reads as English, kept from before the language was changed.
+    ["Team commentedさんがコメントしました。hi", "en", { who: "Team commentedさん", head: "Team commentedさんがコメントしました" }, { who: "Team commentedさんが", action: "コメントしました", detail: "。hi" }],
+    // No one at its start.
+    ["build のCIが失敗しました。step", "en", { head: "build のCIが失敗しました" }, { who: "", action: "build のCIが失敗しました", detail: "。step" }],
+    // A line a hook rewrote is read as it reads.
+    ["bob commented: hi", "en", { who: "alice", head: "alice commented" }, { who: "bob ", action: "commented", detail: ": hi" }],
+  ] as const
+  for (const [text, language, known, parts] of cases) expect(splitNotice(text, language, known)).toEqual(parts)
+})
+
+test("head is what a notice says before the free text it ends with", () => {
+  expect(MESSAGES.en.head("alice pushed to feat: x: fix (+1 −0)", "fix (+1 −0)")).toBe("alice pushed to feat: x")
+  expect(MESSAGES.en.head("alice approved.", "")).toBe("alice approved")
+  expect(MESSAGES.ja.head("aliceさんが変更を依頼しました。指摘2件 直して", "直して")).toBe("aliceさんが変更を依頼しました。指摘2件")
+  expect(MESSAGES.ja.head("#3 がマージされました。", "")).toBe("#3 がマージされました")
 })

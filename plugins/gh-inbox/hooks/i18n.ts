@@ -22,22 +22,34 @@ export type NoticeParts = { who: string; action: string; detail: string }
  */
 type NoticeShape = { who: RegExp; after: RegExp; unnamed: RegExp; end: (rest: string) => number }
 
-/**
- * `text` cut by `shape`, and whether it reads as one of its notices. `known` is who did it as the notice
- * named them: then what is the person's (a nickname, its punctuation and words too) is never guessed at.
- */
-function cutBy(text: string, shape: NoticeShape, known?: string): { parts: NoticeParts; isShaped: boolean } {
+/** `text` cut by `shape` as it reads, and whether it reads as one of its notices: for a notice kept with no head. */
+function cutBy(text: string, shape: NoticeShape): { parts: NoticeParts; isShaped: boolean } {
   const lead = /^\s*/.exec(text)?.[0] ?? ""
-  const after = known === undefined || !text.startsWith(known, lead.length) ? null : shape.after.exec(text.slice(lead.length + known.length))
-  const byKnown = after === null ? undefined : `${lead}${known}${after[0]}`
-  const isUnnamed = byKnown === undefined && shape.unnamed.test(text.slice(lead.length, lead.length + shape.end(text.slice(lead.length))))
+  const isUnnamed = shape.unnamed.test(text.slice(lead.length, lead.length + shape.end(text.slice(lead.length))))
   // Who did it is found before where the action ends: a display name's punctuation is the person's.
-  const named = byKnown ?? (isUnnamed ? "" : (shape.who.exec(text)?.[0] ?? ""))
+  const named = isUnnamed ? "" : (shape.who.exec(text)?.[0] ?? "")
   // The space after who did it, or after a repository's short name, is not part of the link.
   const who = named + (/^\s*/.exec(text.slice(named.length))?.[0] ?? "")
   const end = who.length + shape.end(text.slice(who.length))
   return { parts: { who, action: text.slice(who.length, end), detail: text.slice(end) }, isShaped: isUnnamed || named !== "" }
 }
+
+/** `text` cut by the head and who did it its notice was made with; undefined where the line no longer starts with them (a hook rewrote it). */
+function cutByKnown(text: string, known: { who?: string; head?: string }): NoticeParts | undefined {
+  const { who, head } = known
+  const lead = /^\s*/.exec(text)?.[0] ?? ""
+  if (head === undefined || head === "" || !text.startsWith(head, lead.length)) return undefined
+  // Who did it, with what joins them to the action (Japanese 「が」) and the space after.
+  const after = who === undefined || !head.startsWith(who) ? undefined : head.slice(who.length)
+  const joined = after === undefined ? "" : `${who}${LANGUAGES.map(one => SHAPES[one].after.exec(after)?.[0]).find(found => found !== undefined) ?? ""}`
+  const named = lead + joined + (/^\s*/.exec(head.slice(joined.length))?.[0] ?? "")
+  const end = lead.length + head.length
+  return { who: named, action: text.slice(named.length, end), detail: text.slice(end) }
+}
+
+/** `text` with `detail` off its end, and `separator` (what comes between the head and a detail, or ends a head alone). */
+const headOf = (text: string, detail: string, separator: RegExp) =>
+  (detail.trim() !== "" && text.endsWith(detail) ? text.slice(0, -detail.length) : text).trimEnd().replace(separator, "")
 
 const SHAPES: Record<Language, NoticeShape> = {
   // `say`'s head ends at its first ": " or its closing "."; who did it comes before the verbs the notices below use.
@@ -63,15 +75,17 @@ const SHAPES: Record<Language, NoticeShape> = {
 }
 
 /**
- * A notice cut where `/inbox log` draws it apart, `who` as the notice named who did it where it says.
- * Read as `language`'s first, else as the language it reads as: the log keeps notices written before
- * the language was changed.
+ * A notice cut where `/inbox log` draws it apart: by the head and who did it its notice was made with, which
+ * a person's words (a nickname, a branch name) never move; a notice kept with none is read as it reads,
+ * as `language`'s first, else as the language it reads as (the log keeps notices from before a change).
  */
-export function splitNotice(text: string, language: Language, who?: string): NoticeParts {
-  const first = cutBy(text, SHAPES[language], who)
+export function splitNotice(text: string, language: Language, known: { who?: string; head?: string } = {}): NoticeParts {
+  const byKnown = cutByKnown(text, known)
+  if (byKnown !== undefined) return byKnown
+  const first = cutBy(text, SHAPES[language])
   if (first.isShaped) return first.parts
   for (const other of LANGUAGES) {
-    const cut = cutBy(text, SHAPES[other], who)
+    const cut = cutBy(text, SHAPES[other])
     if (cut.isShaped) return cut.parts
   }
   return first.parts
@@ -80,6 +94,8 @@ export function splitNotice(text: string, language: Language, who?: string): Not
 const en = {
   someone: "someone",
   who: (name: string) => name,
+  /** The head of `text` made with `detail` last: who did it and what, as the notice wrote it. */
+  head: (text: string, detail: string) => headOf(text, detail, /(?::|\.)$/),
   /** A remark in brackets after what it is about. */
   paren: (text: string) => ` (${text})`,
   listSeparator: ", ",
@@ -264,6 +280,7 @@ export type Messages = typeof en
 const ja: Messages = {
   someone: "誰か",
   who: name => `${name}さん`,
+  head: (text, detail) => headOf(text, detail, /。$/),
   paren: text => `（${text}）`,
   listSeparator: "、",
   more: n => ` ほか${n}件`,

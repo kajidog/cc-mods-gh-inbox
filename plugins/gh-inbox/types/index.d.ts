@@ -26,6 +26,8 @@ export type GhEvent = {
   items: GhEventItem[]
   /** Who did it as the line names them (a nickname, `さん` in Japanese), where the line starts with them. */
   who?: string
+  /** What the line starts with before what a person wrote (a comment, a title): who did it and what. */
+  head?: string
 }
 
 /** The repository whose kinds the picker pane toggles. */
