@@ -20,14 +20,19 @@ export type NoticeParts = { who: string; action: string; detail: string }
  * How a language's notices read: `who` finds who did it at the start, `unnamed` a notice with no one
  * (a failed CI, a merge) in its head, and `end` where what was done ends in what follows who did it.
  */
-type NoticeShape = { who: RegExp; unnamed: RegExp; end: (rest: string) => number }
+type NoticeShape = { who: RegExp; after: RegExp; unnamed: RegExp; end: (rest: string) => number }
 
-/** `text` cut by `shape`, and whether it reads as one of its notices. */
-function cutBy(text: string, shape: NoticeShape): { parts: NoticeParts; isShaped: boolean } {
+/**
+ * `text` cut by `shape`, and whether it reads as one of its notices. `known` is who did it as the notice
+ * named them: then what is the person's (a nickname, its punctuation and words too) is never guessed at.
+ */
+function cutBy(text: string, shape: NoticeShape, known?: string): { parts: NoticeParts; isShaped: boolean } {
   const lead = /^\s*/.exec(text)?.[0] ?? ""
-  const isUnnamed = shape.unnamed.test(text.slice(lead.length, lead.length + shape.end(text.slice(lead.length))))
-  // Who did it is found before where the action ends: a display name is the person's, its punctuation too.
-  const named = isUnnamed ? "" : (shape.who.exec(text)?.[0] ?? "")
+  const after = known === undefined || !text.startsWith(known, lead.length) ? null : shape.after.exec(text.slice(lead.length + known.length))
+  const byKnown = after === null ? undefined : `${lead}${known}${after[0]}`
+  const isUnnamed = byKnown === undefined && shape.unnamed.test(text.slice(lead.length, lead.length + shape.end(text.slice(lead.length))))
+  // Who did it is found before where the action ends: a display name's punctuation is the person's.
+  const named = byKnown ?? (isUnnamed ? "" : (shape.who.exec(text)?.[0] ?? ""))
   // The space after who did it, or after a repository's short name, is not part of the link.
   const who = named + (/^\s*/.exec(text.slice(named.length))?.[0] ?? "")
   const end = who.length + shape.end(text.slice(who.length))
@@ -38,6 +43,7 @@ const SHAPES: Record<Language, NoticeShape> = {
   // `say`'s head ends at its first ": " or its closing "."; who did it comes before the verbs the notices below use.
   en: {
     who: /^.+? (?=(?:commented|left|approved|requested|reviewed|committed|created|opened|pushed)\b)/,
+    after: /^(?= )/,
     unnamed: /^(?:CI failed\b|#\d+ was (?:merged|closed)\b)/,
     end: rest => {
       const colon = rest.indexOf(": ")
@@ -47,6 +53,7 @@ const SHAPES: Record<Language, NoticeShape> = {
   // 何をしたかは最初の「。」まで、した人は「〜さんが」。
   ja: {
     who: /^.+?さんが/,
+    after: /^が/,
     unnamed: /^(?:#\d+ が(?:マージ|クローズ)されました|.+?の ?CI ?が失敗しました)/,
     end: rest => {
       const period = rest.indexOf("。")
@@ -56,14 +63,15 @@ const SHAPES: Record<Language, NoticeShape> = {
 }
 
 /**
- * A notice cut where `/inbox log` draws it apart. Read as `language`'s first, else as the language it reads as:
- * the log keeps notices written before the language was changed.
+ * A notice cut where `/inbox log` draws it apart, `who` as the notice named who did it where it says.
+ * Read as `language`'s first, else as the language it reads as: the log keeps notices written before
+ * the language was changed.
  */
-export function splitNotice(text: string, language: Language): NoticeParts {
-  const first = cutBy(text, SHAPES[language])
+export function splitNotice(text: string, language: Language, who?: string): NoticeParts {
+  const first = cutBy(text, SHAPES[language], who)
   if (first.isShaped) return first.parts
   for (const other of LANGUAGES) {
-    const cut = cutBy(text, SHAPES[other])
+    const cut = cutBy(text, SHAPES[other], who)
     if (cut.isShaped) return cut.parts
   }
   return first.parts

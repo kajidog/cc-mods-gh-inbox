@@ -482,6 +482,28 @@ test("/inbox log's row draws the repository's short name in color and what was d
   expect(await (await row("status", "[r] a\n  https://x")).find({ text: "engine's own" })).toBeDefined()
 })
 
+test("/inbox log links what was done, a nickname's own words not taken for it", async ($, on) => {
+  const event = {
+    id: "x",
+    kind: "comment",
+    pull: "o/r#3",
+    author: "a",
+    who: "Team commented",
+    at: "2026-10-16T23:00:00Z",
+    text: "[r] Team commented commented on #3: hi",
+    url: "https://github.com/o/r/pull/3",
+    items: [],
+  }
+  mock.store(on, { "history:other": { at: 1, events: [event] } })
+  mock.clock(on, { now: Date.parse("2026-10-17T00:00:00Z") })
+  fakeGitHub(on, [[]])
+
+  const { text = "" } = await $.command.run({ ...CHECK, args: "log" })
+  const log = await $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "CommandOutput", props: { command: "inbox", args: "log", text, isErrored: false } })
+  const links = await log.findAll({ type: "Link" })
+  expect(links.map(link => link.children.join(""))).toEqual(["commented on #3"])
+})
+
 test("/inbox repo tells when each repository's last event happened", JA, async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } } })
   mock.clock(on, { now: Date.parse(COMMENT.created_at) + 5 * 60_000 })

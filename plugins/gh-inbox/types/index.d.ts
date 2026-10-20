@@ -24,6 +24,8 @@ export type GhEvent = {
   text: string
   url: string
   items: GhEventItem[]
+  /** Who did it as the line names them (a nickname, `さん` in Japanese), where the line starts with them. */
+  who?: string
 }
 
 /** The repository whose kinds the picker pane toggles. */

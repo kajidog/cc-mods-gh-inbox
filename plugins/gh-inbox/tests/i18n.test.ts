@@ -26,3 +26,12 @@ test("splitNotice cuts who did it, what they did and the rest, together the text
     expect(parts.who + parts.action + parts.detail).toBe(text)
   }
 })
+
+test("splitNotice takes who did it as the notice named them, whatever words their nickname has", () => {
+  expect(splitNotice(" Team commented commented: hi", "en", "Team commented")).toEqual({ who: " Team commented ", action: "commented", detail: ": hi" })
+  expect(splitNotice("がさんがコメントしました。x", "ja", "がさん")).toEqual({ who: "がさんが", action: "コメントしました", detail: "。x" })
+  // Named in the other language, from before the language was changed.
+  expect(splitNotice("Team approved approved.", "ja", "Team approved")).toEqual({ who: "Team approved ", action: "approved", detail: "." })
+  // A name the line does not start with (a hook rewrote it) is read as the line reads.
+  expect(splitNotice("bob commented: hi", "en", "alice")).toEqual({ who: "bob ", action: "commented", detail: ": hi" })
+})

@@ -465,7 +465,7 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
 
   const unknownPushes: Array<RepoEvent & { type: "push" }> = []
   for (const event of pending) {
-    const base = { id: event.id, author: event.actor, at: event.at }
+    const base = { id: event.id, author: event.actor, who: who(event.actor), at: event.at }
     switch (event.type) {
       case "branch":
         add({ ...base, kind: "branch", text: t.branchCreated(who(event.actor), event.ref), url: webUrl(ref, `tree/${branchPath(event.ref)}`), items: [] })
@@ -473,9 +473,11 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
       case "pull": {
         const title = titleOf(event.number)
         const common = { ...base, number: event.number, url: pullUrl(event.number), items: [] }
+        // A merge or a close is told with no one at its start.
+        const { who: _, ...unnamed } = common
         if (event.action === "opened") add({ ...common, kind: "open", text: t.pullOpened(who(event.actor), event.number, title) })
-        else if (event.action === "merged") add({ ...common, kind: "merge", text: t.merged(event.number, title) })
-        else add({ ...common, kind: "close", text: t.closed(event.number, title) })
+        else if (event.action === "merged") add({ ...unnamed, kind: "merge", text: t.merged(event.number, title) })
+        else add({ ...unnamed, kind: "close", text: t.closed(event.number, title) })
         break
       }
       case "comment":

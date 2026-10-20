@@ -1190,11 +1190,13 @@ export const register: Register = (on, options) => {
     const rows = isLog && !e.props.isErrored ? parseLog(e.props.text) : undefined
     if (rows === undefined) return next(e)
     const { Box, Text, Link } = $.ui.resolve(e)
+    // Who did each as its notice named them, from the log the rows were listed from: a row it no longer keeps is read as it reads.
+    const named = new Map((await readHistory($)).flatMap(event => (event.who === undefined ? [] : [[`${plain(event.text)}\n${plain(event.url)}`, plain(event.who)]])))
     return (
       <Box flexDirection="column">
         {rows.map(row => {
           const { label, rest } = splitLabel(row.text)
-          const { who, action, detail } = splitNotice(rest, language)
+          const { who, action, detail } = splitNotice(rest, language, named.get(`${row.text}\n${row.url}`))
           return (
             <Text>
               {label === "" ? null : <Text color={LABEL_COLOR}>{label}</Text>}
