@@ -1196,14 +1196,19 @@ export const register: Register = (on, options) => {
     const known = new Map(
       (await readHistory($)).map(event => [
         `${plain(event.text)}\n${plain(event.url)}`,
-        { who: event.who === undefined ? undefined : plain(event.who), head: event.head === undefined ? undefined : plain(event.head) },
+        {
+          who: event.who === undefined ? undefined : plain(event.who),
+          head: event.head === undefined ? undefined : plain(event.head),
+          label: event.label === undefined ? undefined : plain(event.label),
+        },
       ]),
     )
     return (
       <Box flexDirection="column">
         {rows.map(row => {
-          const { label, rest } = splitLabel(row.text)
-          const { who, action, detail } = splitNotice(rest, language, known.get(`${row.text}\n${row.url}`))
+          const made = known.get(`${row.text}\n${row.url}`)
+          const { label, rest } = splitLabel(row.text, made?.label)
+          const { who, action, detail } = splitNotice(rest, language, made)
           return (
             <Text>
               {label === "" ? null : <Text color={LABEL_COLOR}>{label}</Text>}

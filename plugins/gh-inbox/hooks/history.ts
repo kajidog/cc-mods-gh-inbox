@@ -135,8 +135,12 @@ export function parseLog(text: string): LogRow[] | undefined {
   return rows
 }
 
-/** A notice's `[short name] ` of its registered repository, and what follows it; `label` empty where it has none. */
-export function splitLabel(text: string): { label: string; rest: string } {
-  const label = /^\[[^\]]*\](?= )/.exec(text)?.[0] ?? ""
+/**
+ * A notice's `[short name] ` of its registered repository, and what follows it; `label` empty where it has none.
+ * `known` is the short name it was made with: a name with `]` in it is not cut at that.
+ */
+export function splitLabel(text: string, known?: string): { label: string; rest: string } {
+  const named = known === undefined ? undefined : `[${known}]`
+  const label = named !== undefined && text.startsWith(`${named} `) ? named : (/^\[[^\]]*\](?= )/.exec(text)?.[0] ?? "")
   return { label, rest: text.slice(label.length) }
 }

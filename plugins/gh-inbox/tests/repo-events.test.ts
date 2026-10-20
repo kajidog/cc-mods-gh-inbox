@@ -64,6 +64,7 @@ describe("newRepoEvents", () => {
     for (const event of told) {
       if (event.who !== undefined) expect(event.text.startsWith(`[tts] ${event.who}`)).toBe(true)
       expect(event.text.startsWith(`[tts] ${event.head}`)).toBe(true)
+      expect(event.label).toBe("tts")
     }
     expect(told.map(event => event.head)).toContain("かじさんが main に push しました")
     expect(told.map(event => event.who)).toContain("レビさん")

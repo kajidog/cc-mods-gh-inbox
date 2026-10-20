@@ -507,7 +507,7 @@ test("/inbox log's row draws the repository's short name in color and what was d
   expect(await (await row("status", "[r] a\n  https://x")).find({ text: "engine's own" })).toBeDefined()
 })
 
-test("/inbox log links what was done, a nickname's own words not taken for it", async ($, on) => {
+test("/inbox log links what was done and colors the short name, a person's own words not taken for either", async ($, on) => {
   const event = {
     id: "x",
     kind: "comment",
@@ -515,8 +515,9 @@ test("/inbox log links what was done, a nickname's own words not taken for it", 
     author: "a",
     who: "Team commented",
     head: "Team commented commented on #3",
+    label: "x] y",
     at: "2026-10-16T23:00:00Z",
-    text: "[r] Team commented commented on #3: hi",
+    text: "[x] y] Team commented commented on #3: hi",
     url: "https://github.com/o/r/pull/3",
     items: [],
   }
@@ -528,6 +529,9 @@ test("/inbox log links what was done, a nickname's own words not taken for it", 
   const log = await $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "CommandOutput", props: { command: "inbox", args: "log", text, isErrored: false } })
   const links = await log.findAll({ type: "Link" })
   expect(links.map(link => link.children.join(""))).toEqual(["commented on #3"])
+  // A short name with "]" in it is colored whole.
+  const colored = (await log.findAll({ type: "Text" })).filter(one => one.props.color !== undefined)
+  expect(colored.map(one => one.children.join(""))).toEqual(["[x] y]"])
 })
 
 test("/inbox repo tells when each repository's last event happened", JA, async ($, on) => {

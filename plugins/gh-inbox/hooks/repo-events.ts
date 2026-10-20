@@ -451,7 +451,7 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
   // The detail is the free text the notice ends with; the head, what comes before it, is kept apart.
   const add = (event: Omit<GhEvent, "text" | "pull"> & { text: string; detail: string; number?: number }) => {
     const { number: at, detail, ...rest } = event
-    events.push({ ...rest, head: t.head(event.text, detail), pull: at === undefined ? repoName(ref) : `${repoName(ref)}#${at}`, text: `${prefix}${event.text}`.trimEnd() })
+    events.push({ ...rest, label: input.label, head: t.head(event.text, detail), pull: at === undefined ? repoName(ref) : `${repoName(ref)}#${at}`, text: `${prefix}${event.text}`.trimEnd() })
   }
 
   // A review's line comments go with the review when both are notified.

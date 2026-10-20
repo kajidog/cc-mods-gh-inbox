@@ -28,6 +28,8 @@ export type GhEvent = {
   who?: string
   /** What the line starts with before what a person wrote (a comment, a title): who did it and what. */
   head?: string
+  /** The short name of the registered repository the line starts with, in brackets, before its head. */
+  label?: string
 }
 
 /** The repository whose kinds the picker pane toggles. */
