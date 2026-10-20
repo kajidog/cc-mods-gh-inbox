@@ -24,7 +24,7 @@ import {
   toSharedSeen,
   unheld,
 } from "./history"
-import { type Language, MESSAGES, type Messages, toLanguage } from "./i18n"
+import { type Language, MESSAGES, type Messages, splitNotice, toLanguage } from "./i18n"
 import {
   CONTEXT_LIMIT,
   idsOf,
@@ -1194,7 +1194,7 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column">
         {rows.map(row => {
           const { label, rest } = splitLabel(row.text)
-          const { who, action, detail } = t.splitNotice(rest)
+          const { who, action, detail } = splitNotice(rest, language)
           return (
             <Text>
               {label === "" ? null : <Text color={LABEL_COLOR}>{label}</Text>}

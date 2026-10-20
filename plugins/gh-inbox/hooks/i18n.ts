@@ -16,13 +16,57 @@ const reviewCount = (n: number) => (n > 0 ? ` (${count(n, "comment")})` : "")
 /** A notice cut where `/inbox log` draws it apart: who did it, what they did (the link), the rest; together the text again. */
 export type NoticeParts = { who: string; action: string; detail: string }
 
-/** `text` cut after `head` ends: `head` as `who` (what `whoOf` finds at its start) and `action`, the rest as `detail`. */
-function cut(text: string, end: number, whoOf: RegExp): NoticeParts {
-  const head = text.slice(0, end)
-  const named = whoOf.exec(head)?.[0] ?? ""
+/**
+ * How a language's notices read: `who` finds who did it at the start, `unnamed` a notice with no one
+ * (a failed CI, a merge) in its head, and `end` where what was done ends in what follows who did it.
+ */
+type NoticeShape = { who: RegExp; unnamed: RegExp; end: (rest: string) => number }
+
+/** `text` cut by `shape`, and whether it reads as one of its notices. */
+function cutBy(text: string, shape: NoticeShape): { parts: NoticeParts; isShaped: boolean } {
+  const lead = /^\s*/.exec(text)?.[0] ?? ""
+  const isUnnamed = shape.unnamed.test(text.slice(lead.length, lead.length + shape.end(text.slice(lead.length))))
+  // Who did it is found before where the action ends: a display name is the person's, its punctuation too.
+  const named = isUnnamed ? "" : (shape.who.exec(text)?.[0] ?? "")
   // The space after who did it, or after a repository's short name, is not part of the link.
-  const who = named + (/^\s*/.exec(head.slice(named.length))?.[0] ?? "")
-  return { who, action: head.slice(who.length), detail: text.slice(end) }
+  const who = named + (/^\s*/.exec(text.slice(named.length))?.[0] ?? "")
+  const end = who.length + shape.end(text.slice(who.length))
+  return { parts: { who, action: text.slice(who.length, end), detail: text.slice(end) }, isShaped: isUnnamed || named !== "" }
+}
+
+const SHAPES: Record<Language, NoticeShape> = {
+  // `say`'s head ends at its first ": " or its closing "."; who did it comes before the verbs the notices below use.
+  en: {
+    who: /^.+? (?=(?:commented|left|approved|requested|reviewed|committed|created|opened|pushed)\b)/,
+    unnamed: /^(?:CI failed\b|#\d+ was (?:merged|closed)\b)/,
+    end: rest => {
+      const colon = rest.indexOf(": ")
+      return colon >= 0 ? colon : rest.endsWith(".") ? rest.length - 1 : rest.length
+    },
+  },
+  // 何をしたかは最初の「。」まで、した人は「〜さんが」。
+  ja: {
+    who: /^.+?さんが/,
+    unnamed: /^(?:#\d+ が(?:マージ|クローズ)されました|.+?の ?CI ?が失敗しました)/,
+    end: rest => {
+      const period = rest.indexOf("。")
+      return period >= 0 ? period : rest.length
+    },
+  },
+}
+
+/**
+ * A notice cut where `/inbox log` draws it apart. Read as `language`'s first, else as the language it reads as:
+ * the log keeps notices written before the language was changed.
+ */
+export function splitNotice(text: string, language: Language): NoticeParts {
+  const first = cutBy(text, SHAPES[language])
+  if (first.isShaped) return first.parts
+  for (const other of LANGUAGES) {
+    const cut = cutBy(text, SHAPES[other])
+    if (cut.isShaped) return cut.parts
+  }
+  return first.parts
 }
 
 const en = {
@@ -32,12 +76,6 @@ const en = {
   paren: (text: string) => ` (${text})`,
   listSeparator: ", ",
   more: (n: number) => ` and ${n} more`,
-  // `say`'s head ends at its first ": " or its closing "."; who did it comes before the verbs the notices below use.
-  splitNotice: (text: string): NoticeParts => {
-    const colon = text.indexOf(": ")
-    const end = colon >= 0 ? colon : text.endsWith(".") ? text.length - 1 : text.length
-    return cut(text, end, /^.+? (?=(?:commented|left|approved|requested|reviewed|committed|created|opened|pushed)\b)/)
-  },
   ago: (seconds: number) =>
     seconds < 60
       ? `${seconds}s ago`
@@ -221,11 +259,6 @@ const ja: Messages = {
   paren: text => `（${text}）`,
   listSeparator: "、",
   more: n => ` ほか${n}件`,
-  // 何をしたかは最初の「。」まで、した人は「〜さんが」。
-  splitNotice: text => {
-    const period = text.indexOf("。")
-    return cut(text, period >= 0 ? period : text.length, /^.+?さんが/)
-  },
   ago: seconds =>
     seconds < 60
       ? `${seconds}秒前`
