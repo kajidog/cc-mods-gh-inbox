@@ -1207,7 +1207,8 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column">
         {rows.map(row => {
           const made = known.get(`${row.text}\n${row.url}`)
-          const { label, rest } = splitLabel(row.text, made?.label)
+          // A notice kept with its head says its short name, or that it has none.
+          const { label, rest } = splitLabel(row.text, made?.head === undefined ? undefined : (made.label ?? null))
           const { who, action, detail } = splitNotice(rest, language, made)
           return (
             <Text>
