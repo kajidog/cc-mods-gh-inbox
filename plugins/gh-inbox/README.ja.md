@@ -88,10 +88,10 @@ Claude Code の mod です。
 | --- | --- |
 | `/inbox` | 見ている PR と最後に確認した時刻 |
 | `/inbox check` | すぐに確認する |
-| `/inbox log` | どの窓のものも含めた通知（新しい20件。各行が GitHub へのリンクで、いつのことかを添えます） |
+| `/inbox log` | どの窓のものも含めた通知（新しい20件。いつのことかを添えます。リポジトリの短い名前は色付きで、何をしたかの部分が GitHub へのリンクです） |
 | `/inbox pick [PR]` | Claude に渡すスレッド・レビュー・コメントを選ぶ |
 | `/inbox clear` | 添付を外す |
-| `/inbox repo` | 登録したリポジトリと、通知する種類の一覧 |
+| `/inbox repo` | 登録したリポジトリと、通知する種類、最後に確認した時刻と最後のイベントの時刻の一覧 |
 | `/inbox repo add owner/repo [種類,...]` | 登録する（種類を省くと、選ぶペインを開く） |
 | `/inbox repo set owner/repo [種類,...]` | 種類を変える（種類を省くと、選ぶペインを開く） |
 | `/inbox repo remove owner/repo` | 登録を外す |

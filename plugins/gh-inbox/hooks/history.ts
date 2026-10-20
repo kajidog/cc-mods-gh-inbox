@@ -134,3 +134,9 @@ export function parseLog(text: string): LogRow[] | undefined {
 
   return rows
 }
+
+/** A notice's `[short name] ` of its registered repository, and what follows it; `label` empty where it has none. */
+export function splitLabel(text: string): { label: string; rest: string } {
+  const label = /^\[[^\]]*\](?= )/.exec(text)?.[0] ?? ""
+  return { label, rest: text.slice(label.length) }
+}

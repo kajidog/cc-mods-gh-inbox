@@ -13,6 +13,18 @@ const say = (head: string, detail = "") => (detail.trim() === "" ? `${head}.` : 
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 const reviewCount = (n: number) => (n > 0 ? ` (${count(n, "comment")})` : "")
 
+/** A notice cut where `/inbox log` draws it apart: who did it, what they did (the link), the rest; together the text again. */
+export type NoticeParts = { who: string; action: string; detail: string }
+
+/** `text` cut after `head` ends: `head` as `who` (what `whoOf` finds at its start) and `action`, the rest as `detail`. */
+function cut(text: string, end: number, whoOf: RegExp): NoticeParts {
+  const head = text.slice(0, end)
+  const named = whoOf.exec(head)?.[0] ?? ""
+  // The space after who did it, or after a repository's short name, is not part of the link.
+  const who = named + (/^\s*/.exec(head.slice(named.length))?.[0] ?? "")
+  return { who, action: head.slice(who.length), detail: text.slice(end) }
+}
+
 const en = {
   someone: "someone",
   who: (name: string) => name,
@@ -20,6 +32,12 @@ const en = {
   paren: (text: string) => ` (${text})`,
   listSeparator: ", ",
   more: (n: number) => ` and ${n} more`,
+  // `say`'s head ends at its first ": " or its closing "."; who did it comes before the verbs the notices below use.
+  splitNotice: (text: string): NoticeParts => {
+    const colon = text.indexOf(": ")
+    const end = colon >= 0 ? colon : text.endsWith(".") ? text.length - 1 : text.length
+    return cut(text, end, /^.+? (?=(?:commented|left|approved|requested|reviewed|committed|created|opened|pushed)\b)/)
+  },
   ago: (seconds: number) =>
     seconds < 60
       ? `${seconds}s ago`
@@ -94,7 +112,7 @@ const en = {
   noRepos: "No repositories are registered.",
   overLimit: (max: number) => ` (not checked: over the limit of ${max})`,
   noKindsChosen: " (not checked until kinds are chosen)",
-  lastCheckedRepo: (ago: string) => `Last checked ${ago}`,
+  lastCheckedRepo: (ago: string, eventAgo?: string) => `Last checked ${ago}${eventAgo === undefined ? "" : `; last event ${eventAgo}`}`,
   repoFormat: "Name the repository as owner/repo.",
   notRegistered: (name: string) => `${name} is not registered.`,
   unknownKinds: (unknown: string, kinds: string) => `Unknown kinds: ${unknown}\nKinds: ${kinds}`,
@@ -199,6 +217,11 @@ const ja: Messages = {
   paren: text => `（${text}）`,
   listSeparator: "、",
   more: n => ` ほか${n}件`,
+  // 何をしたかは最初の「。」まで、した人は「〜さんが」。
+  splitNotice: text => {
+    const period = text.indexOf("。")
+    return cut(text, period >= 0 ? period : text.length, /^.+?さんが/)
+  },
   ago: seconds =>
     seconds < 60
       ? `${seconds}秒前`
@@ -269,7 +292,7 @@ const ja: Messages = {
   noRepos: "登録したリポジトリはありません。",
   overLimit: max => `（上限${max}件を超えたため確認しません）`,
   noKindsChosen: "（種類を選ぶまで確認しません）",
-  lastCheckedRepo: ago => `最後の確認: ${ago}`,
+  lastCheckedRepo: (ago, eventAgo) => `最後の確認: ${ago}${eventAgo === undefined ? "" : `、最後のイベント: ${eventAgo}`}`,
   repoFormat: "リポジトリは owner/repo の形で指定します。",
   notRegistered: name => `${name} は登録されていません。`,
   unknownKinds: (unknown, kinds) => `知らない種類です: ${unknown}\n種類: ${kinds}`,

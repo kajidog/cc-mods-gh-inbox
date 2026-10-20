@@ -449,7 +449,7 @@ test("/inbox log lists what other sessions listed", JA, async ($, on) => {
   expect(await $.command.run({ ...CHECK, args: "log" })).toEqual({ text: "elsewhere\n  u（1時間前）" })
 })
 
-test("/inbox log's row draws each notice as a link to it, when it happened beside it", JA, async ($, on) => {
+test("/inbox log's row draws the repository's short name in color and what was done as a link, when it happened beside it", JA, async ($, on) => {
   mock.store(on, {})
   mock.clock(on, { now: 1_000_000 })
   fakeGitHub(on, [[]])
@@ -461,12 +461,17 @@ test("/inbox log's row draws each notice as a link to it, when it happened besid
   const row = (args: string, text: string) =>
     $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "CommandOutput", props: { command: "inbox", args, text, isErrored: false } })
 
-  const log = await row("log", "[r] a\n  https://github.com/o/r/pull/3（1日前）\nno url\n  （3日前）\nb\n  https://github.com/o/r/pull/4 (2h ago)")
+  const log = await row(
+    "log",
+    "[r] aさんが #3 にコメントしました。Looks good\n  https://github.com/o/r/pull/3（1日前）\nno url\n  （3日前）\n#4 がマージされました。\n  https://github.com/o/r/pull/4 (2h ago)",
+  )
   const links = await log.findAll({ type: "Link" })
   expect(links.map(link => [link.props.href, link.children.join("")])).toEqual([
-    ["https://github.com/o/r/pull/3", "[r] a"],
-    ["https://github.com/o/r/pull/4", "b"],
+    ["https://github.com/o/r/pull/3", "#3 にコメントしました"],
+    ["https://github.com/o/r/pull/4", "#4 がマージされました"],
   ])
+  const colored = (await log.findAll({ type: "Text" })).filter(text => text.props.color !== undefined)
+  expect(colored.map(text => [text.props.color, text.children.join("")])).toEqual([["suggestion", "[r]"]])
   expect(await log.find({ type: "Text", text: "（1日前）" })).toBeDefined()
   expect(await log.find({ type: "Text", text: " (2h ago)" })).toBeDefined()
   // One with no URL is drawn as text, the others still links.
@@ -475,6 +480,15 @@ test("/inbox log's row draws each notice as a link to it, when it happened besid
   // Any other row is the engine's own.
   expect(await (await row("log", "通知はまだありません。")).find({ text: "engine's own" })).toBeDefined()
   expect(await (await row("status", "[r] a\n  https://x")).find({ text: "engine's own" })).toBeDefined()
+})
+
+test("/inbox repo tells when each repository's last event happened", JA, async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } } })
+  mock.clock(on, { now: Date.parse(COMMENT.created_at) + 5 * 60_000 })
+  fakeGitHub(on, [[COMMENT]], argv => ((argv.at(-1) ?? "").includes("/actions/runs") ? { stdout: 'HTTP/2.0 200 OK\nEtag: "r"\n\n{"workflow_runs":[]}' } : undefined))
+
+  await $.command.run(CHECK)
+  expect(await $.command.run({ ...CHECK, args: "repo" })).toMatchObject({ text: expect.stringContaining("最後の確認: 0秒前、最後のイベント: 5分前") })
 })
 
 test("notices and commands speak English by default", async ($, on) => {

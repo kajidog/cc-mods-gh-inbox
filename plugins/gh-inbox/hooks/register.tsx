@@ -16,6 +16,7 @@ import {
   newestAt,
   parseLog,
   SHARED_KEPT_MS,
+  splitLabel,
   SHARED_SEEN_PREFIX,
   toKept,
   toMissed,
@@ -86,6 +87,7 @@ import {
   REPOS_KEY,
   type RepoCache,
   type RepoEntry,
+  newestEventAt,
   type Repos,
   refOfKey,
   repoLabel,
@@ -100,6 +102,8 @@ const NICKNAMES_KEY = "nicknames"
 const EVENTS_KEPT = 100
 const LOG_SHOWN = 20
 const SHOWN_AT_ONCE = 5
+/** The theme color `/inbox log` draws a repository's short name in. */
+const LABEL_COLOR = "suggestion"
 const TOAST_MS = 8000
 // A branch with no open pull request is looked up again this often, not at every check.
 const LOOKUP_MS = 5 * 60 * 1000
@@ -791,7 +795,10 @@ async function repoCommand($: EngineInterface, ctx: Context, words: readonly str
       const label = entry.alias === undefined ? "" : ` [${entry.alias}]`
       const paused = index >= ctx.maxRepos ? t.overLimit(ctx.maxRepos) : entry.kinds.length === 0 ? t.noKindsChosen : ""
       lines.push(`${repoName(refOfKey(key))}${label}: ${kindList(t, entry.kinds)}${paused}`)
-      if (cache !== undefined) lines.push(`  ${t.lastCheckedRepo(ago(t, now - cache.at))}`)
+      if (cache !== undefined) {
+        const eventAt = newestEventAt(cache)
+        lines.push(`  ${t.lastCheckedRepo(ago(t, now - cache.at), eventAt === undefined ? undefined : ago(t, now - eventAt))}`)
+      }
       const error = ctx.repoErrors.get(key)
       if (error !== undefined) lines.push(`  ${t.error(plain(error))}`)
     }
@@ -1147,7 +1154,8 @@ export const register: Register = (on, options) => {
     }
   })
 
-  // `/inbox log`'s row draws each notice as a link to it; the text, URLs written out, is what the model reads.
+  // `/inbox log`'s row draws each notice with its repository's short name in color and what was done as a link to it;
+  // the text, URLs written out, is what the model reads.
   on("ui.render", { component: "CommandOutput", props: { command: COMMAND } }, async ($, e, next) => {
     const isLog = e.props.args.trim().split(/\s+/)[0] === "log"
     const rows = isLog && !e.props.isErrored ? parseLog(e.props.text) : undefined
@@ -1155,12 +1163,19 @@ export const register: Register = (on, options) => {
     const { Box, Text, Link } = $.ui.resolve(e)
     return (
       <Box flexDirection="column">
-        {rows.map(row => (
-          <Text>
-            {row.url === "" ? row.text : <Link href={row.url}>{row.text}</Link>}
-            {row.when === "" ? null : <Text dimColor>{row.when}</Text>}
-          </Text>
-        ))}
+        {rows.map(row => {
+          const { label, rest } = splitLabel(row.text)
+          const { who, action, detail } = t.splitNotice(rest)
+          return (
+            <Text>
+              {label === "" ? null : <Text color={LABEL_COLOR}>{label}</Text>}
+              {who}
+              {row.url === "" || action === "" ? action : <Link href={row.url}>{action}</Link>}
+              {detail}
+              {row.when === "" ? null : <Text dimColor>{row.when}</Text>}
+            </Text>
+          )
+        })}
       </Box>
     )
   })

@@ -69,6 +69,12 @@ export function toRepoCache(value: unknown): RepoCache | undefined {
   }
 }
 
+/** When the newest of the repository's events or failed runs happened, or undefined where none says. */
+export function newestEventAt(cache: RepoCache): number | undefined {
+  const times = [...cache.events, ...cache.runs].map(one => Date.parse(one.at)).filter(at => !Number.isNaN(at))
+  return times.length === 0 ? undefined : Math.max(...times)
+}
+
 /** `next` with what was looked up for `previous` kept: the commits of a push, the failed step of a run. */
 export function carryOver(previous: RepoCache | undefined, next: { events: RepoEvent[]; runs: Run[] }) {
   const changes = new Map(previous?.events.flatMap(event => (event.type === "push" && event.changes !== undefined ? [[event.id, event.changes]] : [])))
