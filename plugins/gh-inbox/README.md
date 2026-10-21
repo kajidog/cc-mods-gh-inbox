@@ -151,6 +151,7 @@ on("inbox.notified", async ($, e, next) => {
 - Checks run every 60 seconds by default (never more often than every 30).
 - Checking one pull request costs one GraphQL request, 1 point (5,000 points an hour are available).
 - A branch with no pull request is looked up only every 5 minutes. A merged or closed pull request is not asked about any more.
+- Each prompt you send reads the branch with `git` alone (GitHub is not asked). Only when it has changed is the new branch checked at once, so a switch shows by the next prompt rather than the next check.
 - Each registered repository costs one Events API request (and one Actions API request when `ci-failure` is chosen). They are sent with an `ETag`, so an unchanged repository does not count against the rate limit. It is never asked more often than GitHub's `X-Poll-Interval` (usually 60 seconds).
 - `/inbox pick` sends one GraphQL request as it opens. The list of pull requests and `/inbox pick 12` look up the current repository once with `gh repo view`; the list also searches once per host.
 - Answers are shared between windows. The commits of a new push (up to 5 per check), pull request titles and failed steps are asked for only when needed.

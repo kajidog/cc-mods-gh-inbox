@@ -686,6 +686,38 @@ test("with no repository registered, the tray tells of the branch's pull request
   expect(lines.at(-1)).toBe("GitHub: #12 · CI ✗ 1/2 · 2 approvals · conflicts · alice: Looks good 2h ago")
 })
 
+test("a branch switched to shows by the next prompt sent, GitHub asked only when it changed", JA, async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: Date.parse(COMMENT.created_at) + 5 * 60_000 })
+  let branch = "feat"
+  const pull = branchPull(COMMENT.created_at)
+  const github = fakeGitHub(on, [[]], argv => {
+    if (argv[0] === "git") return { stdout: `${branch}\n` }
+    if (branch === "main" && argv.includes("pr")) return { exitCode: 1, stderr: 'no pull requests found for branch "main"' }
+    return pull(argv)
+  })
+  const lines: Array<string | undefined> = []
+  on("ui.status", async (_$, e) => {
+    lines.push(e.text)
+    return { value: undefined }
+  })
+  on("prompt.submit", async (_$, e) => ({ text: e.text }))
+  const toGitHub = () => github.asked.filter(argv => argv[0] === "gh").length
+
+  await $.command.run(CHECK)
+  expect(lines.at(-1)).toContain("#12")
+  const asked = toGitHub()
+  await $.prompt.submit({ text: "続けて", wait: false, origin: { kind: "composer" } })
+  expect(toGitHub()).toBe(asked)
+
+  branch = "main"
+  await $.prompt.submit({ text: "続けて", wait: false, origin: { kind: "composer" } })
+  // The check runs behind the prompt, which does not wait for it.
+  for (let tries = 0; tries < 100 && lines.at(-1) !== undefined; tries += 1) await $.command.run({ ...CHECK, args: "status" })
+  expect(lines.at(-1)).toBeUndefined()
+  expect(await $.command.run({ ...CHECK, args: "status" })).toMatchObject({ text: expect.stringContaining("main の PR はありません。") })
+})
+
 test("the tray can be turned off", { options: { language: "ja", tray: false } }, async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["comment"] } } })
   mock.clock(on, { now: 1_000_000 })

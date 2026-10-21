@@ -160,6 +160,8 @@ type Context = {
   /** What the mod says, in `language`. */
   t: Messages
   found: Found | undefined
+  /** The branch the last check read; undefined before the first, null outside a branch. */
+  branch: string | null | undefined
   /** The check under way, if one is. */
   running: Promise<void> | undefined
   /** How many checks have started. */
@@ -406,6 +408,7 @@ async function bucketOf($: EngineInterface, ctx: Context, own: unknown, now: num
 async function checkPull($: EngineInterface, ctx: Context, checked: Checked, isForced: boolean) {
   try {
     const branch = await currentBranch($)
+    ctx.branch = branch
     if (branch === null) {
       ctx.found = undefined
       await update($, watch, () => ({ branch: null, pull: null, title: null, url: null, state: null, checkedAt: null, error: null, status: null }))
@@ -715,6 +718,16 @@ async function checkRepos($: EngineInterface, ctx: Context, checked: Checked) {
       $.ui.log(`gh-inbox: ${repoName(refOfKey(key))}: ${message}`, { to: "debug" })
     }
   }
+}
+
+/**
+ * Checks at once when the branch is no longer the one the last check read: a switch shows by the next prompt sent,
+ * not the next tick. Reading the branch asks git alone; GitHub is asked only when it changed.
+ */
+async function followBranch($: EngineInterface, ctx: Context) {
+  if (ctx.branch === undefined) return
+  const branch = await currentBranch($)
+  if (branch !== ctx.branch) await check($, ctx, true)
 }
 
 /** Checks now; a forced check waits for one under way and checks again after it, the timer's is skipped. */
@@ -1106,6 +1119,7 @@ export const register: Register = (on, options) => {
     language,
     t,
     found: undefined,
+    branch: undefined,
     running: undefined,
     checks: 0,
     sessionId: "",
@@ -1170,6 +1184,7 @@ export const register: Register = (on, options) => {
 
   on("prompt.submit", async ($, e, next) => {
     void touch($, ctx, true).catch(() => undefined)
+    void followBranch($, ctx).catch(() => undefined)
     // What is staged goes with the next prompt the person sends, not with a command or a prompt of a plugin's.
     const isPersons = (e.origin.kind === "composer" || e.origin.kind === "bridge") && e.command === undefined && e.isMeta !== true
     if (!isPersons) return next(e)

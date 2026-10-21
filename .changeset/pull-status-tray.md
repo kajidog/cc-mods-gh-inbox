@@ -2,6 +2,6 @@
 "gh-inbox": minor
 ---
 
-The line under the prompt tells where the branch's pull request stands: CI, approvals and change requests, conflicts, and the newest comment. `/inbox tray` switches it to every registered repository and back; `/inbox` tells the same.
+The line under the prompt tells where the branch's pull request stands: CI, approvals and change requests, conflicts, and the newest comment. `/inbox tray` switches it to every registered repository and back; `/inbox` tells the same. A branch switched to is followed by the next prompt sent, not the next check.
 
-プロンプトの下の行に、今のブランチの PR の状態（CI、承認・変更依頼の件数、コンフリクト、最新のコメント）を出すようにしました。`/inbox tray` で登録したリポジトリ全体の表示と切り替えられます。`/inbox` にも同じ内容を出します。
+プロンプトの下の行に、今のブランチの PR の状態（CI、承認・変更依頼の件数、コンフリクト、最新のコメント）を出すようにしました。`/inbox tray` で登録したリポジトリ全体の表示と切り替えられます。`/inbox` にも同じ内容を出します。ブランチを切り替えると、次の確認を待たずに、次にプロンプトを送った時点で追従します。
