@@ -1,6 +1,6 @@
 {
   "name": "gh-inbox",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "private": true,
   "description": "Shows GitHub events on your pull request and registered repositories, and hands the ones you pick to Claude",
   "license": "MIT",
