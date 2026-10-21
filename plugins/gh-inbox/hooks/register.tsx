@@ -107,8 +107,9 @@ const LABEL_COLOR = "suggestion"
 /** The theme colors `/inbox log` draws a push's or commit's changed line counts in, sign and all. */
 const ADDED_COLOR = "success"
 const REMOVED_COLOR = "error"
-/** The line counts a push or commit notice ends with, as `(+4 −2)`. */
+/** The line counts a push or commit notice ends with, as `(+4 −2)`; only those kinds are colored, a comment's own words never. */
 const CHANGES = /^(.* \()(\+\d+)( )(−\d+)(\))$/s
+const CHANGED_KINDS: ReadonlySet<string> = new Set(["commit", "push"])
 const TOAST_MS = 8000
 // A branch with no open pull request is looked up again this often, not at every check.
 const LOOKUP_MS = 5 * 60 * 1000
@@ -1221,6 +1222,7 @@ export const register: Register = (on, options) => {
           who: event.who === undefined ? undefined : plain(event.who),
           head: event.head === undefined ? undefined : plain(event.head),
           label: event.label === undefined ? undefined : plain(event.label),
+          kind: event.kind,
         },
       ]),
     )
@@ -1236,7 +1238,7 @@ export const register: Register = (on, options) => {
               {label === "" ? null : <Text color={LABEL_COLOR}>{label}</Text>}
               {who}
               {row.url === "" || action === "" ? action : <Link href={row.url}>{action}</Link>}
-              {changed(detail, Text)}
+              {CHANGED_KINDS.has(made?.kind ?? "") ? changed(detail, Text) : detail}
               {row.when === "" ? null : <Text dimColor>{row.when}</Text>}
             </Text>
           )
