@@ -104,6 +104,11 @@ const LOG_SHOWN = 20
 const SHOWN_AT_ONCE = 5
 /** The theme color `/inbox log` draws a repository's short name in. */
 const LABEL_COLOR = "suggestion"
+/** The theme colors `/inbox log` draws a push's or commit's changed line counts in, sign and all. */
+const ADDED_COLOR = "success"
+const REMOVED_COLOR = "error"
+/** The line counts a push or commit notice ends with, as `(+4 −2)`. */
+const CHANGES = /^(.* \()(\+\d+)( )(−\d+)(\))$/s
 const TOAST_MS = 8000
 // A branch with no open pull request is looked up again this often, not at every check.
 const LOOKUP_MS = 5 * 60 * 1000
@@ -212,6 +217,22 @@ async function lookUp($: EngineInterface, ctx: Context, branch: string, now: num
   const ref = parsePullUrl(answer.url ?? "")
 
   return { branch, ref, state: answer.state ?? null, lookedAt: now, isDone: false }
+}
+
+/** `detail` with the line counts it ends with in color, else as it is. */
+function changed(detail: string, Text: ReturnType<EngineInterface["ui"]["resolve"]>["Text"]) {
+  const match = CHANGES.exec(detail)
+  if (match === null) return detail
+  const [, before, added, gap, removed, after] = match
+  return (
+    <Text>
+      {before}
+      <Text color={ADDED_COLOR}>{added}</Text>
+      {gap}
+      <Text color={REMOVED_COLOR}>{removed}</Text>
+      {after}
+    </Text>
+  )
 }
 
 async function show($: EngineInterface, ctx: Context, notices: readonly InboxNotice[]) {
@@ -1215,7 +1236,7 @@ export const register: Register = (on, options) => {
               {label === "" ? null : <Text color={LABEL_COLOR}>{label}</Text>}
               {who}
               {row.url === "" || action === "" ? action : <Link href={row.url}>{action}</Link>}
-              {detail}
+              {changed(detail, Text)}
               {row.when === "" ? null : <Text dimColor>{row.when}</Text>}
             </Text>
           )

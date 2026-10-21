@@ -507,6 +507,29 @@ test("/inbox log's row draws the repository's short name in color and what was d
   expect(await (await row("status", "[r] a\n  https://x")).find({ text: "engine's own" })).toBeDefined()
 })
 
+test("/inbox log draws a push's changed line counts in color, signs and all, a title's own not taken for them", JA, async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: 1_000_000 })
+  fakeGitHub(on, [[]])
+  const log = await $.ui.mount({
+    plugin: "gh-inbox",
+    surface: "terminal",
+    component: "CommandOutput",
+    props: {
+      command: "inbox",
+      args: "log",
+      text: "[r] aさんが main に push しました。fix (+1 −2) again (+15 −10)\n  https://github.com/o/r/commit/x（1日前）\nbさんがコメントしました。(+1 −2) と書いた\n  https://github.com/o/r/pull/3（1日前）",
+      isErrored: false,
+    },
+  })
+  const colored = (await log.findAll({ type: "Text" })).filter(text => text.props.color !== undefined)
+  expect(colored.map(text => [text.props.color, text.children.join("")])).toEqual([
+    ["suggestion", "[r]"],
+    ["success", "+15"],
+    ["error", "−10"],
+  ])
+})
+
 test("/inbox log links what was done and colors the short name, a person's own words not taken for either", async ($, on) => {
   const event = {
     id: "x",
