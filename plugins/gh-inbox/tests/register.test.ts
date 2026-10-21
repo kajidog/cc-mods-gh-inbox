@@ -507,6 +507,23 @@ test("/inbox log's row draws the repository's short name in color and what was d
   expect(await (await row("status", "[r] a\n  https://x")).find({ text: "engine's own" })).toBeDefined()
 })
 
+test("/inbox log draws a push's changed line counts in color, signs and all, not a comment's words of the same shape", async ($, on) => {
+  const at = "2026-10-16T23:00:00Z"
+  const push = { id: "p", kind: "push", pull: "o/r#3", author: "a", at, text: "a pushed to main: fix (+1 −2) again (+15 −10)", url: "https://github.com/o/r/commit/x", items: [] }
+  const comment = { id: "c", kind: "comment", pull: "o/r#3", author: "b", at, text: "b commented on #3: please keep (+1 −2)", url: "https://github.com/o/r/pull/3", items: [] }
+  mock.store(on, { "history:other": { at: 1, events: [push, comment] } })
+  mock.clock(on, { now: Date.parse("2026-10-17T00:00:00Z") })
+  fakeGitHub(on, [[]])
+
+  const { text = "" } = await $.command.run({ ...CHECK, args: "log" })
+  const log = await $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "CommandOutput", props: { command: "inbox", args: "log", text, isErrored: false } })
+  const colored = (await log.findAll({ type: "Text" })).filter(one => one.props.color !== undefined)
+  expect(colored.map(one => [one.props.color, one.children.join("")])).toEqual([
+    ["success", "+15"],
+    ["error", "−10"],
+  ])
+})
+
 test("/inbox log links what was done and colors the short name, a person's own words not taken for either", async ($, on) => {
   const event = {
     id: "x",
