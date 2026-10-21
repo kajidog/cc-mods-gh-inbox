@@ -96,6 +96,7 @@ import {
   toRepos,
   toTitles,
 } from "./repos"
+import { pullStatus, statusParts, TRAY_VIEW_KEY, TRAY_VIEWS, type TrayView, toTrayView } from "./status"
 
 const COMMAND = "inbox"
 const NICKNAMES_KEY = "nicknames"
@@ -407,7 +408,7 @@ async function checkPull($: EngineInterface, ctx: Context, checked: Checked, isF
     const branch = await currentBranch($)
     if (branch === null) {
       ctx.found = undefined
-      await update($, watch, () => ({ branch: null, pull: null, title: null, url: null, state: null, checkedAt: null, error: null }))
+      await update($, watch, () => ({ branch: null, pull: null, title: null, url: null, state: null, checkedAt: null, error: null, status: null }))
       return
     }
     const now = await $.clock.now()
@@ -421,7 +422,7 @@ async function checkPull($: EngineInterface, ctx: Context, checked: Checked, isF
     }
     const ref = ctx.found.ref
     if (ref === null) {
-      await update($, watch, () => ({ branch, pull: null, title: null, url: null, state: null, checkedAt: now, error: null }))
+      await update($, watch, () => ({ branch, pull: null, title: null, url: null, state: null, checkedAt: now, error: null, status: null }))
       return
     }
     if (ctx.found.isDone) return
@@ -455,6 +456,7 @@ async function checkPull($: EngineInterface, ctx: Context, checked: Checked, isF
       state: pull.state,
       checkedAt: now,
       error: null,
+      status: pullStatus(pull, nicknames, ctx.language),
     }))
     if (own === undefined && pull.state === "OPEN" && (await isShowing($, ctx, now)))
       $.ui.toast(ctx.t.startWatching(ref.number, plain(pull.title)), { timeoutMs: TOAST_MS })
@@ -468,6 +470,7 @@ async function checkPull($: EngineInterface, ctx: Context, checked: Checked, isF
       state: held?.state ?? null,
       checkedAt: held?.checkedAt ?? null,
       error: message,
+      status: held?.status ?? null,
     }))
     $.ui.log(`gh-inbox: ${message}`, { to: "debug" })
   }
@@ -761,23 +764,54 @@ async function runCheck($: EngineInterface, ctx: Context, isForced: boolean) {
 /** What the tray says of a time `ms` ago: to the minute, as it is drawn again once a check. */
 const trayAgo = (t: Messages, ms: number) => (ms < 60_000 ? t.justNow : ago(t, ms))
 
-/** The line under the prompt: how long ago each repository checked had its last event; none where none is checked. */
+/** The parts of the line telling where the branch's pull request stands; undefined while it has none. */
+async function pullItems($: EngineInterface, ctx: Context, now: number, sinceAt: (ms: number) => string) {
+  const { value: held } = await $.state.get({ plugin: "gh-inbox", key: "watch" })
+  const number = Number(/#(\d+)$/.exec(held?.pull ?? "")?.[1])
+  if (held === undefined || held === null || !(number > 0)) return undefined
+  return statusParts(ctx.t, number, held.state, held.status, at => {
+    const ms = Date.parse(at)
+    return Number.isNaN(ms) ? undefined : sinceAt(now - ms)
+  })
+}
+
+/**
+ * The line under the prompt: where the branch's pull request stands, or how long ago each repository checked had its
+ * last event, as `/inbox tray` chose; the other where the one chosen has nothing to tell, none where neither has.
+ */
 async function drawTray($: EngineInterface, ctx: Context) {
   const { t } = ctx
   const repos = Object.entries(await readRepos($))
     .slice(0, ctx.maxRepos)
     .filter(([, entry]) => entry.kinds.length > 0)
   if (ctx.isEnded) return
-  if (!ctx.tray || repos.length === 0) return $.ui.status(undefined)
+  if (!ctx.tray) return $.ui.status(undefined)
   const now = await $.clock.now()
-  const items: string[] = []
-  for (const [key, entry] of repos) {
-    const cache = toRepoCache(await $.store.get(`${REPO_CACHE_PREFIX}${key}`))
-    const at = cache === undefined ? undefined : newestEventAt(cache)
-    items.push(t.trayItem(repoLabel(key, entry), at === undefined ? t.trayNoEvent : trayAgo(t, now - at)))
-  }
+  const view = toTrayView(await $.store.get(TRAY_VIEW_KEY))
+  const pull = await pullItems($, ctx, now, ms => trayAgo(t, ms))
+  let items: string[] | undefined
+  if (repos.length > 0 && (view === "repos" || pull === undefined)) {
+    items = []
+    for (const [key, entry] of repos) {
+      const cache = toRepoCache(await $.store.get(`${REPO_CACHE_PREFIX}${key}`))
+      const at = cache === undefined ? undefined : newestEventAt(cache)
+      items.push(t.trayItem(repoLabel(key, entry), at === undefined ? t.trayNoEvent : trayAgo(t, now - at)))
+    }
+  } else items = pull
   // The session may have ended while the store was read: its line is not drawn again.
-  if (!ctx.isEnded) $.ui.status(plain(t.tray(items)))
+  if (!ctx.isEnded) $.ui.status(items === undefined ? undefined : plain(t.tray(items)))
+}
+
+/** Chooses what the line under the prompt shows: `words` names it, or else it switches to the other. */
+async function trayCommand($: EngineInterface, ctx: Context, words: readonly string[]) {
+  const { t } = ctx
+  const [named] = words
+  if (named !== undefined && !TRAY_VIEWS.includes(named as TrayView)) return t.trayUsage
+  const view: TrayView = (named as TrayView | undefined) ?? (toTrayView(await $.store.get(TRAY_VIEW_KEY)) === "pull" ? "repos" : "pull")
+  await $.store.set(TRAY_VIEW_KEY, view)
+  await drawTray($, ctx)
+
+  return ctx.tray ? t.trayShows(view) : t.trayOff
 }
 
 async function status($: EngineInterface, ctx: Context) {
@@ -787,7 +821,12 @@ async function status($: EngineInterface, ctx: Context) {
   const lines: string[] = []
   if (held === undefined || held === null || held.branch === null) lines.push(t.noBranch)
   else if (held.pull === null) lines.push(t.noPull(held.branch))
-  else lines.push(`${held.pull} ${held.title ?? ""}${t.paren(t.pullState(held.state))}`)
+  else {
+    lines.push(`${held.pull} ${held.title ?? ""}${t.paren(t.pullState(held.state))}`)
+    // Where it stands, as the line under the prompt tells it, the number left off.
+    const parts = held.state === "OPEN" ? ((await pullItems($, ctx, now, ms => ago(t, ms))) ?? []).slice(1) : []
+    if (parts.length > 0) lines.push(`  ${parts.join(" · ")}`)
+  }
   if (held?.checkedAt != null) lines.push(t.lastChecked(ago(t, now - held.checkedAt), ctx.intervalSeconds))
   if (held?.error != null) lines.push(t.error(held.error))
   const repos = Object.keys(toRepos(await $.store.get(REPOS_KEY))).length
@@ -1179,6 +1218,8 @@ export const register: Register = (on, options) => {
       }
       case "pick":
         return { text: await pickCommand($, ctx, rest) }
+      case "tray":
+        return { text: await trayCommand($, ctx, rest) }
       case "clear": {
         const count = stagedCount(await read($, staged))
         await update($, staged, () => [])

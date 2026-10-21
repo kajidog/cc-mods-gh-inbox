@@ -86,7 +86,7 @@ Claude Code の mod です。
 
 | コマンド | 内容 |
 | --- | --- |
-| `/inbox` | 見ている PR と最後に確認した時刻 |
+| `/inbox` | 見ている PR と、その状態（CI・承認・コンフリクト・最新のコメント）、最後に確認した時刻 |
 | `/inbox check` | すぐに確認する |
 | `/inbox log` | どの窓のものも含めた通知（新しい20件。いつのことかを添えます。リポジトリの短い名前は色付きで、何をしたかの部分が GitHub へのリンクです） |
 | `/inbox pick [PR]` | Claude に渡すスレッド・レビュー・コメントを選ぶ |
@@ -97,6 +97,7 @@ Claude Code の mod です。
 | `/inbox repo remove owner/repo` | 登録を外す |
 | `/inbox repo alias owner/repo [短い名前]` | 通知の先頭に出す名前（省くと消す） |
 | `/inbox nick <login> <ニックネーム>` | 表示名を短くする（`/inbox nick <login>` で削除、`/inbox nick` で一覧） |
+| `/inbox tray [pull\|repos]` | プロンプトの下に出すものを、今のブランチの PR か登録したリポジトリ全体かに切り替える（省くと交互に切り替え） |
 
 ## 他の mod から使う
 
@@ -141,7 +142,7 @@ on("inbox.notified", async ($, e, next) => {
 | Repositories checked | 20 | 登録できるリポジトリの数 |
 | Language | en | `en`: 英語 / `ja`: 日本語。通知・コマンド・ペインと、Claude に渡す文の言語 |
 | Notify my own activity | false | 自分の操作も通知する |
-| Tray | true | プロンプトの下に、登録したリポジトリごとの最後のイベントが何分前かを常に出す（`GitHub: r 5分前 · other 2時間前`）。確認のたびに更新 |
+| Tray | true | プロンプトの下に1行出し、確認のたびに更新する。今のブランチに PR があるあいだはその状態（`GitHub: #12 · CI ✗ 1/3 · 承認2 · コンフリクト · Aさん「この null チェック不要では」 5分前`）、PR がないときや `/inbox tray repos` のあとは、登録したリポジトリごとの最後のイベントが何分前か（`GitHub: r 5分前 · other 2時間前`） |
 
 <details>
 <summary>GitHub への負荷</summary>

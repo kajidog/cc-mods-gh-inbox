@@ -19,6 +19,10 @@ function pullWith(changes: Partial<Pull>): Pull {
     reviews: [],
     commits: [],
     checks: [],
+    ciState: null,
+    mergeable: "UNKNOWN",
+    reviewDecision: null,
+    verdicts: [],
     ...changes,
   }
 }
@@ -96,8 +100,8 @@ describe("newEvents", () => {
   test("a failed check is notified once, with its failed step", async () => {
     const pull = pullWith({
       checks: [
-        { id: "run:1", name: "CI / test", isFailed: true, failedStep: "Run npm test", url: "" },
-        { id: "run:2", name: "CI / lint", isFailed: false, failedStep: null, url: "" },
+        { id: "run:1", name: "CI / test", isFailed: true, failedStep: "Run npm test", url: "", isPending: false },
+        { id: "run:2", name: "CI / lint", isFailed: false, failedStep: null, url: "", isPending: false },
       ],
     })
     expect(texts(pull)).toEqual(["CI / testのCIが失敗しました。Run npm test"])
@@ -191,7 +195,7 @@ test("parsePull reads checks of the newest commit", async () => {
   }
   const pull = parsePull(ref, JSON.stringify(answer))
   expect(pull.commits[0]?.author).toBe("N")
-  expect(pull.checks).toEqual([{ id: "run:5", name: "CI / test", isFailed: true, failedStep: "Run tests", url: "" }])
+  expect(pull.checks).toEqual([{ id: "run:5", name: "CI / test", isFailed: true, failedStep: "Run tests", url: "", isPending: false }])
   expect(() => parsePull(ref, JSON.stringify({ errors: [{ message: "Bad credentials" }] }))).toThrow("Bad credentials")
 })
 
@@ -207,7 +211,7 @@ describe("newEvents in English, the default", () => {
       comments: [{ id: "c1", author: null, body: "hi", at: "2026-01-01T00:00:00Z", url: "" }],
       reviews: [review("1", "APPROVED", "LGTM", []), review("2", "CHANGES_REQUESTED", "Please fix"), review("3", "COMMENTED", ""), review("4", "COMMENTED", "Notes", [inline, inline])],
       commits: [commit("1", "a"), commit("2", "b"), commit("3", "c"), commit("4", "d")],
-      checks: [{ id: "run:1", name: "CI / test", isFailed: true, failedStep: "Run npm test", url: "" }],
+      checks: [{ id: "run:1", name: "CI / test", isFailed: true, failedStep: "Run npm test", url: "", isPending: false }],
     })
     expect(told(pull)).toEqual([
       "someone commented: hi",

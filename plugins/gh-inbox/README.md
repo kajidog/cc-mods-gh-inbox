@@ -87,7 +87,7 @@ Apart from the branch's pull request, you can register repositories and be notif
 
 | Command | What it does |
 | --- | --- |
-| `/inbox` | The pull request watched and when it was last checked |
+| `/inbox` | The pull request watched, where it stands (CI, approvals, conflicts, the newest comment) and when it was last checked |
 | `/inbox check` | Check now |
 | `/inbox log` | The notices of every window (the newest 20, with when each happened; the repository's short name in color, what was done a link to it on GitHub) |
 | `/inbox pick [PR]` | Choose threads, reviews and comments to hand to Claude |
@@ -98,6 +98,7 @@ Apart from the branch's pull request, you can register repositories and be notif
 | `/inbox repo remove owner/repo` | Unregister |
 | `/inbox repo alias owner/repo [short name]` | The name notices start with (without one, clears it) |
 | `/inbox nick <login> <nickname>` | A shorter name to show (`/inbox nick <login>` removes it, `/inbox nick` lists them) |
+| `/inbox tray [pull\|repos]` | What the line under the prompt shows: the branch's pull request or every registered repository (without one, switches between them) |
 
 ## Using it from another mod
 
@@ -142,7 +143,7 @@ on("inbox.notified", async ($, e, next) => {
 | Repositories checked | 20 | How many repositories can be registered |
 | Language | en | `en`: English / `ja`: Japanese. For notices, commands, panes, and what is handed to Claude |
 | Notify my own activity | false | Also notify your own activity |
-| Tray | true | A line under the prompt telling how long ago each registered repository's last event happened (`GitHub: r 5m ago · other 2h ago`), kept up each check |
+| Tray | true | A line under the prompt, kept up each check. While the branch has a pull request, where it stands (`GitHub: #12 · CI ✗ 1/3 · 2 approvals · conflicts · alice: Looks good 5m ago`); otherwise, or after `/inbox tray repos`, how long ago each registered repository's last event happened (`GitHub: r 5m ago · other 2h ago`) |
 
 <details>
 <summary>Load on GitHub</summary>
