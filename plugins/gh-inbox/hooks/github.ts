@@ -32,7 +32,8 @@ export type Commit = {
   at: string
   url: string
 }
-export type Check = { id: string; name: string; isFailed: boolean; failedStep: string | null; url: string }
+export type Check = { id: string; name: string; isFailed: boolean; failedStep: string | null; url: string; isPending: boolean }
+export type Mergeable = "MERGEABLE" | "CONFLICTING" | "UNKNOWN"
 
 export type Pull = {
   ref: PullRef
@@ -49,6 +50,14 @@ export type Pull = {
   commits: Commit[]
   /** The checks of the newest commit. */
   checks: Check[]
+  /** The newest commit's checks together, as GitHub rolls them up; null with none. */
+  ciState: string | null
+  /** Whether it merges into its base cleanly; UNKNOWN while GitHub works it out. */
+  mergeable: Mergeable
+  /** `APPROVED`, `CHANGES_REQUESTED` or `REVIEW_REQUIRED`; null where the base asks for no review. */
+  reviewDecision: string | null
+  /** Each reviewer's last approving or change-requesting review, by its state. */
+  verdicts: string[]
 }
 
 // One request a check: GraphQL costs one point of the 5000 an hour.
@@ -56,16 +65,17 @@ export const PULL_QUERY = `query($owner: String!, $repo: String!, $number: Int!)
   viewer { login }
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
-      title url state closedAt
+      title url state closedAt mergeable reviewDecision
       mergedBy { login }
+      latestOpinionatedReviews(first: 50) { nodes { state } }
       closed: timelineItems(itemTypes: [CLOSED_EVENT], last: 1) { nodes { ... on ClosedEvent { actor { login } } } }
       comments(last: 50) { nodes { id author { login } body createdAt url } }
       reviews(last: 50) { nodes { id author { login } state body submittedAt url
         comments(first: 50) { nodes { id author { login } createdAt path line originalLine diffHunk body url } } } }
       commits(last: 50) { nodes { commit { oid messageHeadline additions deletions committedDate url
         author { name user { login } } } } }
-      latest: commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { __typename
-        ... on CheckRun { databaseId name conclusion detailsUrl
+      latest: commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { nodes { __typename
+        ... on CheckRun { databaseId name status conclusion detailsUrl
           checkSuite { workflowRun { workflow { name } } }
           steps(first: 100) { nodes { name conclusion } } }
         ... on StatusContext { id context state targetUrl } } } } } } }
@@ -75,6 +85,7 @@ export const PULL_QUERY = `query($owner: String!, $repo: String!, $number: Int!)
 
 const FAILED_RUN = new Set(["FAILURE", "TIMED_OUT", "STARTUP_FAILURE"])
 const FAILED_STATUS = new Set(["FAILURE", "ERROR"])
+const PENDING_STATUS = new Set(["PENDING", "EXPECTED"])
 
 /** Reads `owner/repo#number` and its host off a pull request's URL. */
 export function parsePullUrl(url: string): PullRef | null {
@@ -155,6 +166,7 @@ export function parsePull(ref: PullRef, answer: string, language: Language = "en
           isFailed: FAILED_RUN.has(text(node.conclusion)),
           failedStep: failedStep === undefined ? null : text(failedStep.name),
           url: text(node.detailsUrl),
+          isPending: node.status !== undefined && text(node.status) !== "COMPLETED",
         },
       ]
     }
@@ -166,6 +178,7 @@ export function parsePull(ref: PullRef, answer: string, language: Language = "en
           isFailed: FAILED_STATUS.has(text(node.state)),
           failedStep: null,
           url: text(node.targetUrl),
+          isPending: PENDING_STATUS.has(text(node.state)),
         },
       ]
     }
@@ -208,5 +221,9 @@ export function parsePull(ref: PullRef, answer: string, language: Language = "en
     })),
     commits,
     checks,
+    ciState: text(object(latest.statusCheckRollup).state) || null,
+    mergeable: pull.mergeable === "MERGEABLE" || pull.mergeable === "CONFLICTING" ? pull.mergeable : "UNKNOWN",
+    reviewDecision: text(pull.reviewDecision) || null,
+    verdicts: nodes(pull.latestOpinionatedReviews).map(node => text(node.state)),
   }
 }

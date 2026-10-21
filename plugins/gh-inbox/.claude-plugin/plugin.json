@@ -43,7 +43,7 @@
     "tray": {
       "type": "boolean",
       "title": "GitHub: Tray",
-      "description": "Keep a line under the prompt telling how long ago each registered repository's last event happened.",
+      "description": "Keep a line under the prompt: where the branch's pull request stands (CI, approvals, conflicts, the newest comment), or how long ago each registered repository's last event happened. /inbox tray switches between them.",
       "default": true
     },
     "notifySelf": {

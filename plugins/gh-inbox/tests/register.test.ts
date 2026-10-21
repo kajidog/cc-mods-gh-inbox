@@ -598,6 +598,126 @@ test("the tray under the prompt tells how long ago each repository's last event 
   expect(lines.at(-1)).toBeUndefined()
 })
 
+/** `gh` and `git` answering for a branch whose pull request is o/r#12, as `PULL_QUERY` would. */
+function branchPull(at: string) {
+  const answer = {
+    data: {
+      viewer: { login: "me" },
+      repository: {
+        pullRequest: {
+          title: "Add things",
+          url: "https://github.com/o/r/pull/12",
+          state: "OPEN",
+          closedAt: null,
+          mergeable: "CONFLICTING",
+          reviewDecision: "APPROVED",
+          mergedBy: null,
+          latestOpinionatedReviews: { nodes: [{ state: "APPROVED" }, { state: "APPROVED" }] },
+          comments: { nodes: [{ id: "c1", author: { login: "alice" }, body: "Looks good", createdAt: at, url: "u" }] },
+          reviews: { nodes: [] },
+          commits: { nodes: [] },
+          latest: {
+            nodes: [
+              {
+                commit: {
+                  statusCheckRollup: {
+                    state: "FAILURE",
+                    contexts: {
+                      nodes: [
+                        { __typename: "CheckRun", databaseId: 1, name: "test", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: "", steps: { nodes: [] } },
+                        { __typename: "CheckRun", databaseId: 2, name: "lint", status: "COMPLETED", conclusion: "SUCCESS", detailsUrl: "", steps: { nodes: [] } },
+                      ],
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+  }
+  return (argv: string[]): Answer | undefined => {
+    if (argv[0] === "git") return { stdout: "feat\n" }
+    if (argv.includes("pr") && argv.includes("view")) return { stdout: JSON.stringify({ url: "https://github.com/o/r/pull/12", state: "OPEN" }) }
+    if (argv.includes("graphql")) return { stdout: JSON.stringify(answer) }
+    return undefined
+  }
+}
+
+test("the tray tells where the branch's pull request stands, and /inbox tray switches to the repositories", JA, async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } } })
+  mock.clock(on, { now: Date.parse(COMMENT.created_at) + 5 * 60_000 })
+  fakeGitHub(on, [[COMMENT]], argv => {
+    if ((argv.at(-1) ?? "").includes("/actions/runs")) return { stdout: 'HTTP/2.0 200 OK\nEtag: "r"\n\n{"workflow_runs":[]}' }
+    return branchPull(COMMENT.created_at)(argv)
+  })
+  const lines: Array<string | undefined> = []
+  on("ui.status", async (_$, e) => {
+    lines.push(e.text)
+    return { value: undefined }
+  })
+
+  const PULL_LINE = "GitHub: #12 · CI ✗ 1/2 · 承認2 · コンフリクト · aliceさん「Looks good」 5分前"
+  await $.command.run(CHECK)
+  expect(lines.at(-1)).toBe(PULL_LINE)
+  expect(await $.command.run({ ...CHECK, args: "status" })).toMatchObject({ text: expect.stringContaining("\n  CI ✗ 1/2 · 承認2 · コンフリクト · aliceさん「Looks good」 5分前\n") })
+
+  expect(await $.command.run({ ...CHECK, args: "tray" })).toMatchObject({ text: expect.stringContaining("登録したリポジトリの一覧を出します") })
+  expect(lines.at(-1)).toBe("GitHub: r 5分前")
+  await $.command.run(CHECK)
+  expect(lines.at(-1)).toBe("GitHub: r 5分前")
+  await $.command.run({ ...CHECK, args: "tray pull" })
+  expect(lines.at(-1)).toBe(PULL_LINE)
+  expect(await $.command.run({ ...CHECK, args: "tray other" })).toEqual({ text: "使い方: /inbox tray [pull|repos]（省くと切り替えます）" })
+})
+
+test("with no repository registered, the tray tells of the branch's pull request whichever is chosen", async ($, on) => {
+  mock.store(on, { trayView: "repos" })
+  mock.clock(on, { now: Date.parse(COMMENT.created_at) + 2 * 3600_000 })
+  fakeGitHub(on, [[]], branchPull(COMMENT.created_at))
+  const lines: Array<string | undefined> = []
+  on("ui.status", async (_$, e) => {
+    lines.push(e.text)
+    return { value: undefined }
+  })
+
+  await $.command.run(CHECK)
+  expect(lines.at(-1)).toBe("GitHub: #12 · CI ✗ 1/2 · 2 approvals · conflicts · alice: Looks good 2h ago")
+})
+
+test("a branch switched to shows by the next prompt sent, GitHub asked only when it changed", JA, async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: Date.parse(COMMENT.created_at) + 5 * 60_000 })
+  let branch = "feat"
+  const pull = branchPull(COMMENT.created_at)
+  const github = fakeGitHub(on, [[]], argv => {
+    if (argv[0] === "git") return { stdout: `${branch}\n` }
+    if (branch === "main" && argv.includes("pr")) return { exitCode: 1, stderr: 'no pull requests found for branch "main"' }
+    return pull(argv)
+  })
+  const lines: Array<string | undefined> = []
+  on("ui.status", async (_$, e) => {
+    lines.push(e.text)
+    return { value: undefined }
+  })
+  on("prompt.submit", async (_$, e) => ({ text: e.text }))
+  const toGitHub = () => github.asked.filter(argv => argv[0] === "gh").length
+
+  await $.command.run(CHECK)
+  expect(lines.at(-1)).toContain("#12")
+  const asked = toGitHub()
+  await $.prompt.submit({ text: "続けて", wait: false, origin: { kind: "composer" } })
+  expect(toGitHub()).toBe(asked)
+
+  branch = "main"
+  await $.prompt.submit({ text: "続けて", wait: false, origin: { kind: "composer" } })
+  // The check runs behind the prompt, which does not wait for it.
+  for (let tries = 0; tries < 100 && lines.at(-1) !== undefined; tries += 1) await $.command.run({ ...CHECK, args: "status" })
+  expect(lines.at(-1)).toBeUndefined()
+  expect(await $.command.run({ ...CHECK, args: "status" })).toMatchObject({ text: expect.stringContaining("main の PR はありません。") })
+})
+
 test("the tray can be turned off", { options: { language: "ja", tray: false } }, async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["comment"] } } })
   mock.clock(on, { now: 1_000_000 })

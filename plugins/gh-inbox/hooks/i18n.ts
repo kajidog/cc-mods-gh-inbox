@@ -129,6 +129,14 @@ const en = {
   morePushes: (n: number) => `${count(n, "more push", "more pushes")}.`,
   repoCiFailed: (name: string, branch: string, step: string) => say(`CI failed on ${branch}: ${name}`, step),
   tray: (items: readonly string[]) => `GitHub: ${items.join(" · ")}`,
+  ciPassed: "CI ✓",
+  ciFailing: (failed: number, total: number) => `CI ✗ ${failed}/${total}`,
+  ciRunning: (done: number, total: number) => `CI … ${done}/${total}`,
+  approvals: (n: number) => count(n, "approval"),
+  changeRequests: (n: number) => count(n, "change request"),
+  reviewRequired: "review required",
+  conflicting: "conflicts",
+  latestComment: (who: string, body: string) => `${who}: ${body}`,
   trayItem: (label: string, ago: string) => `${label} ${ago}`,
   trayNoEvent: "-",
   justNow: "now",
@@ -151,8 +159,8 @@ const en = {
 
   // `/inbox`
   commandDescription:
-    "GitHub notices for this branch's pull request and registered repositories: status, check now, recent notices, pick review comments to hand to Claude, repositories, nicknames",
-  commandHint: "[status|check|log|pick [pr]|clear|repo [add|set|remove|alias ...]|nick [login [nickname]]]",
+    "GitHub notices for this branch's pull request and registered repositories: status, check now, recent notices, pick review comments to hand to Claude, repositories, nicknames, what the line under the prompt shows",
+  commandHint: "[status|check|log|pick [pr]|clear|repo [add|set|remove|alias ...]|nick [login [nickname]]|tray [pull|repos]]",
   noBranch: "The branch is not known (outside a git repository, or a detached HEAD).",
   noPull: (branch: string) => `${branch} has no pull request.`,
   pullState: (state: string | null): string => (state === "OPEN" ? "watching" : state === "MERGED" ? "merged" : "closed"),
@@ -162,7 +170,13 @@ const en = {
   showsHere: "Notices show in this window.",
   showsElsewhere: "Notices show in the other window used last (/inbox log lists them here too).",
   noLog: "No notices yet.",
-  usage: "Usage: /inbox [status|check|log|pick [PR]|clear|repo|nick [login [nickname]]]",
+  usage: "Usage: /inbox [status|check|log|pick [PR]|clear|repo|nick [login [nickname]]|tray [pull|repos]]",
+  trayShows: (view: string): string =>
+    view === "pull"
+      ? "The line under the prompt now shows this branch's pull request (all registered repositories while it has none). /inbox tray switches back."
+      : "The line under the prompt now shows all registered repositories. /inbox tray switches back.",
+  trayOff: 'The line under the prompt is turned off ("GitHub: Tray" in /config).',
+  trayUsage: "Usage: /inbox tray [pull|repos] (no argument switches between them)",
 
   // `/inbox repo`
   repoUsage: (kinds: string) =>
@@ -312,6 +326,14 @@ const ja: Messages = {
   morePushes: n => `ほか${n}件の push がありました。`,
   repoCiFailed: (name, branch, step) => `${name} の CI が失敗しました（${branch}）。${step}`,
   tray: items => `GitHub: ${items.join(" · ")}`,
+  ciPassed: "CI ✓",
+  ciFailing: (failed, total) => `CI ✗ ${failed}/${total}`,
+  ciRunning: (done, total) => `CI … ${done}/${total}`,
+  approvals: n => `承認${n}`,
+  changeRequests: n => `変更依頼${n}`,
+  reviewRequired: "レビュー待ち",
+  conflicting: "コンフリクト",
+  latestComment: (who, body) => `${who}「${body}」`,
   trayItem: (label, ago) => `${label} ${ago}`,
   trayNoEvent: "-",
   justNow: "たった今",
@@ -332,8 +354,8 @@ const ja: Messages = {
   },
   noKinds: "なし",
 
-  commandDescription: "このブランチの PR と登録したリポジトリの GitHub 通知: 状態、すぐに確認、最近の通知、Claude に渡すレビューを選ぶ、リポジトリ、ニックネーム",
-  commandHint: "[status|check|log|pick [PR]|clear|repo [add|set|remove|alias ...]|nick [login [ニックネーム]]]",
+  commandDescription: "このブランチの PR と登録したリポジトリの GitHub 通知: 状態、すぐに確認、最近の通知、Claude に渡すレビューを選ぶ、リポジトリ、ニックネーム、プロンプトの下の表示",
+  commandHint: "[status|check|log|pick [PR]|clear|repo [add|set|remove|alias ...]|nick [login [ニックネーム]]|tray [pull|repos]]",
   noBranch: "ブランチが分かりません（git リポジトリの外か、detached HEAD です）。",
   noPull: branch => `${branch} の PR はありません。`,
   pullState: state => (state === "OPEN" ? "通知中" : state === "MERGED" ? "マージ済み" : "クローズ済み"),
@@ -343,7 +365,13 @@ const ja: Messages = {
   showsHere: "通知はこの窓に出します。",
   showsElsewhere: "通知は最後に操作した別の窓に出します（/inbox log で一覧を見られます）。",
   noLog: "通知はまだありません。",
-  usage: "使い方: /inbox [status|check|log|pick [PR]|clear|repo|nick [login [ニックネーム]]]",
+  usage: "使い方: /inbox [status|check|log|pick [PR]|clear|repo|nick [login [ニックネーム]]|tray [pull|repos]]",
+  trayShows: view =>
+    view === "pull"
+      ? "プロンプトの下に、このブランチの PR の状態を出します（PR がないあいだは、登録したリポジトリの一覧）。/inbox tray で戻せます。"
+      : "プロンプトの下に、登録したリポジトリの一覧を出します。/inbox tray で戻せます。",
+  trayOff: "プロンプトの下の表示はオフです（/config の「GitHub: Tray」）。",
+  trayUsage: "使い方: /inbox tray [pull|repos]（省くと切り替えます）",
 
   repoUsage: kinds =>
     [

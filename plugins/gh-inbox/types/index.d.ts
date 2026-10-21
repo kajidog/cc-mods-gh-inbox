@@ -39,6 +39,28 @@ export type GhPicker = {
   kinds: string[]
 }
 
+/** Where the watched pull request stands, as the line under the prompt tells it. */
+export type GhPullStatus = {
+  /** The newest commit's checks; null with none. */
+  ci: {
+    /** GitHub's rollup of them: `SUCCESS`, `FAILURE`, `PENDING`, `ERROR`, `EXPECTED`; null where it gave none. */
+    state: string | null
+    total: number
+    failed: number
+    pending: number
+  } | null
+  /** Reviewers whose last say approves. */
+  approvals: number
+  /** Reviewers whose last say asks for changes. */
+  changesRequested: number
+  /** `APPROVED`, `CHANGES_REQUESTED` or `REVIEW_REQUIRED`; null where the base asks for no review. */
+  reviewDecision: string | null
+  /** `CONFLICTING` when it does not merge into its base cleanly; `UNKNOWN` while GitHub works it out. */
+  mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN"
+  /** The newest comment, review or line comment with words in it. */
+  latest: { author: string | null; name: string; body: string; at: string; url: string } | null
+}
+
 /** The pull request being watched, or why none is. */
 export type GhWatch = {
   branch: string | null
@@ -51,6 +73,8 @@ export type GhWatch = {
   checkedAt: number | null
   /** The last check's error, one line. */
   error: string | null
+  /** Where the pull request stood at the last check that read it; null or absent with none. */
+  status?: GhPullStatus | null
 }
 
 /** An open pull request `/inbox pick` lists to choose from. */

@@ -87,7 +87,7 @@ Apart from the branch's pull request, you can register repositories and be notif
 
 | Command | What it does |
 | --- | --- |
-| `/inbox` | The pull request watched and when it was last checked |
+| `/inbox` | The pull request watched, where it stands (CI, approvals, conflicts, the newest comment) and when it was last checked |
 | `/inbox check` | Check now |
 | `/inbox log` | The notices of every window (the newest 20, with when each happened; the repository's short name in color, what was done a link to it on GitHub) |
 | `/inbox pick [PR]` | Choose threads, reviews and comments to hand to Claude |
@@ -98,6 +98,7 @@ Apart from the branch's pull request, you can register repositories and be notif
 | `/inbox repo remove owner/repo` | Unregister |
 | `/inbox repo alias owner/repo [short name]` | The name notices start with (without one, clears it) |
 | `/inbox nick <login> <nickname>` | A shorter name to show (`/inbox nick <login>` removes it, `/inbox nick` lists them) |
+| `/inbox tray [pull\|repos]` | What the line under the prompt shows: the branch's pull request or every registered repository (without one, switches between them) |
 
 ## Using it from another mod
 
@@ -142,7 +143,7 @@ on("inbox.notified", async ($, e, next) => {
 | Repositories checked | 20 | How many repositories can be registered |
 | Language | en | `en`: English / `ja`: Japanese. For notices, commands, panes, and what is handed to Claude |
 | Notify my own activity | false | Also notify your own activity |
-| Tray | true | A line under the prompt telling how long ago each registered repository's last event happened (`GitHub: r 5m ago · other 2h ago`), kept up each check |
+| Tray | true | A line under the prompt, kept up each check. While the branch has a pull request, where it stands (`GitHub: #12 · CI ✗ 1/3 · 2 approvals · conflicts · alice: Looks good 5m ago`); otherwise, or after `/inbox tray repos`, how long ago each registered repository's last event happened (`GitHub: r 5m ago · other 2h ago`) |
 
 <details>
 <summary>Load on GitHub</summary>
@@ -150,6 +151,7 @@ on("inbox.notified", async ($, e, next) => {
 - Checks run every 60 seconds by default (never more often than every 30).
 - Checking one pull request costs one GraphQL request, 1 point (5,000 points an hour are available).
 - A branch with no pull request is looked up only every 5 minutes. A merged or closed pull request is not asked about any more.
+- Each prompt you send reads the branch with `git` alone (GitHub is not asked). Only when it has changed is the new branch checked at once, so a switch shows by the next prompt rather than the next check.
 - Each registered repository costs one Events API request (and one Actions API request when `ci-failure` is chosen). They are sent with an `ETag`, so an unchanged repository does not count against the rate limit. It is never asked more often than GitHub's `X-Poll-Interval` (usually 60 seconds).
 - `/inbox pick` sends one GraphQL request as it opens. The list of pull requests and `/inbox pick 12` look up the current repository once with `gh repo view`; the list also searches once per host.
 - Answers are shared between windows. The commits of a new push (up to 5 per check), pull request titles and failed steps are asked for only when needed.
