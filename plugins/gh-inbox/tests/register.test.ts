@@ -495,8 +495,11 @@ test("/inbox log's row draws the repository's short name in color and what was d
     ["https://github.com/o/r/pull/3", "#3 にコメントしました"],
     ["https://github.com/o/r/pull/4", "#4 がマージされました"],
   ])
-  const colored = (await log.findAll({ type: "Text" })).filter(text => text.props.color !== undefined)
+  const colored = (await log.findAll({ type: "Text" })).filter(text => text.props.color !== undefined && text.props.color !== "claude")
   expect(colored.map(text => [text.props.color, text.children.join("")])).toEqual([["suggestion", "[r]"]])
+  // Who did it and what, bold in its own color, set apart from what they said.
+  const heads = (await log.findAll({ type: "Text" })).filter(text => text.props.color === "claude")
+  expect(heads.map(text => text.props.bold)).toEqual([true, true, true])
   expect(await log.find({ type: "Text", text: "（1日前）" })).toBeDefined()
   expect(await log.find({ type: "Text", text: " (2h ago)" })).toBeDefined()
   // One with no URL is drawn as text, the others still links.
@@ -517,7 +520,7 @@ test("/inbox log draws a push's changed line counts in color, signs and all, not
 
   const { text = "" } = await $.command.run({ ...CHECK, args: "log" })
   const log = await $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "CommandOutput", props: { command: "inbox", args: "log", text, isErrored: false } })
-  const colored = (await log.findAll({ type: "Text" })).filter(one => one.props.color !== undefined)
+  const colored = (await log.findAll({ type: "Text" })).filter(one => one.props.color !== undefined && one.props.color !== "claude")
   expect(colored.map(one => [one.props.color, one.children.join("")])).toEqual([
     ["success", "+15"],
     ["error", "−10"],
@@ -547,7 +550,7 @@ test("/inbox log links what was done and colors the short name, a person's own w
   const links = await log.findAll({ type: "Link" })
   expect(links.map(link => link.children.join(""))).toEqual(["commented on #3"])
   // A short name with "]" in it is colored whole.
-  const colored = (await log.findAll({ type: "Text" })).filter(one => one.props.color !== undefined)
+  const colored = (await log.findAll({ type: "Text" })).filter(one => one.props.color !== undefined && one.props.color !== "claude")
   expect(colored.map(one => one.children.join(""))).toEqual(["[x] y]"])
 })
 
@@ -559,7 +562,7 @@ test("/inbox log does not color a nickname in brackets on a notice with no short
 
   const { text = "" } = await $.command.run({ ...CHECK, args: "log" })
   const log = await $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "CommandOutput", props: { command: "inbox", args: "log", text, isErrored: false } })
-  expect((await log.findAll({ type: "Text" })).filter(one => one.props.color !== undefined)).toEqual([])
+  expect((await log.findAll({ type: "Text" })).filter(one => one.props.color !== undefined && one.props.color !== "claude")).toEqual([])
   expect((await log.findAll({ type: "Link" })).map(link => link.children.join(""))).toEqual(["commented"])
 })
 

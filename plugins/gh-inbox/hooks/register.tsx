@@ -105,6 +105,8 @@ const LOG_SHOWN = 20
 const SHOWN_AT_ONCE = 5
 /** The theme color `/inbox log` draws a repository's short name in. */
 const LABEL_COLOR = "suggestion"
+/** The theme color `/inbox log` draws who did it and what they did in, bold, set apart from what they said. */
+const HEAD_COLOR = "claude"
 /** The theme colors `/inbox log` draws a push's or commit's changed line counts in, sign and all. */
 const ADDED_COLOR = "success"
 const REMOVED_COLOR = "error"
@@ -1292,8 +1294,12 @@ export const register: Register = (on, options) => {
           return (
             <Text>
               {label === "" ? null : <Text color={LABEL_COLOR}>{label}</Text>}
-              {who}
-              {row.url === "" || action === "" ? action : <Link href={row.url}>{action}</Link>}
+              {who === "" && action === "" ? null : (
+                <Text bold color={HEAD_COLOR}>
+                  {who}
+                  {row.url === "" || action === "" ? action : <Link href={row.url}>{action}</Link>}
+                </Text>
+              )}
               {CHANGED_KINDS.has(made?.kind ?? "") ? changed(detail, Text) : detail}
               {row.when === "" ? null : <Text dimColor>{row.when}</Text>}
             </Text>
