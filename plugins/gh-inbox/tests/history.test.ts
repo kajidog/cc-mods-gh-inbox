@@ -2,7 +2,7 @@ import { expect, test } from "claude-code/testing"
 
 import type { GhEvent } from "../types"
 
-import { HISTORY_KEPT, latest, mergeHistories, toKept, unheld } from "../hooks/history"
+import { BODY_KEPT, HISTORY_KEPT, keptItems, latest, mergeHistories, toKept, unheld } from "../hooks/history"
 
 const event = (id: string, at: string, pull = "o/r#1", url = "https://github.com/o/r/pull/1"): GhEvent => ({
   id,
@@ -37,14 +37,35 @@ test("a merge told by the branch's pull request and by its registered repository
   expect(mergeHistories([fromPull, fromRepo])).toHaveLength(2)
 })
 
-test("a session keeps its newest notices by when they happened, an old batch caught up late included, without their bodies", async () => {
+test("a session keeps its newest notices by when they happened, an old batch caught up late included, with what they said", async () => {
   const recent = Array.from({ length: HISTORY_KEPT }, (_, i) => event(`new${i}`, `2026-10-17T00:00:${String(i % 60).padStart(2, "0")}Z`))
   const old = Array.from({ length: 10 }, (_, i) => event(`old${i}`, "2026-10-01T00:00:00Z"))
   const kept = toKept([...recent, ...old], 5)
   expect(kept.at).toBe(5)
   expect(kept.events).toHaveLength(HISTORY_KEPT)
   expect(kept.events.some(one => one.id.startsWith("old"))).toBe(false)
-  expect(kept.events.every(one => one.items.length === 1 && one.items.every(item => item.body === "" && item.url !== ""))).toBe(true)
+  expect(kept.events.every(one => one.items.length === 1 && one.items.every(item => item.body === "long body" && item.url !== ""))).toBe(true)
+})
+
+test("the log keeps what a notice said, its line comments' places, no hunk, and cuts it all at BODY_KEPT", async () => {
+  const review = {
+    ...event("PRR_1", "2026-10-16T00:00:00Z"),
+    kind: "review" as const,
+    items: [
+      { body: "Summary <!-- bot -->\nsecond line", url: "u1" },
+      { body: "x".repeat(BODY_KEPT), path: "a.ts", line: 3, hunk: "@@ -1 +1 @@", url: "u2" },
+      { body: "dropped", url: "u3" },
+      { body: "no url" },
+    ],
+  }
+  const items = keptItems(review)
+  expect(items.map(item => item.url)).toEqual(["u1", "u2", "u3"])
+  expect(items[0]).toEqual({ body: "Summary \nsecond line", url: "u1" })
+  expect(items[1]).toMatchObject({ path: "a.ts", line: 3 })
+  expect(items[1]).not.toHaveProperty("hunk")
+  expect(items[1]?.body.endsWith("…")).toBe(true)
+  expect(items.reduce((sum, item) => sum + item.body.length, 0)).toBe(BODY_KEPT)
+  expect(items[2]?.body).toBe("")
 })
 
 test("a review told with its line comments and the line comment told alone are listed once; so are a run of commits and their push", async () => {

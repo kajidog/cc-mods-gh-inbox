@@ -1,6 +1,8 @@
 import type { On, RenderElement } from "claude-code"
+import type { GhEvent } from "../types"
 import { expect, mock, test } from "claude-code/testing"
 
+import { toKept } from "../hooks/history"
 import { RUNS } from "./fixtures/repo-answers"
 
 // Most tests read the Japanese lines; those in English, the default, are at the end.
@@ -522,6 +524,52 @@ test("/inbox log opens a pane of every notice kept, newest first, a page at a ti
   // Where no pane opens, the newest are listed as text.
   hasRoom = false
   expect((await $.command.run({ ...CHECK, args: "log" })).text?.split("\n")).toHaveLength(40)
+})
+
+test("a row of the log pane with more to say unfolds to all of it, line comments with their places, and folds back", JA, async ($, on) => {
+  const at = "2026-10-16T23:00:00Z"
+  const review = {
+    id: "PRR_1",
+    kind: "review",
+    pull: "o/r#3",
+    author: "a",
+    at,
+    text: "aさんが変更をリクエストしました（コメント1件）。Rename this",
+    url: "https://github.com/o/r/pull/3#r1",
+    items: [
+      { body: "Rename this\nand that", url: "https://github.com/o/r/pull/3#r1" },
+      { body: "Use undefined", path: "src/a.ts", line: 12, hunk: "@@", url: "https://github.com/o/r/pull/3#c1" },
+    ],
+  }
+  const short = { id: "c2", kind: "comment", pull: "o/r#3", author: "b", at, text: "bさんがコメントしました。ok", url: "u", items: [{ body: "ok", url: "u" }] }
+  mock.store(on, { "history:other": toKept([review, short] as GhEvent[], 1) })
+  mock.clock(on, { now: Date.parse("2026-10-17T00:00:00Z") })
+  fakeGitHub(on, [[]])
+  on("ui.open", async () => ({ value: { isPlaced: true } }))
+
+  await $.command.run({ ...CHECK, args: "log" })
+  const pane = await $.ui.mount({
+    plugin: "gh-inbox",
+    surface: "terminal",
+    component: "Pane",
+    requestId: "gh-inbox-log",
+    props: { title: "", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 20 }, view: {} },
+  })
+  // Newest first, the two at the same time in the order they came: the review is the first, the comment says it all.
+  const unfold = await pane.find({ key: "unfold:o/r#3|PRR_1" })
+  expect(unfold?.props.label).toBe("▸ ")
+  expect(unfold?.props.hotkey).toBe("2")
+  expect(await pane.find({ key: "unfold:o/r#3|c2" })).toBeUndefined()
+  expect(await pane.find({ type: "Text", text: "and that" })).toBeUndefined()
+
+  await pane.press({ key: "unfold:o/r#3|PRR_1" })
+  expect((await pane.find({ key: "unfold:o/r#3|PRR_1" }))?.props.label).toBe("▾ ")
+  expect(await pane.find({ type: "Text", text: "and that" })).toBeDefined()
+  expect(await pane.find({ type: "Text", text: "src/a.ts:12" })).toBeDefined()
+  expect(await pane.find({ type: "Text", text: "Use undefined" })).toBeDefined()
+
+  await pane.press({ key: "unfold:o/r#3|PRR_1" })
+  expect(await pane.find({ type: "Text", text: "and that" })).toBeUndefined()
 })
 
 test("/inbox log's row draws the repository's short name in color and what was done as a link, when it happened beside it", JA, async ($, on) => {

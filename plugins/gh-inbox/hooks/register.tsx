@@ -1,9 +1,9 @@
 import { atom, read, update } from "claude-code"
 import type { EngineInterface, Register, Timer } from "claude-code"
 
-import type { GhEvent, GhPick, GhPicker, GhPickPull, GhStaged, GhWatch, Inbox, InboxNotice } from "../types"
+import type { GhEvent, GhEventItem, GhPick, GhPicker, GhPickPull, GhStaged, GhWatch, Inbox, InboxNotice } from "../types"
 
-import { displayName, mergeSeen, newEvents, type Nicknames, plain, pullIds } from "./events"
+import { displayName, mergeSeen, newEvents, type Nicknames, plain, pullIds, snippet } from "./events"
 import { type PullRef, type PullState, parsePull, parsePullUrl, pullArgv, pullName } from "./github"
 import {
   addSharedSeen,
@@ -147,6 +147,7 @@ const picker = atom({ plugin: "gh-inbox", key: "picker" } as const, null as GhPi
 const pick = atom({ plugin: "gh-inbox", key: "pick" } as const, null as GhPick | null)
 const staged = atom({ plugin: "gh-inbox", key: "staged" } as const, [] as GhStaged[])
 const logPage = atom({ plugin: "gh-inbox", key: "logPage" } as const, 0)
+const logUnfolded = atom({ plugin: "gh-inbox", key: "logUnfolded" } as const, [] as string[])
 
 type Found = {
   branch: string
@@ -242,6 +243,18 @@ const madeOf = (event: GhEvent): LogMade => ({
   label: event.label === undefined ? undefined : plain(event.label),
   kind: event.kind,
 })
+
+/**
+ * What a notice said that its line cut short, as the log keeps it; undefined where its line says it all
+ * (one short part) or the log kept no words of it (a notice kept before it kept them).
+ */
+function saidInFull(event: GhEvent): GhEventItem[] | undefined {
+  const items = (Array.isArray(event.items) ? event.items : []).filter(item => typeof item.body === "string" && item.body.trim() !== "")
+  const [only] = items
+  if (only === undefined) return undefined
+  if (items.length === 1 && only.path === undefined && !only.body.includes("\n") && snippet(only.body) === only.body.trim()) return undefined
+  return items
+}
 
 /** `detail` with the line counts it ends with in color, else as it is. */
 function changed(detail: string, Text: ReturnType<EngineInterface["ui"]["resolve"]>["Text"]) {
@@ -1241,6 +1254,7 @@ export const register: Register = (on, options) => {
         if (all.length === 0) return { text: t.noLog }
         // In a pane, so a long log does not run down the transcript; where no pane opens, the newest as text.
         await update($, logPage, () => 0)
+        await update($, logUnfolded, () => [])
         // `/inbox log text` lists them in the transcript, for Claude to read.
         if (rest[0] !== "text" && (await $.ui.open({ id: LOG_PANE, title: t.logTitle, focus: true })).isPlaced)
           return { text: t.logOpened(all.length) }
@@ -1293,28 +1307,60 @@ export const register: Register = (on, options) => {
    * One log row: on its first line the repository's short name in color, who did it and what (a link to it) bold
    * in color, when dim; what they said under it, indented, wrapping onto as many lines as it takes.
    */
-  const drawLogRow = (ui: ReturnType<EngineInterface["ui"]["resolve"]>, row: LogRow, made: LogMade | undefined) => {
+  const drawLogRow = (
+    ui: ReturnType<EngineInterface["ui"]["resolve"]>,
+    row: LogRow,
+    made: LogMade | undefined,
+    // The log pane's: what unfolds the row, and what it says in full once unfolded.
+    fold?: { mark: ReturnType<typeof ui.Button>; full?: readonly GhEventItem[] },
+  ) => {
     const { Box, Text, Link } = ui
     // A notice kept with its head says its short name, or that it has none.
     const { label, rest } = splitLabel(row.text, made?.head === undefined ? undefined : (made.label ?? null))
     const { who, action, detail } = splitNotice(rest, language, made)
     // What joins the head to what follows (": ", "。") or ends a head alone (".") is not drawn: the line break parts them.
     const body = detail.replace(DETAIL_LEAD, "").trimEnd()
+    const lines = (text: string, key: string) => text.split("\n").map((line, i) => <Text key={`${key}:${i}`}>{plain(line) || " "}</Text>)
+    // A push keeps its line counts above its commits; anything else says in full what its line said in short.
+    const isPush = made?.kind === "push"
+    const full = fold?.full?.map((item, i) => (
+      <Box key={`item:${i}`} flexDirection="column">
+        {item.path === undefined ? null : (
+          <Text dimColor>
+            {plain(item.path)}
+            {typeof item.line === "number" ? `:${item.line}` : ""}
+          </Text>
+        )}
+        {isPush ? <Text>・{plain(item.body)}</Text> : lines(item.body, `body:${i}`)}
+      </Box>
+    ))
+    const head = (
+      <Text>
+        {label === "" ? null : <Text color={LABEL_COLOR}>{label}</Text>}
+        {who === "" && action === "" ? null : (
+          <Text bold color={HEAD_COLOR}>
+            {who}
+            {row.url === "" || action === "" ? action : <Link href={row.url}>{action}</Link>}
+          </Text>
+        )}
+        {row.when === "" ? null : <Text dimColor>{row.when}</Text>}
+      </Text>
+    )
+    const short = body === "" ? null : <Text>{CHANGED_KINDS.has(made?.kind ?? "") ? changed(body, Text) : body}</Text>
     return (
       <Box flexDirection="column">
-        <Text>
-          {label === "" ? null : <Text color={LABEL_COLOR}>{label}</Text>}
-          {who === "" && action === "" ? null : (
-            <Text bold color={HEAD_COLOR}>
-              {who}
-              {row.url === "" || action === "" ? action : <Link href={row.url}>{action}</Link>}
-            </Text>
-          )}
-          {row.when === "" ? null : <Text dimColor>{row.when}</Text>}
-        </Text>
-        {body === "" ? null : (
-          <Box paddingLeft={LOG_INDENT}>
-            <Text>{CHANGED_KINDS.has(made?.kind ?? "") ? changed(body, Text) : body}</Text>
+        {fold === undefined ? head : (
+          <Box>
+            {fold.mark}
+            {head}
+          </Box>
+        )}
+        {full === undefined ? (
+          short === null ? null : <Box paddingLeft={LOG_INDENT}>{short}</Box>
+        ) : (
+          <Box paddingLeft={LOG_INDENT} flexDirection="column">
+            {isPush ? short : null}
+            {full}
           </Box>
         )}
       </Box>
@@ -1345,15 +1391,32 @@ export const register: Register = (on, options) => {
     const page = Math.min(Math.max(0, await read($, logPage)), pages - 1)
     const shown = list.slice(page * LOG_PAGE, (page + 1) * LOG_PAGE)
     const now = await $.clock.now()
+    const unfolded = await read($, logUnfolded)
     const turn = (to: number) => () => void update($, logPage, () => to)
 
     return (
       <Box flexDirection="column">
         <Text dimColor>{list.length === 0 ? t.noLog : t.logRange(page * LOG_PAGE + 1, page * LOG_PAGE + shown.length, list.length)}</Text>
-        {shown.map(event => {
+        {shown.map((event, index) => {
           const at = Date.parse(event.at)
           const row = { text: plain(event.text), url: plain(event.url), when: Number.isNaN(at) ? "" : t.paren(ago(t, now - at)) }
-          return <Box key={`${event.pull}|${event.id}`}>{drawLogRow(ui, row, madeOf(event))}</Box>
+          const key = `${event.pull}|${event.id}`
+          const full = saidInFull(event)
+          const isOpen = full !== undefined && unfolded.includes(key)
+          // A row with more to say than its line unfolds by its mark, or the digit of its place on the page.
+          const mark =
+            full === undefined ? (
+              <Text>{"  "}</Text>
+            ) : (
+              <Button
+                key={`unfold:${key}`}
+                hotkey={index < 10 ? String((index + 1) % 10) : undefined}
+                plain
+                label={isOpen ? "▾ " : "▸ "}
+                onPress={() => void update($, logUnfolded, list => (list.includes(key) ? list.filter(one => one !== key) : [...list, key]))}
+              />
+            )
+          return <Box key={key}>{drawLogRow(ui, row, madeOf(event), { mark, full: isOpen ? full : undefined })}</Box>
         })}
         <Box>
           {page + 1 < pages && <Button key="older" hotkey="n" label={t.older} onPress={turn(page + 1)} />}

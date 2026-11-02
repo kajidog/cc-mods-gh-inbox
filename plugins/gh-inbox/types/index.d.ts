@@ -188,6 +188,8 @@ declare module "claude-code" {
       staged: GhStaged[]
       /** The page the log pane shows, 0 the newest. */
       logPage: number
+      /** The log pane's rows unfolded to say in full what they said, by `pull|id`. */
+      logUnfolded: string[]
     }
   }
 }
