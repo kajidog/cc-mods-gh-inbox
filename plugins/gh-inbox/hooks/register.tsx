@@ -10,6 +10,7 @@ import {
   HISTORIES_KEPT,
   HISTORY_PREFIX,
   latest,
+  type LogRow,
   logText,
   MISSED_PREFIX,
   mergeHistories,
@@ -102,6 +103,8 @@ const COMMAND = "inbox"
 const NICKNAMES_KEY = "nicknames"
 const EVENTS_KEPT = 100
 const LOG_SHOWN = 20
+/** Notices the log pane shows on a page. */
+const LOG_PAGE = 10
 const SHOWN_AT_ONCE = 5
 /** The theme color `/inbox log` draws a repository's short name in. */
 const LABEL_COLOR = "suggestion"
@@ -127,6 +130,7 @@ const PRESENCE_KEPT_MS = 24 * 60 * 60 * 1000
 const CACHE_KEPT_MS = 60 * 60 * 1000
 const PICKER_PANE = "gh-inbox-kinds"
 const PICK_PANE = "gh-inbox-pick"
+const LOG_PANE = "gh-inbox-log"
 // Titles asked for in one GraphQL request at most.
 const TITLES_AT_ONCE = 50
 // A lookup that fails for now (no network, a rate limit) is tried at this many checks, its notice held meanwhile.
@@ -138,6 +142,7 @@ const seenIds = atom({ plugin: "gh-inbox", key: "seen" } as const, {} as Record<
 const picker = atom({ plugin: "gh-inbox", key: "picker" } as const, null as GhPicker | null)
 const pick = atom({ plugin: "gh-inbox", key: "pick" } as const, null as GhPick | null)
 const staged = atom({ plugin: "gh-inbox", key: "staged" } as const, [] as GhStaged[])
+const logPage = atom({ plugin: "gh-inbox", key: "logPage" } as const, 0)
 
 type Found = {
   branch: string
@@ -224,6 +229,15 @@ async function lookUp($: EngineInterface, ctx: Context, branch: string, now: num
 
   return { branch, ref, state: answer.state ?? null, lookedAt: now, isDone: false }
 }
+
+/** What a log row is drawn by, as its notice was made. */
+type LogMade = { who?: string; head?: string; label?: string; kind?: string }
+const madeOf = (event: GhEvent): LogMade => ({
+  who: event.who === undefined ? undefined : plain(event.who),
+  head: event.head === undefined ? undefined : plain(event.head),
+  label: event.label === undefined ? undefined : plain(event.label),
+  kind: event.kind,
+})
 
 /** `detail` with the line counts it ends with in color, else as it is. */
 function changed(detail: string, Text: ReturnType<EngineInterface["ui"]["resolve"]>["Text"]) {
@@ -1219,8 +1233,14 @@ export const register: Register = (on, options) => {
         await check($, ctx, true)
         return { text: await status($, ctx) }
       case "log": {
-        const list = latest(await readHistory($), LOG_SHOWN)
-        if (list.length === 0) return { text: t.noLog }
+        const all = await readHistory($)
+        if (all.length === 0) return { text: t.noLog }
+        // In a pane, so a long log does not run down the transcript; where no pane opens, the newest as text.
+        await update($, logPage, () => 0)
+        // `/inbox log text` lists them in the transcript, for Claude to read.
+        if (rest[0] !== "text" && (await $.ui.open({ id: LOG_PANE, title: t.logTitle, focus: true })).isPlaced)
+          return { text: t.logOpened(all.length) }
+        const list = latest(all, LOG_SHOWN)
         const now = await $.clock.now()
         const when = (event: GhEvent) => {
           const at = Date.parse(event.at)
@@ -1265,6 +1285,27 @@ export const register: Register = (on, options) => {
     }
   })
 
+  /** One log row: its repository's short name in color, who did it and what (a link to it) bold in color, when dim. */
+  const drawLogRow = (ui: ReturnType<EngineInterface["ui"]["resolve"]>, row: LogRow, made: LogMade | undefined) => {
+    const { Text, Link } = ui
+    // A notice kept with its head says its short name, or that it has none.
+    const { label, rest } = splitLabel(row.text, made?.head === undefined ? undefined : (made.label ?? null))
+    const { who, action, detail } = splitNotice(rest, language, made)
+    return (
+      <Text>
+        {label === "" ? null : <Text color={LABEL_COLOR}>{label}</Text>}
+        {who === "" && action === "" ? null : (
+          <Text bold color={HEAD_COLOR}>
+            {who}
+            {row.url === "" || action === "" ? action : <Link href={row.url}>{action}</Link>}
+          </Text>
+        )}
+        {CHANGED_KINDS.has(made?.kind ?? "") ? changed(detail, Text) : detail}
+        {row.when === "" ? null : <Text dimColor>{row.when}</Text>}
+      </Text>
+    )
+  }
+
   // `/inbox log`'s row draws each notice with its repository's short name in color and what was done as a link to it;
   // the text, URLs written out, is what the model reads.
   on("ui.render", { component: "CommandOutput", props: { command: COMMAND } }, async ($, e, next) => {
@@ -1274,37 +1315,36 @@ export const register: Register = (on, options) => {
     const { Box, Text, Link } = $.ui.resolve(e)
     // Who did each as its notice named them, from the log the rows were listed from: a row it no longer keeps is read as it reads.
     const known = new Map(
-      (await readHistory($)).map(event => [
-        `${plain(event.text)}\n${plain(event.url)}`,
-        {
-          who: event.who === undefined ? undefined : plain(event.who),
-          head: event.head === undefined ? undefined : plain(event.head),
-          label: event.label === undefined ? undefined : plain(event.label),
-          kind: event.kind,
-        },
-      ]),
+      (await readHistory($)).map(event => [`${plain(event.text)}\n${plain(event.url)}`, madeOf(event)]),
     )
+    return <Box flexDirection="column">{rows.map(row => drawLogRow($.ui.resolve(e), row, known.get(`${row.text}\n${row.url}`)))}</Box>
+  })
+
+  // The log pane: every notice kept, newest first, a page at a time.
+  on("ui.render", { component: "Pane", requestId: LOG_PANE }, async ($, e) => {
+    const ui = $.ui.resolve(e)
+    const { Box, Text, Button } = ui
+    const all = await readHistory($)
+    const list = latest(all, all.length).reverse()
+    const pages = Math.max(1, Math.ceil(list.length / LOG_PAGE))
+    const page = Math.min(Math.max(0, await read($, logPage)), pages - 1)
+    const shown = list.slice(page * LOG_PAGE, (page + 1) * LOG_PAGE)
+    const now = await $.clock.now()
+    const turn = (to: number) => () => void update($, logPage, () => to)
+
     return (
       <Box flexDirection="column">
-        {rows.map(row => {
-          const made = known.get(`${row.text}\n${row.url}`)
-          // A notice kept with its head says its short name, or that it has none.
-          const { label, rest } = splitLabel(row.text, made?.head === undefined ? undefined : (made.label ?? null))
-          const { who, action, detail } = splitNotice(rest, language, made)
-          return (
-            <Text>
-              {label === "" ? null : <Text color={LABEL_COLOR}>{label}</Text>}
-              {who === "" && action === "" ? null : (
-                <Text bold color={HEAD_COLOR}>
-                  {who}
-                  {row.url === "" || action === "" ? action : <Link href={row.url}>{action}</Link>}
-                </Text>
-              )}
-              {CHANGED_KINDS.has(made?.kind ?? "") ? changed(detail, Text) : detail}
-              {row.when === "" ? null : <Text dimColor>{row.when}</Text>}
-            </Text>
-          )
+        <Text dimColor>{list.length === 0 ? t.noLog : t.logRange(page * LOG_PAGE + 1, page * LOG_PAGE + shown.length, list.length)}</Text>
+        {shown.map(event => {
+          const at = Date.parse(event.at)
+          const row = { text: plain(event.text), url: plain(event.url), when: Number.isNaN(at) ? "" : t.paren(ago(t, now - at)) }
+          return <Box key={`${event.pull}|${event.id}`}>{drawLogRow(ui, row, madeOf(event))}</Box>
         })}
+        <Box>
+          {page + 1 < pages && <Button key="older" hotkey="n" label={t.older} onPress={turn(page + 1)} />}
+          {page > 0 && <Button key="newer" hotkey="p" label={t.newer} onPress={turn(page - 1)} />}
+          <Button key="close" hotkey="q" label={t.close} onPress={() => void $.ui.close({ id: LOG_PANE })} />
+        </Box>
       </Box>
     )
   })

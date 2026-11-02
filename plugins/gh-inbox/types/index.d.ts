@@ -186,6 +186,8 @@ declare module "claude-code" {
       pick: GhPick | null
       /** What the next prompt the person sends carries to the model. */
       staged: GhStaged[]
+      /** The page the log pane shows, 0 the newest. */
+      logPage: number
     }
   }
 }
