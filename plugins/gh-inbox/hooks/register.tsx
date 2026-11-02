@@ -1,15 +1,16 @@
 import { atom, read, update } from "claude-code"
 import type { EngineInterface, Register, Timer } from "claude-code"
 
-import type { GhEvent, GhPick, GhPicker, GhPickPull, GhStaged, GhWatch, Inbox, InboxNotice } from "../types"
+import type { GhEvent, GhEventItem, GhPick, GhPicker, GhPickPull, GhStaged, GhWatch, Inbox, InboxNotice } from "../types"
 
-import { displayName, mergeSeen, newEvents, type Nicknames, plain, pullIds } from "./events"
+import { displayName, mergeSeen, newEvents, type Nicknames, plain, pullIds, snippet } from "./events"
 import { type PullRef, type PullState, parsePull, parsePullUrl, pullArgv, pullName } from "./github"
 import {
   addSharedSeen,
   HISTORIES_KEPT,
   HISTORY_PREFIX,
   latest,
+  type LogRow,
   logText,
   MISSED_PREFIX,
   mergeHistories,
@@ -102,15 +103,23 @@ const COMMAND = "inbox"
 const NICKNAMES_KEY = "nicknames"
 const EVENTS_KEPT = 100
 const LOG_SHOWN = 20
+/** Notices the log pane shows on a page. */
+const LOG_PAGE = 10
 const SHOWN_AT_ONCE = 5
 /** The theme color `/inbox log` draws a repository's short name in. */
 const LABEL_COLOR = "suggestion"
+/** The theme color `/inbox log` draws who did it and what they did in, bold, set apart from what they said. */
+const HEAD_COLOR = "claude"
 /** The theme colors `/inbox log` draws a push's or commit's changed line counts in, sign and all. */
 const ADDED_COLOR = "success"
 const REMOVED_COLOR = "error"
 /** The line counts a push or commit notice ends with, as `(+4 −2)`; only those kinds are colored, a comment's own words never. */
 const CHANGES = /^(.* \()(\+\d+)( )(−\d+)(\))$/s
 const CHANGED_KINDS: ReadonlySet<string> = new Set(["commit", "push"])
+/** What joins a notice's head to what follows, or ends a head alone: `: `, `.`, `。`. */
+const DETAIL_LEAD = /^\s*(?::|\.|。)?\s*/
+/** How far in `/inbox log` draws what was said, under who did what. */
+const LOG_INDENT = 2
 const TOAST_MS = 8000
 // A branch with no open pull request is looked up again this often, not at every check.
 const LOOKUP_MS = 5 * 60 * 1000
@@ -125,6 +134,7 @@ const PRESENCE_KEPT_MS = 24 * 60 * 60 * 1000
 const CACHE_KEPT_MS = 60 * 60 * 1000
 const PICKER_PANE = "gh-inbox-kinds"
 const PICK_PANE = "gh-inbox-pick"
+const LOG_PANE = "gh-inbox-log"
 // Titles asked for in one GraphQL request at most.
 const TITLES_AT_ONCE = 50
 // A lookup that fails for now (no network, a rate limit) is tried at this many checks, its notice held meanwhile.
@@ -136,6 +146,8 @@ const seenIds = atom({ plugin: "gh-inbox", key: "seen" } as const, {} as Record<
 const picker = atom({ plugin: "gh-inbox", key: "picker" } as const, null as GhPicker | null)
 const pick = atom({ plugin: "gh-inbox", key: "pick" } as const, null as GhPick | null)
 const staged = atom({ plugin: "gh-inbox", key: "staged" } as const, [] as GhStaged[])
+const logPage = atom({ plugin: "gh-inbox", key: "logPage" } as const, 0)
+const logUnfolded = atom({ plugin: "gh-inbox", key: "logUnfolded" } as const, [] as string[])
 
 type Found = {
   branch: string
@@ -221,6 +233,27 @@ async function lookUp($: EngineInterface, ctx: Context, branch: string, now: num
   const ref = parsePullUrl(answer.url ?? "")
 
   return { branch, ref, state: answer.state ?? null, lookedAt: now, isDone: false }
+}
+
+/** What a log row is drawn by, as its notice was made. */
+type LogMade = { who?: string; head?: string; label?: string; kind?: string }
+const madeOf = (event: GhEvent): LogMade => ({
+  who: event.who === undefined ? undefined : plain(event.who),
+  head: event.head === undefined ? undefined : plain(event.head),
+  label: event.label === undefined ? undefined : plain(event.label),
+  kind: event.kind,
+})
+
+/**
+ * What a notice said that its line cut short, as the log keeps it; undefined where its line says it all
+ * (one short part) or the log kept no words of it (a notice kept before it kept them).
+ */
+function saidInFull(event: GhEvent): GhEventItem[] | undefined {
+  const items = (Array.isArray(event.items) ? event.items : []).filter(item => typeof item.body === "string" && item.body.trim() !== "")
+  const [only] = items
+  if (only === undefined) return undefined
+  if (items.length === 1 && only.path === undefined && !only.body.includes("\n") && snippet(only.body) === only.body.trim()) return undefined
+  return items
 }
 
 /** `detail` with the line counts it ends with in color, else as it is. */
@@ -1217,8 +1250,15 @@ export const register: Register = (on, options) => {
         await check($, ctx, true)
         return { text: await status($, ctx) }
       case "log": {
-        const list = latest(await readHistory($), LOG_SHOWN)
-        if (list.length === 0) return { text: t.noLog }
+        const all = await readHistory($)
+        if (all.length === 0) return { text: t.noLog }
+        // In a pane, so a long log does not run down the transcript; where no pane opens, the newest as text.
+        await update($, logPage, () => 0)
+        await update($, logUnfolded, () => [])
+        // `/inbox log text` lists them in the transcript, for Claude to read.
+        if (rest[0] !== "text" && (await $.ui.open({ id: LOG_PANE, title: t.logTitle, focus: true })).isPlaced)
+          return { text: t.logOpened(all.length) }
+        const list = latest(all, LOG_SHOWN)
         const now = await $.clock.now()
         const when = (event: GhEvent) => {
           const at = Date.parse(event.at)
@@ -1263,42 +1303,126 @@ export const register: Register = (on, options) => {
     }
   })
 
+  /**
+   * One log row: on its first line the repository's short name in color, who did it and what (a link to it) bold
+   * in color, when dim; what they said under it, indented, wrapping onto as many lines as it takes.
+   */
+  const drawLogRow = (
+    ui: ReturnType<EngineInterface["ui"]["resolve"]>,
+    row: LogRow,
+    made: LogMade | undefined,
+    // The log pane's: what unfolds the row, and what it says in full once unfolded.
+    fold?: { mark: ReturnType<typeof ui.Button>; full?: readonly GhEventItem[] },
+  ) => {
+    const { Box, Text, Link } = ui
+    // A notice kept with its head says its short name, or that it has none.
+    const { label, rest } = splitLabel(row.text, made?.head === undefined ? undefined : (made.label ?? null))
+    const { who, action, detail } = splitNotice(rest, language, made)
+    // What joins the head to what follows (": ", "。") or ends a head alone (".") is not drawn: the line break parts them.
+    const body = detail.replace(DETAIL_LEAD, "").trimEnd()
+    const lines = (text: string, key: string) => text.split("\n").map((line, i) => <Text key={`${key}:${i}`}>{plain(line) || " "}</Text>)
+    // A push or commit keeps its line counts above its commits; anything else says in full what its line said in short.
+    const isPush = CHANGED_KINDS.has(made?.kind ?? "")
+    const full = fold?.full?.map((item, i) => (
+      <Box key={`item:${i}`} flexDirection="column">
+        {item.path === undefined ? null : (
+          <Text dimColor>
+            {plain(item.path)}
+            {typeof item.line === "number" ? `:${item.line}` : ""}
+          </Text>
+        )}
+        {isPush ? <Text>・{plain(item.body)}</Text> : lines(item.body, `body:${i}`)}
+      </Box>
+    ))
+    const head = (
+      <Text>
+        {label === "" ? null : <Text color={LABEL_COLOR}>{label}</Text>}
+        {who === "" && action === "" ? null : (
+          <Text bold color={HEAD_COLOR}>
+            {who}
+            {row.url === "" || action === "" ? action : <Link href={row.url}>{action}</Link>}
+          </Text>
+        )}
+        {row.when === "" ? null : <Text dimColor>{row.when}</Text>}
+      </Text>
+    )
+    const short = body === "" ? null : <Text>{CHANGED_KINDS.has(made?.kind ?? "") ? changed(body, Text) : body}</Text>
+    return (
+      <Box flexDirection="column">
+        {fold === undefined ? head : (
+          <Box>
+            {fold.mark}
+            {head}
+          </Box>
+        )}
+        {full === undefined ? (
+          short === null ? null : <Box paddingLeft={LOG_INDENT}>{short}</Box>
+        ) : (
+          <Box paddingLeft={LOG_INDENT} flexDirection="column">
+            {isPush ? short : null}
+            {full}
+          </Box>
+        )}
+      </Box>
+    )
+  }
+
   // `/inbox log`'s row draws each notice with its repository's short name in color and what was done as a link to it;
   // the text, URLs written out, is what the model reads.
   on("ui.render", { component: "CommandOutput", props: { command: COMMAND } }, async ($, e, next) => {
     const isLog = e.props.args.trim().split(/\s+/)[0] === "log"
     const rows = isLog && !e.props.isErrored ? parseLog(e.props.text) : undefined
     if (rows === undefined) return next(e)
-    const { Box, Text, Link } = $.ui.resolve(e)
+    const ui = $.ui.resolve(e)
     // Who did each as its notice named them, from the log the rows were listed from: a row it no longer keeps is read as it reads.
     const known = new Map(
-      (await readHistory($)).map(event => [
-        `${plain(event.text)}\n${plain(event.url)}`,
-        {
-          who: event.who === undefined ? undefined : plain(event.who),
-          head: event.head === undefined ? undefined : plain(event.head),
-          label: event.label === undefined ? undefined : plain(event.label),
-          kind: event.kind,
-        },
-      ]),
+      (await readHistory($)).map(event => [`${plain(event.text)}\n${plain(event.url)}`, madeOf(event)]),
     )
+    return <ui.Box flexDirection="column">{rows.map(row => drawLogRow(ui, row, known.get(`${row.text}\n${row.url}`)))}</ui.Box>
+  })
+
+  // The log pane: every notice kept, newest first, a page at a time.
+  on("ui.render", { component: "Pane", requestId: LOG_PANE }, async ($, e) => {
+    const ui = $.ui.resolve(e)
+    const { Box, Text, Button } = ui
+    const all = await readHistory($)
+    const list = latest(all, all.length).reverse()
+    const pages = Math.max(1, Math.ceil(list.length / LOG_PAGE))
+    const page = Math.min(Math.max(0, await read($, logPage)), pages - 1)
+    const shown = list.slice(page * LOG_PAGE, (page + 1) * LOG_PAGE)
+    const now = await $.clock.now()
+    const unfolded = await read($, logUnfolded)
+    const turn = (to: number) => () => void update($, logPage, () => to)
+
     return (
       <Box flexDirection="column">
-        {rows.map(row => {
-          const made = known.get(`${row.text}\n${row.url}`)
-          // A notice kept with its head says its short name, or that it has none.
-          const { label, rest } = splitLabel(row.text, made?.head === undefined ? undefined : (made.label ?? null))
-          const { who, action, detail } = splitNotice(rest, language, made)
-          return (
-            <Text>
-              {label === "" ? null : <Text color={LABEL_COLOR}>{label}</Text>}
-              {who}
-              {row.url === "" || action === "" ? action : <Link href={row.url}>{action}</Link>}
-              {CHANGED_KINDS.has(made?.kind ?? "") ? changed(detail, Text) : detail}
-              {row.when === "" ? null : <Text dimColor>{row.when}</Text>}
-            </Text>
-          )
+        <Text dimColor>{list.length === 0 ? t.noLog : t.logRange(page * LOG_PAGE + 1, page * LOG_PAGE + shown.length, list.length)}</Text>
+        {shown.map((event, index) => {
+          const at = Date.parse(event.at)
+          const row = { text: plain(event.text), url: plain(event.url), when: Number.isNaN(at) ? "" : t.paren(ago(t, now - at)) }
+          const key = `${event.pull}|${event.id}`
+          const full = saidInFull(event)
+          const isOpen = full !== undefined && unfolded.includes(key)
+          // A row with more to say than its line unfolds by its mark, or the digit of its place on the page.
+          const mark =
+            full === undefined ? (
+              <Text>{"  "}</Text>
+            ) : (
+              <Button
+                key={`unfold:${key}`}
+                hotkey={index < 10 ? String((index + 1) % 10) : undefined}
+                plain
+                label={isOpen ? "▾ " : "▸ "}
+                onPress={() => void update($, logUnfolded, list => (list.includes(key) ? list.filter(one => one !== key) : [...list, key]))}
+              />
+            )
+          return <Box key={key}>{drawLogRow(ui, row, madeOf(event), { mark, full: isOpen ? full : undefined })}</Box>
         })}
+        <Box>
+          {page + 1 < pages && <Button key="older" hotkey="n" label={t.older} onPress={turn(page + 1)} />}
+          {page > 0 && <Button key="newer" hotkey="p" label={t.newer} onPress={turn(page - 1)} />}
+          <Button key="close" hotkey="q" label={t.close} onPress={() => void $.ui.close({ id: LOG_PANE })} />
+        </Box>
       </Box>
     )
   })

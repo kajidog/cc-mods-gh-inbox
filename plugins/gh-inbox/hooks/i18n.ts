@@ -160,7 +160,7 @@ const en = {
   // `/inbox`
   commandDescription:
     "GitHub notices for this branch's pull request and registered repositories: status, check now, recent notices, pick review comments to hand to Claude, repositories, nicknames, what the line under the prompt shows",
-  commandHint: "[status|check|log|pick [pr]|clear|repo [add|set|remove|alias ...]|nick [login [nickname]]|tray [pull|repos]]",
+  commandHint: "[status|check|log [text]|pick [pr]|clear|repo [add|set|remove|alias ...]|nick [login [nickname]]|tray [pull|repos]]",
   noBranch: "The branch is not known (outside a git repository, or a detached HEAD).",
   noPull: (branch: string) => `${branch} has no pull request.`,
   pullState: (state: string | null): string => (state === "OPEN" ? "watching" : state === "MERGED" ? "merged" : "closed"),
@@ -170,7 +170,12 @@ const en = {
   showsHere: "Notices show in this window.",
   showsElsewhere: "Notices show in the other window used last (/inbox log lists them here too).",
   noLog: "No notices yet.",
-  usage: "Usage: /inbox [status|check|log|pick [PR]|clear|repo|nick [login [nickname]]|tray [pull|repos]]",
+  logTitle: "GitHub notices",
+  logOpened: (n: number) => `Opened the log in a pane (${count(n, "notice")}).`,
+  logRange: (from: number, to: number, total: number) => `${from}–${to} of ${total}, newest first`,
+  older: "Older",
+  newer: "Newer",
+  usage: "Usage: /inbox [status|check|log [text]|pick [PR]|clear|repo|nick [login [nickname]]|tray [pull|repos]]",
   trayShows: (view: string): string =>
     view === "pull"
       ? "The line under the prompt now shows this branch's pull request (all registered repositories while it has none). /inbox tray switches back."
@@ -355,7 +360,7 @@ const ja: Messages = {
   noKinds: "なし",
 
   commandDescription: "このブランチの PR と登録したリポジトリの GitHub 通知: 状態、すぐに確認、最近の通知、Claude に渡すレビューを選ぶ、リポジトリ、ニックネーム、プロンプトの下の表示",
-  commandHint: "[status|check|log|pick [PR]|clear|repo [add|set|remove|alias ...]|nick [login [ニックネーム]]|tray [pull|repos]]",
+  commandHint: "[status|check|log [text]|pick [PR]|clear|repo [add|set|remove|alias ...]|nick [login [ニックネーム]]|tray [pull|repos]]",
   noBranch: "ブランチが分かりません（git リポジトリの外か、detached HEAD です）。",
   noPull: branch => `${branch} の PR はありません。`,
   pullState: state => (state === "OPEN" ? "通知中" : state === "MERGED" ? "マージ済み" : "クローズ済み"),
@@ -365,7 +370,12 @@ const ja: Messages = {
   showsHere: "通知はこの窓に出します。",
   showsElsewhere: "通知は最後に操作した別の窓に出します（/inbox log で一覧を見られます）。",
   noLog: "通知はまだありません。",
-  usage: "使い方: /inbox [status|check|log|pick [PR]|clear|repo|nick [login [ニックネーム]]|tray [pull|repos]]",
+  logTitle: "GitHub の通知",
+  logOpened: n => `ログをペインで開きました（${n}件）。`,
+  logRange: (from, to, total) => `${total}件中 ${from}〜${to}件目（新しい順）`,
+  older: "古い方へ",
+  newer: "新しい方へ",
+  usage: "使い方: /inbox [status|check|log [text]|pick [PR]|clear|repo|nick [login [ニックネーム]]|tray [pull|repos]]",
   trayShows: view =>
     view === "pull"
       ? "プロンプトの下に、このブランチの PR の状態を出します（PR がないあいだは、登録したリポジトリの一覧）。/inbox tray で戻せます。"

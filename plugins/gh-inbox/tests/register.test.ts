@@ -1,6 +1,8 @@
 import type { On, RenderElement } from "claude-code"
+import type { GhEvent } from "../types"
 import { expect, mock, test } from "claude-code/testing"
 
+import { toKept } from "../hooks/history"
 import { RUNS } from "./fixtures/repo-answers"
 
 // Most tests read the Japanese lines; those in English, the default, are at the end.
@@ -77,7 +79,7 @@ test("a registered repository notifies only what came after its first look, and 
   expect(github.toasts).toEqual(["[r] someoneさんが #3 にコメントしました。Looks good"])
 
   // Asked again with the ETag, GitHub answers 304: nothing more is notified or listed.
-  const LOG = { ...CHECK, args: "log" }
+  const LOG = { ...CHECK, args: "log text" }
   const before = await $.command.run(LOG)
   await clock.advance(61_000)
   await $.command.run(CHECK)
@@ -268,7 +270,7 @@ test("titles are asked for in batches, so every notice has its own", JA, async (
   await $.command.run(CHECK)
   const queries = github.asked.filter(argv => argv.includes("graphql")).map(argv => argv.at(-1) ?? "")
   expect(queries.map(query => query.match(/pullRequest\(/g)?.length)).toEqual([50, 10])
-  expect(await $.command.run({ ...CHECK, args: "log" })).toMatchObject({ text: expect.stringContaining("#60 t60") })
+  expect(await $.command.run({ ...CHECK, args: "log text" })).toMatchObject({ text: expect.stringContaining("#60 t60") })
 })
 
 test("a repository whose name now leads to another one is not told about", JA, async ($, on) => {
@@ -300,7 +302,7 @@ test("the failed steps of at most a few runs are looked up at one check, the res
   await clock.advance(61_000)
   await $.command.run(CHECK)
   expect(github.asked.filter(argv => argv.some(word => word.endsWith("/jobs")))).toHaveLength(5)
-  expect((await $.command.run({ ...CHECK, args: "log" })).text?.match(/CI が失敗しました/g)).toHaveLength(8)
+  expect((await $.command.run({ ...CHECK, args: "log text" })).text?.match(/CI が失敗しました/g)).toHaveLength(8)
 })
 
 test("a hook on inbox.notify sees each notice first, rewrites what shows or keeps it from showing, and the log keeps it", JA, async ($, on) => {
@@ -322,7 +324,7 @@ test("a hook on inbox.notify sees each notice first, rewrites what shows or keep
     expect.objectContaining({ source: "repo", repo: KEY, label: "r", isSelf: false, text: "[r] someoneさんが #3 にコメントしました。Looks good" }),
   ])
   expect(github.toasts).toEqual(["[r] someoneさんが #3 にコメントしました。Looks good!"])
-  expect(await $.command.run({ ...CHECK, args: "log" })).toMatchObject({ text: expect.stringContaining("botさん") })
+  expect(await $.command.run({ ...CHECK, args: "log text" })).toMatchObject({ text: expect.stringContaining("botさん") })
 })
 
 test("inbox.notified tells each notice no hook refused, as it shows, once every hook on inbox.notify answered", JA, async ($, on) => {
@@ -360,7 +362,7 @@ test("at a session's first look, what came since another session last looked is 
 
   await $.command.run(CHECK)
   expect(github.toasts).toEqual(["GitHub: どの窓も見ていなかったあいだの通知が1件あります（/inbox log）"])
-  expect(await $.command.run({ ...CHECK, args: "log" })).toEqual({
+  expect(await $.command.run({ ...CHECK, args: "log text" })).toEqual({
     text: "[r] someoneさんが #3 にコメントしました。Looks good\n  u（1日前）",
   })
 
@@ -400,7 +402,7 @@ test("at a first look while another session is alive and showing, what it has no
 
   await $.command.run(CHECK)
   expect(github.toasts).toEqual([])
-  expect(await $.command.run({ ...CHECK, args: "log" })).toMatchObject({ text: expect.stringContaining("Looks good") })
+  expect(await $.command.run({ ...CHECK, args: "log text" })).toMatchObject({ text: expect.stringContaining("Looks good") })
 })
 
 test("what a session caught up while another showed is told by the one showing, once", JA, async ($, on) => {
@@ -445,7 +447,7 @@ test("a notice with no time of its own is listed as of when it was seen, not beh
   fakeGitHub(on, [[{ ...COMMENT, created_at: "" }]])
 
   await $.command.run(CHECK)
-  expect(await $.command.run({ ...CHECK, args: "log" })).toMatchObject({ text: expect.stringContaining("Looks good") })
+  expect(await $.command.run({ ...CHECK, args: "log text" })).toMatchObject({ text: expect.stringContaining("Looks good") })
 })
 
 test("of more sessions than are kept, those whose notices are newest are kept, not those written to last", JA, async ($, on) => {
@@ -462,7 +464,7 @@ test("of more sessions than are kept, those whose notices are newest are kept, n
   on("session.start", async (_$, e) => ({ cwd: e.cwd }))
 
   await $.session.start({ cwd: "/repo", surface: "terminal", isInteractive: true })
-  expect(await $.command.run({ ...CHECK, args: "log" })).toMatchObject({ text: expect.stringContaining("newest") })
+  expect(await $.command.run({ ...CHECK, args: "log text" })).toMatchObject({ text: expect.stringContaining("newest") })
 })
 
 test("/inbox log lists what other sessions listed", JA, async ($, on) => {
@@ -471,7 +473,138 @@ test("/inbox log lists what other sessions listed", JA, async ($, on) => {
   mock.clock(on, { now: Date.parse("2026-10-17T00:00:00Z") })
   fakeGitHub(on, [[]])
 
-  expect(await $.command.run({ ...CHECK, args: "log" })).toEqual({ text: "elsewhere\n  u（1時間前）" })
+  expect(await $.command.run({ ...CHECK, args: "log text" })).toEqual({ text: "elsewhere\n  u（1時間前）" })
+})
+
+test("/inbox log opens a pane of every notice kept, newest first, a page at a time, and lists nothing in the transcript", JA, async ($, on) => {
+  const events = Array.from({ length: 23 }, (_, i) => ({
+    id: `c${i}`,
+    kind: "comment",
+    pull: "o/r#3",
+    author: "a",
+    at: new Date(Date.parse("2026-10-16T00:00:00Z") + i * 60_000).toISOString(),
+    text: `n${i}`,
+    url: `https://github.com/o/r/pull/3#c${i}`,
+    items: [],
+  }))
+  mock.store(on, { "history:other": { at: 1, events } })
+  mock.clock(on, { now: Date.parse("2026-10-17T00:00:00Z") })
+  fakeGitHub(on, [[]])
+  const opened: unknown[] = []
+  let hasRoom = true
+  on("ui.open", async (_$, e) => {
+    opened.push(e.id)
+    return { value: hasRoom ? { isPlaced: true } : { isPlaced: false, reason: "no room" } }
+  })
+
+  expect(await $.command.run({ ...CHECK, args: "log" })).toEqual({ text: "ログをペインで開きました（23件）。" })
+  expect(opened).toEqual(["gh-inbox-log"])
+  const pane = await $.ui.mount({
+    plugin: "gh-inbox",
+    surface: "terminal",
+    component: "Pane",
+    requestId: "gh-inbox-log",
+    props: { title: "", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 20 }, view: {} },
+  })
+  expect(await pane.find({ type: "Text", text: "23件中 1〜10件目（新しい順）" })).toBeDefined()
+  expect((await pane.findAll({ type: "Link" })).map(link => link.props.href).at(0)).toBe("https://github.com/o/r/pull/3#c22")
+  expect(await pane.find({ key: "newer" })).toBeUndefined()
+  await pane.press({ key: "older" })
+  await pane.press({ key: "older" })
+  expect(await pane.find({ type: "Text", text: "23件中 21〜23件目（新しい順）" })).toBeDefined()
+  expect((await pane.findAll({ type: "Link" })).map(link => link.props.href)).toEqual([
+    "https://github.com/o/r/pull/3#c2",
+    "https://github.com/o/r/pull/3#c1",
+    "https://github.com/o/r/pull/3#c0",
+  ])
+  expect(await pane.find({ key: "older" })).toBeUndefined()
+  await pane.press({ key: "newer" })
+  expect(await pane.find({ type: "Text", text: "23件中 11〜20件目（新しい順）" })).toBeDefined()
+
+  // Where no pane opens, the newest are listed as text.
+  hasRoom = false
+  expect((await $.command.run({ ...CHECK, args: "log" })).text?.split("\n")).toHaveLength(40)
+})
+
+test("a row of the log pane with more to say unfolds to all of it, line comments with their places, and folds back", JA, async ($, on) => {
+  const at = "2026-10-16T23:00:00Z"
+  const review = {
+    id: "PRR_1",
+    kind: "review",
+    pull: "o/r#3",
+    author: "a",
+    at,
+    text: "aさんが変更をリクエストしました（コメント1件）。Rename this",
+    url: "https://github.com/o/r/pull/3#r1",
+    items: [
+      { body: "Rename this\nand that", url: "https://github.com/o/r/pull/3#r1" },
+      { body: "Use undefined", path: "src/a.ts", line: 12, hunk: "@@", url: "https://github.com/o/r/pull/3#c1" },
+    ],
+  }
+  const short = { id: "c2", kind: "comment", pull: "o/r#3", author: "b", at, text: "bさんがコメントしました。ok", url: "u", items: [{ body: "ok", url: "u" }] }
+  mock.store(on, { "history:other": toKept([review, short] as GhEvent[], 1) })
+  mock.clock(on, { now: Date.parse("2026-10-17T00:00:00Z") })
+  fakeGitHub(on, [[]])
+  on("ui.open", async () => ({ value: { isPlaced: true } }))
+
+  await $.command.run({ ...CHECK, args: "log" })
+  const pane = await $.ui.mount({
+    plugin: "gh-inbox",
+    surface: "terminal",
+    component: "Pane",
+    requestId: "gh-inbox-log",
+    props: { title: "", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 20 }, view: {} },
+  })
+  // Newest first, the two at the same time in the order they came: the review is the first, the comment says it all.
+  const unfold = await pane.find({ key: "unfold:o/r#3|PRR_1" })
+  expect(unfold?.props.label).toBe("▸ ")
+  expect(unfold?.props.hotkey).toBe("2")
+  expect(await pane.find({ key: "unfold:o/r#3|c2" })).toBeUndefined()
+  expect(await pane.find({ type: "Text", text: "and that" })).toBeUndefined()
+
+  await pane.press({ key: "unfold:o/r#3|PRR_1" })
+  expect((await pane.find({ key: "unfold:o/r#3|PRR_1" }))?.props.label).toBe("▾ ")
+  expect(await pane.find({ type: "Text", text: "and that" })).toBeDefined()
+  expect(await pane.find({ type: "Text", text: "src/a.ts:12" })).toBeDefined()
+  expect(await pane.find({ type: "Text", text: "Use undefined" })).toBeDefined()
+
+  await pane.press({ key: "unfold:o/r#3|PRR_1" })
+  expect(await pane.find({ type: "Text", text: "and that" })).toBeUndefined()
+})
+
+test("a commit or push row of the log pane unfolds to its commits under its line counts, which stay", JA, async ($, on) => {
+  const at = "2026-10-16T23:00:00Z"
+  const commits = ["one", "two", "three", "four"].map(title => ({ body: title, url: `https://github.com/o/r/commit/${title}` }))
+  const commit = { id: "c4", kind: "commit", pull: "o/r#3", author: "a", at, text: "aさんがコミットしました。one / two / three ほか1件 (+4 −2)", url: "u", items: commits }
+  // Its own commits: one telling the same commits as another is listed once.
+  const push = {
+    ...commit,
+    id: "event:1",
+    kind: "push",
+    pull: "o/r",
+    text: "aさんが main に push しました。one / two / three ほか1件 (+4 −2)",
+    items: commits.map(one => ({ ...one, url: `${one.url}-pushed` })),
+  }
+  mock.store(on, { "history:other": toKept([commit, push] as GhEvent[], 1) })
+  mock.clock(on, { now: Date.parse("2026-10-17T00:00:00Z") })
+  fakeGitHub(on, [[]])
+  on("ui.open", async () => ({ value: { isPlaced: true } }))
+
+  await $.command.run({ ...CHECK, args: "log" })
+  const pane = await $.ui.mount({
+    plugin: "gh-inbox",
+    surface: "terminal",
+    component: "Pane",
+    requestId: "gh-inbox-log",
+    props: { title: "", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 20 }, view: {} },
+  })
+  await pane.press({ key: "unfold:o/r#3|c4" })
+  await pane.press({ key: "unfold:o/r|event:1" })
+  // Each row's line counts: the line and the Text that colors its counts read the same.
+  expect((await pane.findAll({ type: "Text", text: "one / two / three ほか1件 (+4 −2)" })).length).toBe(4)
+  expect((await pane.findAll({ type: "Text", text: "・four" })).length).toBe(2)
+  const colored = (await pane.findAll({ type: "Text" })).filter(one => one.props.color === "success" || one.props.color === "error")
+  expect(colored.map(one => one.children.join(""))).toEqual(["+4", "−2", "+4", "−2"])
 })
 
 test("/inbox log's row draws the repository's short name in color and what was done as a link, when it happened beside it", JA, async ($, on) => {
@@ -495,10 +628,18 @@ test("/inbox log's row draws the repository's short name in color and what was d
     ["https://github.com/o/r/pull/3", "#3 にコメントしました"],
     ["https://github.com/o/r/pull/4", "#4 がマージされました"],
   ])
-  const colored = (await log.findAll({ type: "Text" })).filter(text => text.props.color !== undefined)
+  const colored = (await log.findAll({ type: "Text" })).filter(text => text.props.color !== undefined && text.props.color !== "claude")
   expect(colored.map(text => [text.props.color, text.children.join("")])).toEqual([["suggestion", "[r]"]])
+  // Who did it and what, bold in its own color, set apart from what they said.
+  const heads = (await log.findAll({ type: "Text" })).filter(text => text.props.color === "claude")
+  expect(heads.map(text => text.props.bold)).toEqual([true, true, true])
   expect(await log.find({ type: "Text", text: "（1日前）" })).toBeDefined()
   expect(await log.find({ type: "Text", text: " (2h ago)" })).toBeDefined()
+  // What was said goes under who did what, the "。" between them not drawn; a notice with nothing said has no second line.
+  expect(await log.find({ type: "Text", text: "[r] aさんが https://github.com/o/r/pull/3#3 にコメントしました（1日前）" })).toBeDefined()
+  expect(await log.find({ type: "Text", text: "Looks good" })).toBeDefined()
+  expect(await log.find({ type: "Text", text: "https://github.com/o/r/pull/4#4 がマージされました (2h ago)" })).toBeDefined()
+  expect(await log.find({ type: "Text", text: "。" })).toBeUndefined()
   // One with no URL is drawn as text, the others still links.
   expect(await log.find({ type: "Text", text: "no url（3日前）" })).toBeDefined()
 
@@ -515,13 +656,15 @@ test("/inbox log draws a push's changed line counts in color, signs and all, not
   mock.clock(on, { now: Date.parse("2026-10-17T00:00:00Z") })
   fakeGitHub(on, [[]])
 
-  const { text = "" } = await $.command.run({ ...CHECK, args: "log" })
-  const log = await $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "CommandOutput", props: { command: "inbox", args: "log", text, isErrored: false } })
-  const colored = (await log.findAll({ type: "Text" })).filter(one => one.props.color !== undefined)
+  const { text = "" } = await $.command.run({ ...CHECK, args: "log text" })
+  const log = await $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "CommandOutput", props: { command: "inbox", args: "log text", text, isErrored: false } })
+  const colored = (await log.findAll({ type: "Text" })).filter(one => one.props.color !== undefined && one.props.color !== "claude")
   expect(colored.map(one => [one.props.color, one.children.join("")])).toEqual([
     ["success", "+15"],
     ["error", "−10"],
   ])
+  // Under who did what, the ": " between them not drawn.
+  expect(await log.find({ type: "Text", text: "fix (+1 −2) again (+15 −10)" })).toBeDefined()
 })
 
 test("/inbox log links what was done and colors the short name, a person's own words not taken for either", async ($, on) => {
@@ -542,12 +685,12 @@ test("/inbox log links what was done and colors the short name, a person's own w
   mock.clock(on, { now: Date.parse("2026-10-17T00:00:00Z") })
   fakeGitHub(on, [[]])
 
-  const { text = "" } = await $.command.run({ ...CHECK, args: "log" })
-  const log = await $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "CommandOutput", props: { command: "inbox", args: "log", text, isErrored: false } })
+  const { text = "" } = await $.command.run({ ...CHECK, args: "log text" })
+  const log = await $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "CommandOutput", props: { command: "inbox", args: "log text", text, isErrored: false } })
   const links = await log.findAll({ type: "Link" })
   expect(links.map(link => link.children.join(""))).toEqual(["commented on #3"])
   // A short name with "]" in it is colored whole.
-  const colored = (await log.findAll({ type: "Text" })).filter(one => one.props.color !== undefined)
+  const colored = (await log.findAll({ type: "Text" })).filter(one => one.props.color !== undefined && one.props.color !== "claude")
   expect(colored.map(one => one.children.join(""))).toEqual(["[x] y]"])
 })
 
@@ -557,9 +700,9 @@ test("/inbox log does not color a nickname in brackets on a notice with no short
   mock.clock(on, { now: Date.parse("2026-10-17T00:00:00Z") })
   fakeGitHub(on, [[]])
 
-  const { text = "" } = await $.command.run({ ...CHECK, args: "log" })
-  const log = await $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "CommandOutput", props: { command: "inbox", args: "log", text, isErrored: false } })
-  expect((await log.findAll({ type: "Text" })).filter(one => one.props.color !== undefined)).toEqual([])
+  const { text = "" } = await $.command.run({ ...CHECK, args: "log text" })
+  const log = await $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "CommandOutput", props: { command: "inbox", args: "log text", text, isErrored: false } })
+  expect((await log.findAll({ type: "Text" })).filter(one => one.props.color !== undefined && one.props.color !== "claude")).toEqual([])
   expect((await log.findAll({ type: "Link" })).map(link => link.children.join(""))).toEqual(["commented"])
 })
 

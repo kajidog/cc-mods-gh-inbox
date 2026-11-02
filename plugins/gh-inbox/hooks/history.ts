@@ -1,6 +1,6 @@
 // What every session keeps in the shared store, so `/inbox log` lists the notices of other
 // sessions and of the time no session was open.
-import type { GhEvent } from "../types"
+import type { GhEvent, GhEventItem } from "../types"
 
 import { mergeSeen } from "./events"
 
@@ -84,10 +84,37 @@ export function unheld(held: readonly GhEvent[], added: readonly GhEvent[]): GhE
 /** Every session's notices together, each once. */
 export const mergeHistories = (histories: readonly (readonly GhEvent[])[]) => unheld([], histories.flat())
 
-/** What a session keeps of its notices: the newest `HISTORY_KEPT`, of their parts only the URLs `unheld` compares. */
+/** The characters of what was said a notice keeps in the log, all its parts together. */
+export const BODY_KEPT = 2000
+
+/**
+ * A notice's parts as the log keeps them: the URLs `unheld` compares, and what each says (where a line comment
+ * is) for the log to unfold, `BODY_KEPT` characters at most of all of them, `…` where one is cut; no diff hunk.
+ */
+export function keptItems(event: GhEvent, kept = BODY_KEPT): GhEventItem[] {
+  let left = kept
+  const items: GhEventItem[] = []
+  for (const item of Array.isArray(event.items) ? event.items : []) {
+    const url = typeof item.url === "string" ? item.url : ""
+    if (url === "") continue
+    const said = typeof item.body === "string" ? item.body.replace(/<!--[\s\S]*?-->/g, "").trim() : ""
+    const body = said.length <= left ? said : left > 1 ? `${said.slice(0, left - 1)}…` : ""
+    left -= body.length
+    items.push({
+      body,
+      url,
+      ...(typeof item.path === "string" ? { path: item.path } : {}),
+      ...(typeof item.line === "number" || item.line === null ? { line: item.line } : {}),
+    })
+  }
+
+  return items
+}
+
+/** What a session keeps of its notices: the newest `HISTORY_KEPT`, their parts as `keptItems` keeps them. */
 export const toKept = (events: readonly GhEvent[], now: number): SessionHistory => ({
   at: now,
-  events: latest(unheld([], events), HISTORY_KEPT).map(event => ({ ...event, items: partsOf(event).map(url => ({ body: "", url })) })),
+  events: latest(unheld([], events), HISTORY_KEPT).map(event => ({ ...event, items: keptItems(event) })),
 })
 
 /** When the newest of a session's notices happened, or when it was written where none says. */

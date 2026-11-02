@@ -186,6 +186,10 @@ declare module "claude-code" {
       pick: GhPick | null
       /** What the next prompt the person sends carries to the model. */
       staged: GhStaged[]
+      /** The page the log pane shows, 0 the newest. */
+      logPage: number
+      /** The log pane's rows unfolded to say in full what they said, by `pull|id`. */
+      logUnfolded: string[]
     }
   }
 }
