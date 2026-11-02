@@ -552,6 +552,11 @@ test("/inbox log's row draws the repository's short name in color and what was d
   expect(heads.map(text => text.props.bold)).toEqual([true, true, true])
   expect(await log.find({ type: "Text", text: "（1日前）" })).toBeDefined()
   expect(await log.find({ type: "Text", text: " (2h ago)" })).toBeDefined()
+  // What was said goes under who did what, the "。" between them not drawn; a notice with nothing said has no second line.
+  expect(await log.find({ type: "Text", text: "[r] aさんが https://github.com/o/r/pull/3#3 にコメントしました（1日前）" })).toBeDefined()
+  expect(await log.find({ type: "Text", text: "Looks good" })).toBeDefined()
+  expect(await log.find({ type: "Text", text: "https://github.com/o/r/pull/4#4 がマージされました (2h ago)" })).toBeDefined()
+  expect(await log.find({ type: "Text", text: "。" })).toBeUndefined()
   // One with no URL is drawn as text, the others still links.
   expect(await log.find({ type: "Text", text: "no url（3日前）" })).toBeDefined()
 
@@ -575,6 +580,8 @@ test("/inbox log draws a push's changed line counts in color, signs and all, not
     ["success", "+15"],
     ["error", "−10"],
   ])
+  // Under who did what, the ": " between them not drawn.
+  expect(await log.find({ type: "Text", text: "fix (+1 −2) again (+15 −10)" })).toBeDefined()
 })
 
 test("/inbox log links what was done and colors the short name, a person's own words not taken for either", async ($, on) => {

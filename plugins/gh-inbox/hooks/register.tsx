@@ -116,6 +116,10 @@ const REMOVED_COLOR = "error"
 /** The line counts a push or commit notice ends with, as `(+4 −2)`; only those kinds are colored, a comment's own words never. */
 const CHANGES = /^(.* \()(\+\d+)( )(−\d+)(\))$/s
 const CHANGED_KINDS: ReadonlySet<string> = new Set(["commit", "push"])
+/** What joins a notice's head to what follows, or ends a head alone: `: `, `.`, `。`. */
+const DETAIL_LEAD = /^\s*(?::|\.|。)?\s*/
+/** How far in `/inbox log` draws what was said, under who did what. */
+const LOG_INDENT = 2
 const TOAST_MS = 8000
 // A branch with no open pull request is looked up again this often, not at every check.
 const LOOKUP_MS = 5 * 60 * 1000
@@ -1285,24 +1289,35 @@ export const register: Register = (on, options) => {
     }
   })
 
-  /** One log row: its repository's short name in color, who did it and what (a link to it) bold in color, when dim. */
+  /**
+   * One log row: on its first line the repository's short name in color, who did it and what (a link to it) bold
+   * in color, when dim; what they said under it, indented, wrapping onto as many lines as it takes.
+   */
   const drawLogRow = (ui: ReturnType<EngineInterface["ui"]["resolve"]>, row: LogRow, made: LogMade | undefined) => {
-    const { Text, Link } = ui
+    const { Box, Text, Link } = ui
     // A notice kept with its head says its short name, or that it has none.
     const { label, rest } = splitLabel(row.text, made?.head === undefined ? undefined : (made.label ?? null))
     const { who, action, detail } = splitNotice(rest, language, made)
+    // What joins the head to what follows (": ", "。") or ends a head alone (".") is not drawn: the line break parts them.
+    const body = detail.replace(DETAIL_LEAD, "").trimEnd()
     return (
-      <Text>
-        {label === "" ? null : <Text color={LABEL_COLOR}>{label}</Text>}
-        {who === "" && action === "" ? null : (
-          <Text bold color={HEAD_COLOR}>
-            {who}
-            {row.url === "" || action === "" ? action : <Link href={row.url}>{action}</Link>}
-          </Text>
+      <Box flexDirection="column">
+        <Text>
+          {label === "" ? null : <Text color={LABEL_COLOR}>{label}</Text>}
+          {who === "" && action === "" ? null : (
+            <Text bold color={HEAD_COLOR}>
+              {who}
+              {row.url === "" || action === "" ? action : <Link href={row.url}>{action}</Link>}
+            </Text>
+          )}
+          {row.when === "" ? null : <Text dimColor>{row.when}</Text>}
+        </Text>
+        {body === "" ? null : (
+          <Box paddingLeft={LOG_INDENT}>
+            <Text>{CHANGED_KINDS.has(made?.kind ?? "") ? changed(body, Text) : body}</Text>
+          </Box>
         )}
-        {CHANGED_KINDS.has(made?.kind ?? "") ? changed(detail, Text) : detail}
-        {row.when === "" ? null : <Text dimColor>{row.when}</Text>}
-      </Text>
+      </Box>
     )
   }
 
