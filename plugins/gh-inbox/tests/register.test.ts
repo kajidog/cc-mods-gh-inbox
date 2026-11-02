@@ -572,6 +572,41 @@ test("a row of the log pane with more to say unfolds to all of it, line comments
   expect(await pane.find({ type: "Text", text: "and that" })).toBeUndefined()
 })
 
+test("a commit or push row of the log pane unfolds to its commits under its line counts, which stay", JA, async ($, on) => {
+  const at = "2026-10-16T23:00:00Z"
+  const commits = ["one", "two", "three", "four"].map(title => ({ body: title, url: `https://github.com/o/r/commit/${title}` }))
+  const commit = { id: "c4", kind: "commit", pull: "o/r#3", author: "a", at, text: "aさんがコミットしました。one / two / three ほか1件 (+4 −2)", url: "u", items: commits }
+  // Its own commits: one telling the same commits as another is listed once.
+  const push = {
+    ...commit,
+    id: "event:1",
+    kind: "push",
+    pull: "o/r",
+    text: "aさんが main に push しました。one / two / three ほか1件 (+4 −2)",
+    items: commits.map(one => ({ ...one, url: `${one.url}-pushed` })),
+  }
+  mock.store(on, { "history:other": toKept([commit, push] as GhEvent[], 1) })
+  mock.clock(on, { now: Date.parse("2026-10-17T00:00:00Z") })
+  fakeGitHub(on, [[]])
+  on("ui.open", async () => ({ value: { isPlaced: true } }))
+
+  await $.command.run({ ...CHECK, args: "log" })
+  const pane = await $.ui.mount({
+    plugin: "gh-inbox",
+    surface: "terminal",
+    component: "Pane",
+    requestId: "gh-inbox-log",
+    props: { title: "", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 20 }, view: {} },
+  })
+  await pane.press({ key: "unfold:o/r#3|c4" })
+  await pane.press({ key: "unfold:o/r|event:1" })
+  // Each row's line counts: the line and the Text that colors its counts read the same.
+  expect((await pane.findAll({ type: "Text", text: "one / two / three ほか1件 (+4 −2)" })).length).toBe(4)
+  expect((await pane.findAll({ type: "Text", text: "・four" })).length).toBe(2)
+  const colored = (await pane.findAll({ type: "Text" })).filter(one => one.props.color === "success" || one.props.color === "error")
+  expect(colored.map(one => one.children.join(""))).toEqual(["+4", "−2", "+4", "−2"])
+})
+
 test("/inbox log's row draws the repository's short name in color and what was done as a link, when it happened beside it", JA, async ($, on) => {
   mock.store(on, {})
   mock.clock(on, { now: 1_000_000 })

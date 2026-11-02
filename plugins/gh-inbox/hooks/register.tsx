@@ -1321,8 +1321,8 @@ export const register: Register = (on, options) => {
     // What joins the head to what follows (": ", "。") or ends a head alone (".") is not drawn: the line break parts them.
     const body = detail.replace(DETAIL_LEAD, "").trimEnd()
     const lines = (text: string, key: string) => text.split("\n").map((line, i) => <Text key={`${key}:${i}`}>{plain(line) || " "}</Text>)
-    // A push keeps its line counts above its commits; anything else says in full what its line said in short.
-    const isPush = made?.kind === "push"
+    // A push or commit keeps its line counts above its commits; anything else says in full what its line said in short.
+    const isPush = CHANGED_KINDS.has(made?.kind ?? "")
     const full = fold?.full?.map((item, i) => (
       <Box key={`item:${i}`} flexDirection="column">
         {item.path === undefined ? null : (
