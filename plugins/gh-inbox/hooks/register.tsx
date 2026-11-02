@@ -1312,12 +1312,12 @@ export const register: Register = (on, options) => {
     const isLog = e.props.args.trim().split(/\s+/)[0] === "log"
     const rows = isLog && !e.props.isErrored ? parseLog(e.props.text) : undefined
     if (rows === undefined) return next(e)
-    const { Box, Text, Link } = $.ui.resolve(e)
+    const ui = $.ui.resolve(e)
     // Who did each as its notice named them, from the log the rows were listed from: a row it no longer keeps is read as it reads.
     const known = new Map(
       (await readHistory($)).map(event => [`${plain(event.text)}\n${plain(event.url)}`, madeOf(event)]),
     )
-    return <Box flexDirection="column">{rows.map(row => drawLogRow($.ui.resolve(e), row, known.get(`${row.text}\n${row.url}`)))}</Box>
+    return <ui.Box flexDirection="column">{rows.map(row => drawLogRow(ui, row, known.get(`${row.text}\n${row.url}`)))}</ui.Box>
   })
 
   // The log pane: every notice kept, newest first, a page at a time.
