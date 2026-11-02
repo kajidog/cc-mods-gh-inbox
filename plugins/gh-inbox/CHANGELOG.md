@@ -1,5 +1,25 @@
 # gh-inbox
 
+## 0.8.0
+
+### Minor Changes
+
+- e6552c5: `/inbox log` opens a pane of every notice kept, newest first, 10 a page (`n` older, `p` newer, `q` close), so a long log no longer runs down the transcript. `/inbox log text` lists the newest 20 in the transcript as before.
+  
+  `/inbox log` は保存している通知をすべてペインで開くようにしました（新しい順に10件ずつ。`n` で古い方へ、`p` で新しい方へ、`q` で閉じる）。件数が増えてもトランスクリプトに流れません。これまでどおりトランスクリプトに出したいときは `/inbox log text` を使います（新しい20件）。
+- e6552c5: The log keeps what each notice said (up to 2,000 characters, line comments with their file and line), and the `/inbox log` pane unfolds a notice that says more than its line to all of it: press its `▸`, or the digit of its place on the page.
+  
+  ログに各通知の全文（1件2,000字まで。行コメントはファイルと行も）を保存し、`/inbox log` のペインで1行に収まらない通知を `▸`（またはページ内の位置の数字キー）で開いて全文を見られるようにしました。
+
+### Patch Changes
+
+- e6552c5: `/inbox log` draws who did it and what they did in bold and the `claude` theme color, set apart from what they said.
+  
+  `/inbox log` で「誰が何をしたか」の部分を太字・`claude` テーマ色で表示し、本文との境目をわかりやすくしました。
+- e6552c5: `/inbox log` draws each notice on two lines: the repository's short name, who did what and when first, what was said under it, indented.
+  
+  `/inbox log` の各通知を、1行目にリポジトリ・名前・操作（といつのことか）、2行目以降に内容を字下げして表示するようにしました。
+
 ## 0.7.0
 
 ### Minor Changes
