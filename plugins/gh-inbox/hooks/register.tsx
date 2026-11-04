@@ -37,6 +37,7 @@ import {
   parsePullArg,
   parsePulls,
   pickArgv,
+  shownContext,
   pullKeyOfUrl,
   pullsArgv,
   refOfPullKey,
@@ -1121,28 +1122,6 @@ async function openPick($: EngineInterface, ctx: Context, ref: PullRef | null, f
   await (ref === null ? loadPulls($, ctx, failure) : loadItems($, ctx, ref))
 
   return true
-}
-
-/**
- * What a pick item says in full, as its pane unfolds it: what the model reads, without the fences that wrap its
- * bodies; a heading or anything else not said by someone is dim.
- */
-function shownContext(context: string): Array<{ text: string; isMeta: boolean }> {
-  const lines: Array<{ text: string; isMeta: boolean }> = []
-  let fence: string | undefined
-  for (const line of context.split("\n")) {
-    const opens = fence === undefined ? /^(`{3,})(\w*)$/.exec(line) : null
-    if (opens !== null) {
-      fence = opens[1]
-      continue
-    }
-    if (fence !== undefined && line === fence) {
-      fence = undefined
-      continue
-    }
-    lines.push({ text: line.replace(/^#+ /, ""), isMeta: fence === undefined })
-  }
-  return lines
 }
 
 /** Turns one item of the pick pane on or off: a review with its threads. */

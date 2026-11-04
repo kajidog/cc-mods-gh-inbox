@@ -335,3 +335,26 @@ export const stagedCount = (staged: readonly GhStaged[]) => staged.reduce((sum, 
 
 /** How many characters `staged` hands the model. */
 export const stagedSize = (staged: readonly GhStaged[], language: Language = "en") => stagedContext(staged, language).reduce((sum, one) => sum + one.length, 0)
+
+/**
+ * What a pick item says in full, as its pane unfolds it: what the model reads, without the fences that wrap its
+ * bodies; a heading or anything else not said by someone is dim.
+ */
+export function shownContext(context: string): Array<{ text: string; isMeta: boolean }> {
+  const lines: Array<{ text: string; isMeta: boolean }> = []
+  let fence: string | undefined
+  for (const line of context.split("\n")) {
+    const opens = fence === undefined ? /^(`{3,})(\w*)$/.exec(line) : null
+    if (opens !== null) {
+      fence = opens[1]
+      continue
+    }
+    if (fence !== undefined && line === fence) {
+      fence = undefined
+      continue
+    }
+    // A heading of the context loses its marks; inside a fence, what someone wrote stays as written (a `# ` code comment too).
+    lines.push(fence === undefined ? { text: line.replace(/^#+ /, ""), isMeta: true } : { text: line, isMeta: false })
+  }
+  return lines
+}

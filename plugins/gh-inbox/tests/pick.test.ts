@@ -1,7 +1,7 @@
 import type { On, RenderElement } from "claude-code"
 import { expect, mock, test } from "claude-code/testing"
 
-import { parsePicked, parsePullArg, parsePulls, pullsArgv, stagedContext } from "../hooks/pick"
+import { parsePicked, parsePullArg, parsePulls, pullsArgv, shownContext, stagedContext } from "../hooks/pick"
 
 // Most tests read the Japanese lines; those in English, the default, are at the end.
 const JA = { options: { language: "ja" } }
@@ -252,6 +252,15 @@ test("a review chosen goes with its threads and their replies in the next prompt
   expect(block).toContain("解決済み（me が解決）")
   expect(block).not.toContain("Coverage dropped")
   expect(contexts[1]).toBeUndefined()
+})
+
+test("shownContext drops the fences and the context's heading marks, and keeps what was written inside as it is", () => {
+  expect(shownContext("## rev\n```markdown\n# keep_this()\n## not a heading\n```\n```diff\n@@\n```")).toEqual([
+    { text: "rev", isMeta: true },
+    { text: "# keep_this()", isMeta: false },
+    { text: "## not a heading", isMeta: false },
+    { text: "@@", isMeta: false },
+  ])
 })
 
 test("an item of the pick pane unfolds to all it says, without the fences around it, and folds back", JA, async ($, on) => {
