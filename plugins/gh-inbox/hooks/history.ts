@@ -172,3 +172,31 @@ export function splitLabel(text: string, known?: string | null): { label: string
   const label = known === undefined ? (/^\[[^\]]*\](?= )/.exec(text)?.[0] ?? "") : named !== "" && text.startsWith(`${named} `) ? named : ""
   return { label, rest: text.slice(label.length) }
 }
+
+/** The repository a notice came from: `owner/repo`, its pull request's number left off. */
+export const repoOfEvent = (event: Pick<GhEvent, "pull">) => event.pull.replace(/#\d+$/, "")
+
+/** A repository the log can be narrowed to, and the short name its button shows. */
+export type LogRepo = { repo: string; label: string }
+
+/**
+ * The repositories `history` has notices of, the one with the newest first: each named as `labels` names it (the
+ * registered repository's short name), else as its newest notice was labelled, else by the repository's name.
+ */
+export function logRepos(history: readonly GhEvent[], labels: ReadonlyMap<string, string>): LogRepo[] {
+  const repos = new Map<string, string>()
+  for (const event of latest(history, history.length).reverse()) {
+    const repo = repoOfEvent(event)
+    if (repo === "" || repos.has(repo)) continue
+    repos.set(repo, labels.get(repo) ?? event.label ?? repo.slice(repo.indexOf("/") + 1))
+  }
+
+  return [...repos].map(([repo, label]) => ({ repo, label }))
+}
+
+/** The repository `word` names, by its short name, its name or `owner/repo`, case aside; undefined where none is. */
+export function findLogRepo(repos: readonly LogRepo[], word: string): LogRepo | undefined {
+  const wanted = word.toLowerCase()
+  const names = (one: LogRepo) => [one.label, one.repo, one.repo.slice(one.repo.indexOf("/") + 1)].map(name => name.toLowerCase())
+  return repos.find(one => names(one).includes(wanted))
+}
