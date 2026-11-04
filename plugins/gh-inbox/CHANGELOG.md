@@ -1,5 +1,22 @@
 # gh-inbox
 
+## 0.9.0
+
+### Minor Changes
+
+- 8d89706: The `/inbox log` pane narrows to one repository by the buttons above its list (`r` goes to the next), and `/inbox log <repository>` opens it narrowed, by the short name, the name or `owner/repo` (`text` too).
+  
+  `/inbox log` のペインで、一覧の上のボタン（`r` で次へ）で1つのリポジトリに絞り込めるようにしました。`/inbox log <リポジトリ>`（短い名前・名前・`owner/repo`）で絞り込んだ状態で開けます（`text` でも同じ）。
+- 8d89706: The `/inbox pick` pane unfolds an item to all it says (a thread with its diff and replies) by its `▸`, as the log pane does; unfolding does not choose it.
+  
+  `/inbox pick` のペインでも、項目の `▸` を押すと全文（スレッドなら差分と返信も）を開けるようにしました（ログのペインと同じ。開いても選択はされません）。
+
+### Patch Changes
+
+- 8d89706: The line under the prompt parts its repositories (and what it tells of the pull request) with ` | ` instead of ` · `.
+  
+  プロンプト下の行の区切りを ` · ` から ` | ` に変えました。
+
 ## 0.8.0
 
 ### Minor Changes
