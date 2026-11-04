@@ -254,6 +254,27 @@ test("a review chosen goes with its threads and their replies in the next prompt
   expect(contexts[1]).toBeUndefined()
 })
 
+test("an item of the pick pane unfolds to all it says, without the fences around it, and folds back", JA, async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: 1_000_000 })
+  fakeGh(on, "feat/x")
+
+  await $.command.run(PICK)
+  const pane = await $.ui.mount(PANE)
+  expect((await pane.find({ key: "unfold:T2" }))?.props.label).toBe("▸ ")
+  expect(await pane.find({ type: "Text", text: "after" })).toBeUndefined()
+
+  await pane.press({ key: "unfold:T2" })
+  expect((await pane.find({ key: "unfold:T2" }))?.props.label).toBe("▾ ")
+  expect(await pane.find({ type: "Text", text: "Rename this" })).toBeDefined()
+  expect(await pane.find({ type: "Text", text: "```markdown" })).toBeUndefined()
+  // Unfolding is not choosing.
+  expect((await pane.find({ key: "T2" }))?.props.label).toStartWith("[ ]")
+
+  await pane.press({ key: "unfold:T2" })
+  expect(await pane.find({ type: "Text", text: "Rename this" })).toBeUndefined()
+})
+
 test("one thread can be chosen alone, its review shown as partly chosen", JA, async ($, on) => {
   mock.store(on, {})
   mock.clock(on, { now: 1_000_000 })

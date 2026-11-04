@@ -64,7 +64,7 @@ Claude Code の mod です。
 
 ## レビューを Claude に渡す
 
-`/inbox pick` を実行すると、PR のレビューとコメントの一覧がペインに出ます。いくつか選んで「添付する」を押すと、次に送るプロンプトと一緒に Claude に渡します。依頼の文はふつうにプロンプトに書きます。
+`/inbox pick` を実行すると、PR のレビューとコメントの一覧がペインに出ます。各項目の `▸` を押すと全文を開けます。いくつか選んで「添付する」を押すと、次に送るプロンプトと一緒に Claude に渡します。依頼の文はふつうにプロンプトに書きます。
 
 ```
 /inbox pick               # 今のブランチの PR（PR がなければ PR を選ぶ画面から）
@@ -143,7 +143,7 @@ on("inbox.notified", async ($, e, next) => {
 | Repositories checked | 20 | 登録できるリポジトリの数 |
 | Language | en | `en`: 英語 / `ja`: 日本語。通知・コマンド・ペインと、Claude に渡す文の言語 |
 | Notify my own activity | false | 自分の操作も通知する |
-| Tray | true | プロンプトの下に1行出し、確認のたびに更新する。今のブランチに PR があるあいだはその状態（`GitHub: #12 · CI ✗ 1/3 · 承認2 · コンフリクト · Aさん「この null チェック不要では」 5分前`）、PR がないときや `/inbox tray repos` のあとは、登録したリポジトリごとの最後のイベントが何分前か（`GitHub: r 5分前 · other 2時間前`） |
+| Tray | true | プロンプトの下に1行出し、確認のたびに更新する。今のブランチに PR があるあいだはその状態（`GitHub: #12 \| CI ✗ 1/3 \| 承認2 \| コンフリクト \| Aさん「この null チェック不要では」 5分前`）、PR がないときや `/inbox tray repos` のあとは、登録したリポジトリごとの最後のイベントが何分前か（`GitHub: r 5分前 \| other 2時間前`） |
 
 <details>
 <summary>GitHub への負荷</summary>

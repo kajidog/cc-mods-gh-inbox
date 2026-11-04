@@ -148,6 +148,7 @@ const pick = atom({ plugin: "gh-inbox", key: "pick" } as const, null as GhPick |
 const staged = atom({ plugin: "gh-inbox", key: "staged" } as const, [] as GhStaged[])
 const logPage = atom({ plugin: "gh-inbox", key: "logPage" } as const, 0)
 const logUnfolded = atom({ plugin: "gh-inbox", key: "logUnfolded" } as const, [] as string[])
+const pickUnfolded = atom({ plugin: "gh-inbox", key: "pickUnfolded" } as const, [] as string[])
 
 type Found = {
   branch: string
@@ -1018,6 +1019,7 @@ async function loadItems($: EngineInterface, ctx: Context, ref: PullRef) {
   ctx.picking += 1
   const token = ctx.picking
   await update($, pick, (): GhPick => ({ stage: "loading", message: ctx.t.loadingPull(pullName(ref)) }))
+  await update($, pickUnfolded, () => [])
   let shown: GhPick
   try {
     const run = await $.process.run(pickArgv(ref))
@@ -1108,6 +1110,28 @@ async function openPick($: EngineInterface, ctx: Context, ref: PullRef | null, f
   await (ref === null ? loadPulls($, ctx, failure) : loadItems($, ctx, ref))
 
   return true
+}
+
+/**
+ * What a pick item says in full, as its pane unfolds it: what the model reads, without the fences that wrap its
+ * bodies; a heading or anything else not said by someone is dim.
+ */
+function shownContext(context: string): Array<{ text: string; isMeta: boolean }> {
+  const lines: Array<{ text: string; isMeta: boolean }> = []
+  let fence: string | undefined
+  for (const line of context.split("\n")) {
+    const opens = fence === undefined ? /^(`{3,})(\w*)$/.exec(line) : null
+    if (opens !== null) {
+      fence = opens[1]
+      continue
+    }
+    if (fence !== undefined && line === fence) {
+      fence = undefined
+      continue
+    }
+    lines.push({ text: line.replace(/^#+ /, ""), isMeta: fence === undefined })
+  }
+  return lines
 }
 
 /** Turns one item of the pick pane on or off: a review with its threads. */
@@ -1456,6 +1480,7 @@ export const register: Register = (on, options) => {
   on("ui.render", { component: "Pane", requestId: PICK_PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const held = await read($, pick)
+    const unfolded = await read($, pickUnfolded)
     const close = <Button key="close" hotkey="q" label={t.close} onPress={() => void $.ui.close({ id: PICK_PANE })} />
     const toPulls = <Button key="pulls" hotkey="p" label={t.otherPull} onPress={() => void loadPulls($, ctx)} />
     if (held === null || held.stage === "loading")
@@ -1518,8 +1543,16 @@ export const register: Register = (on, options) => {
           const ids = idsOf(held.items, item.id)
           const count = ids.filter(id => held.chosen.includes(id)).length
           const mark = count === ids.length ? "x" : count > 0 ? "-" : " "
+          const isOpen = unfolded.includes(item.id)
           return (
-            <Box key={`row:${item.id}`} paddingLeft={item.parent === undefined ? 0 : 4}>
+            <Box key={`row:${item.id}`} flexDirection="column" paddingLeft={item.parent === undefined ? 0 : 4}>
+              <Box>
+              <Button
+                key={`unfold:${item.id}`}
+                plain
+                label={isOpen ? "▾ " : "▸ "}
+                onPress={() => void update($, pickUnfolded, list => (list.includes(item.id) ? list.filter(one => one !== item.id) : [...list, item.id]))}
+              />
               <Button
                 key={item.id}
                 hotkey={index < 9 ? String(index + 1) : undefined}
@@ -1530,6 +1563,16 @@ export const register: Register = (on, options) => {
                   ctx.toggling = ctx.toggling.then(() => toggleItem($, item.id)).catch(() => undefined)
                 }}
               />
+              </Box>
+              {isOpen && (
+                <Box paddingLeft={LOG_INDENT} flexDirection="column">
+                  {shownContext(item.context).map((line, i) => (
+                    <Text key={`said:${item.id}:${i}`} dimColor={line.isMeta}>
+                      {plain(line.text) || " "}
+                    </Text>
+                  ))}
+                </Box>
+              )}
             </Box>
           )
         })}

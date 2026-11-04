@@ -731,10 +731,10 @@ test("the tray under the prompt tells how long ago each repository's last event 
   })
 
   await $.command.run(CHECK)
-  expect(lines.at(-1)).toBe("GitHub: r 5分前 · quiet -")
+  expect(lines.at(-1)).toBe("GitHub: r 5分前 | quiet -")
   await clock.advance(55 * 60_000)
   await $.command.run(CHECK)
-  expect(lines.at(-1)).toBe("GitHub: r 1時間前 · quiet -")
+  expect(lines.at(-1)).toBe("GitHub: r 1時間前 | quiet -")
   await $.command.run({ ...CHECK, args: "repo remove o/r" })
   expect(lines.at(-1)).toBe("GitHub: quiet -")
   await $.command.run({ ...CHECK, args: "repo remove o/quiet" })
@@ -801,7 +801,7 @@ test("the tray tells where the branch's pull request stands, and /inbox tray swi
     return { value: undefined }
   })
 
-  const PULL_LINE = "GitHub: #12 · CI ✗ 1/2 · 承認2 · コンフリクト · aliceさん「Looks good」 5分前"
+  const PULL_LINE = "GitHub: #12 | CI ✗ 1/2 | 承認2 | コンフリクト | aliceさん「Looks good」 5分前"
   await $.command.run(CHECK)
   expect(lines.at(-1)).toBe(PULL_LINE)
   expect(await $.command.run({ ...CHECK, args: "status" })).toMatchObject({ text: expect.stringContaining("\n  CI ✗ 1/2 · 承認2 · コンフリクト · aliceさん「Looks good」 5分前\n") })
@@ -826,7 +826,7 @@ test("with no repository registered, the tray tells of the branch's pull request
   })
 
   await $.command.run(CHECK)
-  expect(lines.at(-1)).toBe("GitHub: #12 · CI ✗ 1/2 · 2 approvals · conflicts · alice: Looks good 2h ago")
+  expect(lines.at(-1)).toBe("GitHub: #12 | CI ✗ 1/2 | 2 approvals | conflicts | alice: Looks good 2h ago")
 })
 
 test("a branch switched to shows by the next prompt sent, GitHub asked only when it changed", JA, async ($, on) => {

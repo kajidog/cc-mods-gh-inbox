@@ -190,6 +190,8 @@ declare module "claude-code" {
       logPage: number
       /** The log pane's rows unfolded to say in full what they said, by `pull|id`. */
       logUnfolded: string[]
+      /** The pick pane's items unfolded to say in full what they say, by id. */
+      pickUnfolded: string[]
     }
   }
 }

@@ -64,7 +64,7 @@ Apart from the branch's pull request, you can register repositories and be notif
 
 ## Handing reviews to Claude
 
-`/inbox pick` lists the pull request's reviews and comments in a pane. Choose some and press "Attach": they go to Claude with the next prompt you send. Write your request in the prompt as usual.
+`/inbox pick` lists the pull request's reviews and comments in a pane. Press an item's `▸` to unfold all it says. Choose some and press "Attach": they go to Claude with the next prompt you send. Write your request in the prompt as usual.
 
 ```
 /inbox pick               # the branch's pull request (with none, a list of pull requests to choose from)
@@ -144,7 +144,7 @@ on("inbox.notified", async ($, e, next) => {
 | Repositories checked | 20 | How many repositories can be registered |
 | Language | en | `en`: English / `ja`: Japanese. For notices, commands, panes, and what is handed to Claude |
 | Notify my own activity | false | Also notify your own activity |
-| Tray | true | A line under the prompt, kept up each check. While the branch has a pull request, where it stands (`GitHub: #12 · CI ✗ 1/3 · 2 approvals · conflicts · alice: Looks good 5m ago`); otherwise, or after `/inbox tray repos`, how long ago each registered repository's last event happened (`GitHub: r 5m ago · other 2h ago`) |
+| Tray | true | A line under the prompt, kept up each check. While the branch has a pull request, where it stands (`GitHub: #12 \| CI ✗ 1/3 \| 2 approvals \| conflicts \| alice: Looks good 5m ago`); otherwise, or after `/inbox tray repos`, how long ago each registered repository's last event happened (`GitHub: r 5m ago \| other 2h ago`) |
 
 <details>
 <summary>Load on GitHub</summary>
