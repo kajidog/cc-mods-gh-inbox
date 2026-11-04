@@ -9,13 +9,17 @@ import {
   addSharedSeen,
   HISTORIES_KEPT,
   HISTORY_PREFIX,
+  findLogRepo,
   latest,
+  type LogRepo,
   type LogRow,
+  logRepos,
   logText,
   MISSED_PREFIX,
   mergeHistories,
   newestAt,
   parseLog,
+  repoOfEvent,
   SHARED_KEPT_MS,
   splitLabel,
   SHARED_SEEN_PREFIX,
@@ -33,6 +37,7 @@ import {
   parsePullArg,
   parsePulls,
   pickArgv,
+  shownContext,
   pullKeyOfUrl,
   pullsArgv,
   refOfPullKey,
@@ -148,6 +153,8 @@ const pick = atom({ plugin: "gh-inbox", key: "pick" } as const, null as GhPick |
 const staged = atom({ plugin: "gh-inbox", key: "staged" } as const, [] as GhStaged[])
 const logPage = atom({ plugin: "gh-inbox", key: "logPage" } as const, 0)
 const logUnfolded = atom({ plugin: "gh-inbox", key: "logUnfolded" } as const, [] as string[])
+const logRepo = atom({ plugin: "gh-inbox", key: "logRepo" } as const, null as string | null)
+const pickUnfolded = atom({ plugin: "gh-inbox", key: "pickUnfolded" } as const, [] as string[])
 
 type Found = {
   branch: string
@@ -372,6 +379,12 @@ async function readHistory($: EngineInterface) {
     if (key.startsWith(HISTORY_PREFIX)) histories.push(toSessionHistory(await $.store.get(key))?.events ?? [])
 
   return mergeHistories(histories)
+}
+
+/** The repositories the log keeps notices of, named by the registered repositories' short names where it can. */
+async function readLogRepos($: EngineInterface, history: readonly GhEvent[]): Promise<LogRepo[]> {
+  const labels = new Map(Object.entries(await readRepos($)).map(([key, entry]) => [repoName(refOfKey(key)), repoLabel(key, entry)]))
+  return logRepos(history, labels)
 }
 
 /** Writes this session's notices where every session reads them. */
@@ -1018,6 +1031,7 @@ async function loadItems($: EngineInterface, ctx: Context, ref: PullRef) {
   ctx.picking += 1
   const token = ctx.picking
   await update($, pick, (): GhPick => ({ stage: "loading", message: ctx.t.loadingPull(pullName(ref)) }))
+  await update($, pickUnfolded, () => [])
   let shown: GhPick
   try {
     const run = await $.process.run(pickArgv(ref))
@@ -1250,13 +1264,23 @@ export const register: Register = (on, options) => {
         await check($, ctx, true)
         return { text: await status($, ctx) }
       case "log": {
-        const all = await readHistory($)
-        if (all.length === 0) return { text: t.noLog }
+        const history = await readHistory($)
+        if (history.length === 0) return { text: t.noLog }
+        // `/inbox log <repository>` narrows it to one repository; `text` lists them in the transcript, for Claude to read.
+        const asText = rest.includes("text")
+        const named = rest.filter(word => word !== "text").join(" ")
+        let narrowed: LogRepo | undefined
+        if (named !== "") {
+          const repos = await readLogRepos($, history)
+          narrowed = findLogRepo(repos, named)
+          if (narrowed === undefined) return { text: t.logNoRepo(named, repos.map(one => one.label)) }
+        }
+        const all = narrowed === undefined ? history : history.filter(event => repoOfEvent(event) === narrowed.repo)
         // In a pane, so a long log does not run down the transcript; where no pane opens, the newest as text.
         await update($, logPage, () => 0)
         await update($, logUnfolded, () => [])
-        // `/inbox log text` lists them in the transcript, for Claude to read.
-        if (rest[0] !== "text" && (await $.ui.open({ id: LOG_PANE, title: t.logTitle, focus: true })).isPlaced)
+        await update($, logRepo, () => narrowed?.repo ?? null)
+        if (!asText && (await $.ui.open({ id: LOG_PANE, title: t.logTitle, focus: true })).isPlaced)
           return { text: t.logOpened(all.length) }
         const list = latest(all, LOG_SHOWN)
         const now = await $.clock.now()
@@ -1385,7 +1409,12 @@ export const register: Register = (on, options) => {
   on("ui.render", { component: "Pane", requestId: LOG_PANE }, async ($, e) => {
     const ui = $.ui.resolve(e)
     const { Box, Text, Button } = ui
-    const all = await readHistory($)
+    const history = await readHistory($)
+    const repos = await readLogRepos($, history)
+    // A repository chosen whose notices are no longer kept shows them all.
+    const narrowedTo = await read($, logRepo)
+    const chosen = repos.find(one => one.repo === narrowedTo)
+    const all = chosen === undefined ? history : history.filter(event => repoOfEvent(event) === chosen.repo)
     const list = latest(all, all.length).reverse()
     const pages = Math.max(1, Math.ceil(list.length / LOG_PAGE))
     const page = Math.min(Math.max(0, await read($, logPage)), pages - 1)
@@ -1393,9 +1422,33 @@ export const register: Register = (on, options) => {
     const now = await $.clock.now()
     const unfolded = await read($, logUnfolded)
     const turn = (to: number) => () => void update($, logPage, () => to)
+    const narrow = (to: string | null) => async () => {
+      await update($, logRepo, () => to)
+      await update($, logPage, () => 0)
+    }
+    // `r` goes to the next repository, after the last back to all.
+    const options: Array<string | null> = [null, ...repos.map(one => one.repo)]
+    const next = options[(options.indexOf(chosen?.repo ?? null) + 1) % options.length] ?? null
 
     return (
       <Box flexDirection="column">
+        {repos.length > 1 && (
+          <Box>
+            {[{ repo: null, label: t.logAll } as const, ...repos].map(one => {
+              const isChosen = (chosen?.repo ?? null) === one.repo
+              return (
+                <Button
+                  key={`repo:${one.repo ?? ""}`}
+                  hotkey={one.repo === next ? "r" : undefined}
+                  plain
+                  dimColor={!isChosen}
+                  label={isChosen ? `[${plain(one.label)}]` : ` ${plain(one.label)} `}
+                  onPress={() => void narrow(one.repo)()}
+                />
+              )
+            })}
+          </Box>
+        )}
         <Text dimColor>{list.length === 0 ? t.noLog : t.logRange(page * LOG_PAGE + 1, page * LOG_PAGE + shown.length, list.length)}</Text>
         {shown.map((event, index) => {
           const at = Date.parse(event.at)
@@ -1456,6 +1509,7 @@ export const register: Register = (on, options) => {
   on("ui.render", { component: "Pane", requestId: PICK_PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const held = await read($, pick)
+    const unfolded = await read($, pickUnfolded)
     const close = <Button key="close" hotkey="q" label={t.close} onPress={() => void $.ui.close({ id: PICK_PANE })} />
     const toPulls = <Button key="pulls" hotkey="p" label={t.otherPull} onPress={() => void loadPulls($, ctx)} />
     if (held === null || held.stage === "loading")
@@ -1518,8 +1572,16 @@ export const register: Register = (on, options) => {
           const ids = idsOf(held.items, item.id)
           const count = ids.filter(id => held.chosen.includes(id)).length
           const mark = count === ids.length ? "x" : count > 0 ? "-" : " "
+          const isOpen = unfolded.includes(item.id)
           return (
-            <Box key={`row:${item.id}`} paddingLeft={item.parent === undefined ? 0 : 4}>
+            <Box key={`row:${item.id}`} flexDirection="column" paddingLeft={item.parent === undefined ? 0 : 4}>
+              <Box>
+              <Button
+                key={`unfold:${item.id}`}
+                plain
+                label={isOpen ? "▾ " : "▸ "}
+                onPress={() => void update($, pickUnfolded, list => (list.includes(item.id) ? list.filter(one => one !== item.id) : [...list, item.id]))}
+              />
               <Button
                 key={item.id}
                 hotkey={index < 9 ? String(index + 1) : undefined}
@@ -1530,6 +1592,16 @@ export const register: Register = (on, options) => {
                   ctx.toggling = ctx.toggling.then(() => toggleItem($, item.id)).catch(() => undefined)
                 }}
               />
+              </Box>
+              {isOpen && (
+                <Box paddingLeft={LOG_INDENT} flexDirection="column">
+                  {shownContext(item.context).map((line, i) => (
+                    <Text key={`said:${item.id}:${i}`} dimColor={line.isMeta}>
+                      {plain(line.text) || " "}
+                    </Text>
+                  ))}
+                </Box>
+              )}
             </Box>
           )
         })}

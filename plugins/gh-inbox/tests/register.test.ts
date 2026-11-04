@@ -572,6 +572,51 @@ test("a row of the log pane with more to say unfolds to all of it, line comments
   expect(await pane.find({ type: "Text", text: "and that" })).toBeUndefined()
 })
 
+test("the log pane narrows to one repository by its buttons, `r` or /inbox log <repository>", JA, async ($, on) => {
+  const at = "2026-10-16T23:00:00Z"
+  const event = (id: string, pull: string, text: string, label?: string) => ({ id, kind: "comment", pull, author: "a", at, text, url: "u", items: [], ...(label === undefined ? {} : { label }) })
+  mock.store(on, {
+    "history:other": toKept(
+      [event("c1", "o/r#3", "aさんがコメントしました。in r"), event("c2", "o/other", "[oth] aさんがプッシュしました。in other", "oth")] as GhEvent[],
+      1,
+    ),
+    repos: { "github.com/o/r": { kinds: ["comment"], alias: "rr" } },
+  })
+  mock.clock(on, { now: Date.parse("2026-10-17T00:00:00Z") })
+  fakeGitHub(on, [[]])
+  on("ui.open", async () => ({ value: { isPlaced: true } }))
+
+  await $.command.run({ ...CHECK, args: "log" })
+  const pane = await $.ui.mount({
+    plugin: "gh-inbox",
+    surface: "terminal",
+    component: "Pane",
+    requestId: "gh-inbox-log",
+    props: { title: "", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 20 }, view: {} },
+  })
+  // All first; the registered repository by its alias, the other by the label its notice was made with.
+  expect((await pane.find({ key: "repo:" }))?.props.label).toBe("[すべて]")
+  expect((await pane.find({ key: "repo:o/r" }))?.props.label).toBe(" rr ")
+  expect((await pane.find({ key: "repo:o/other" }))?.props.label).toBe(" oth ")
+  expect(await pane.find({ type: "Text", text: "2件中 1〜2件目（新しい順）" })).toBeDefined()
+
+  await pane.press({ key: "repo:o/r" })
+  expect((await pane.find({ key: "repo:o/r" }))?.props.label).toBe("[rr]")
+  expect(await pane.find({ type: "Text", text: "1件中 1〜1件目（新しい順）" })).toBeDefined()
+  expect(await pane.find({ type: "Text", text: "in other" })).toBeUndefined()
+  // `r` goes on to the next one, newest first; after the last, back to all.
+  expect((await pane.find({ key: "repo:" }))?.props.hotkey).toBe("r")
+  await pane.press({ key: "repo:" })
+  expect((await pane.find({ key: "repo:o/other" }))?.props.hotkey).toBe("r")
+
+  expect(await $.command.run({ ...CHECK, args: "log Other" })).toMatchObject({ text: "ログをペインで開きました（1件）。" })
+  expect((await pane.find({ key: "repo:o/other" }))?.props.label).toBe("[oth]")
+  expect(await $.command.run({ ...CHECK, args: "log nope" })).toMatchObject({ text: expect.stringContaining("nope というリポジトリ") })
+  const text = await $.command.run({ ...CHECK, args: "log rr text" })
+  expect(text).toMatchObject({ text: expect.stringContaining("in r") })
+  expect(text).not.toMatchObject({ text: expect.stringContaining("in other") })
+})
+
 test("a commit or push row of the log pane unfolds to its commits under its line counts, which stay", JA, async ($, on) => {
   const at = "2026-10-16T23:00:00Z"
   const commits = ["one", "two", "three", "four"].map(title => ({ body: title, url: `https://github.com/o/r/commit/${title}` }))
@@ -731,10 +776,10 @@ test("the tray under the prompt tells how long ago each repository's last event 
   })
 
   await $.command.run(CHECK)
-  expect(lines.at(-1)).toBe("GitHub: r 5分前 · quiet -")
+  expect(lines.at(-1)).toBe("GitHub: r 5分前 | quiet -")
   await clock.advance(55 * 60_000)
   await $.command.run(CHECK)
-  expect(lines.at(-1)).toBe("GitHub: r 1時間前 · quiet -")
+  expect(lines.at(-1)).toBe("GitHub: r 1時間前 | quiet -")
   await $.command.run({ ...CHECK, args: "repo remove o/r" })
   expect(lines.at(-1)).toBe("GitHub: quiet -")
   await $.command.run({ ...CHECK, args: "repo remove o/quiet" })
@@ -801,7 +846,7 @@ test("the tray tells where the branch's pull request stands, and /inbox tray swi
     return { value: undefined }
   })
 
-  const PULL_LINE = "GitHub: #12 · CI ✗ 1/2 · 承認2 · コンフリクト · aliceさん「Looks good」 5分前"
+  const PULL_LINE = "GitHub: #12 | CI ✗ 1/2 | 承認2 | コンフリクト | aliceさん「Looks good」 5分前"
   await $.command.run(CHECK)
   expect(lines.at(-1)).toBe(PULL_LINE)
   expect(await $.command.run({ ...CHECK, args: "status" })).toMatchObject({ text: expect.stringContaining("\n  CI ✗ 1/2 · 承認2 · コンフリクト · aliceさん「Looks good」 5分前\n") })
@@ -826,7 +871,7 @@ test("with no repository registered, the tray tells of the branch's pull request
   })
 
   await $.command.run(CHECK)
-  expect(lines.at(-1)).toBe("GitHub: #12 · CI ✗ 1/2 · 2 approvals · conflicts · alice: Looks good 2h ago")
+  expect(lines.at(-1)).toBe("GitHub: #12 | CI ✗ 1/2 | 2 approvals | conflicts | alice: Looks good 2h ago")
 })
 
 test("a branch switched to shows by the next prompt sent, GitHub asked only when it changed", JA, async ($, on) => {
