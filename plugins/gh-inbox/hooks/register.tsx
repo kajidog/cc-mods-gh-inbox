@@ -161,6 +161,8 @@ const logLatest = atom({ plugin: "gh-inbox", key: "logLatest" } as const, {} as 
 const pickUnfolded = atom({ plugin: "gh-inbox", key: "pickUnfolded" } as const, [] as string[])
 /** How CI of the branch's pull request stood when Claude was last told of it in this session: kept across a reload. */
 const ciTold = atom({ plugin: "gh-inbox", key: "ciTold" } as const, null as string | null)
+/** When what Claude was last told of CI was asked of GitHub: an answer asked for before it is older news, not told. */
+const ciToldAt = atom({ plugin: "gh-inbox", key: "ciToldAt" } as const, 0)
 
 type Found = {
   branch: string
@@ -213,7 +215,7 @@ type Context = {
   /** How many times the log has opened: an answer asked for at an opening that is no longer the last is not shown. */
   logOpenings: number
   /** The open pull request of the branch and its newest commit's CI, as the last check that read it found them. */
-  ci: { branch: string; ref: PullRef; title: string; url: string; ci: Ci } | undefined
+  ci: { branch: string; ref: PullRef; title: string; url: string; ci: Ci; at: number } | undefined
 }
 
 const pullKey = (ref: PullRef) => `${ref.host}/${pullName(ref)}`
@@ -461,23 +463,23 @@ async function shareSeen($: EngineInterface, key: string, ids: readonly string[]
 }
 
 /**
- * The pull request as GitHub answers `PULL_QUERY`: another session's answer
- * when it is younger than one interval, so sessions watching the same pull
- * request ask GitHub once between them.
+ * The pull request as GitHub answers `PULL_QUERY`, and when it was asked: another
+ * session's answer when it is younger than one interval, so sessions watching the
+ * same pull request ask GitHub once between them.
  */
 async function fetchPull($: EngineInterface, ctx: Context, ref: PullRef, now: number) {
   const key = `${CACHE_PREFIX}${pullKey(ref)}`
   const cached = await $.store.get(key)
   if (typeof cached === "object" && cached !== null) {
     const { at, text } = cached as { at?: unknown; text?: unknown }
-    if (typeof at === "number" && typeof text === "string" && now - at < ctx.intervalSeconds * 1000) return parsePull(ref, text, ctx.language)
+    if (typeof at === "number" && typeof text === "string" && now - at < ctx.intervalSeconds * 1000) return { pull: parsePull(ref, text, ctx.language), at }
   }
   const fetched = await $.process.run(pullArgv(ref))
   if (fetched.exitCode !== 0) throw new Error(firstLine(fetched.stderr) || ctx.t.exitedWith("gh api", fetched.exitCode))
   const pull = parsePull(ref, fetched.stdout, ctx.language)
   await $.store.set(key, { at: now, text: fetched.stdout })
 
-  return pull
+  return { pull, at: now }
 }
 
 /** Which of a check's lists a first look (`own` undefined) or a later one puts its notices in. */
@@ -517,10 +519,10 @@ async function checkPull($: EngineInterface, ctx: Context, checked: Checked, isF
       return
     }
 
-    const pull = await fetchPull($, ctx, ref, now)
+    const { pull, at } = await fetchPull($, ctx, ref, now)
     ctx.ci =
       pull.state === "OPEN"
-        ? { branch, ref, title: pull.title, url: pull.url, ci: { oid: pull.head, state: pull.ciState, checks: pull.checks, total: pull.checksTotal } }
+        ? { branch, ref, title: pull.title, url: pull.url, ci: { oid: pull.head, state: pull.ciState, checks: pull.checks, total: pull.checksTotal }, at }
         : undefined
 
     // Each session keeps its own seen ids, so every session lists every notice from its start.
@@ -1073,24 +1075,30 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 
 /**
  * What a prompt tells Claude of the branch's pull request's CI, unasked: a result it was not told of in
- * this session, `key` saying how CI stood. Not while the rest still run with none failed, nor once the
- * branch is not the one last checked: that one's CI goes with a prompt after it is checked.
+ * this session, `key` saying how CI stood and `at` when GitHub was asked. Not while the rest still run with
+ * none failed, nor what was asked before what Claude was told last (a pick may have read CI afresh), nor once
+ * the branch is not the one last checked: that one's CI goes with a prompt after it is checked.
  */
-async function ciNews($: EngineInterface, ctx: Context): Promise<{ key: string; context: string } | undefined> {
+async function ciNews($: EngineInterface, ctx: Context): Promise<{ key: string; at: number; context: string } | undefined> {
   const watched = ctx.ci
   const key = watched === undefined ? null : ciKey(watched.ci)
-  if (watched === undefined || key === null || !isResult(key) || key === (await read($, ciTold))) return undefined
+  if (watched === undefined || key === null || !isResult(key) || key === (await read($, ciTold)) || watched.at < (await read($, ciToldAt)))
+    return undefined
   if ((await currentBranch($).catch(() => null)) !== watched.branch) return undefined
 
-  return { key, context: ciForPrompt(ctx.t, watched.ref, watched.title, watched.url, watched.ci) }
+  return { key, at: watched.at, context: ciForPrompt(ctx.t, watched.ref, watched.title, watched.url, watched.ci) }
 }
 
-/** How CI of the branch's pull request (`ref`) stood as it was picked to go with a prompt (its `ciKey`); undefined where none was. */
-function pickedCi(held: readonly GhStaged[], ref: PullRef | null | undefined): string | undefined {
+/**
+ * How CI of the branch's pull request (`ref`) stood as it was picked to go with a prompt (its `ciKey`),
+ * and when it was asked of GitHub; undefined where none was picked.
+ */
+function pickedCi(held: readonly GhStaged[], ref: PullRef | null | undefined): { key: string; at: number } | undefined {
   if (ref === null || ref === undefined) return undefined
   const key = pullKey(ref).toLowerCase()
-  const item = held.find(one => one.pull.toLowerCase() === key)?.items.find(one => one.id.startsWith(CI_ITEM_PREFIX))
-  return item?.id.slice(CI_ITEM_PREFIX.length)
+  const one = held.find(staged => staged.pull.toLowerCase() === key)
+  const item = one?.items.find(each => each.id.startsWith(CI_ITEM_PREFIX))
+  return item === undefined ? undefined : { key: item.id.slice(CI_ITEM_PREFIX.length), at: one?.at ?? 0 }
 }
 
 /** Shows what the pull request holds now in the pick pane, what is staged from it chosen already. */
@@ -1101,6 +1109,7 @@ async function loadItems($: EngineInterface, ctx: Context, ref: PullRef) {
   await update($, pickUnfolded, () => [])
   let shown: GhPick
   try {
+    const at = await $.clock.now()
     const run = await $.process.run(pickArgv(ref))
     if (run.exitCode !== 0) throw new Error(firstLine(run.stderr) || ctx.t.exitedWith("gh api", run.exitCode))
     const picked = parsePicked(ref, run.stdout, toNicknames(await $.store.get(NICKNAMES_KEY)), ctx.language)
@@ -1109,7 +1118,7 @@ async function loadItems($: EngineInterface, ctx: Context, ref: PullRef) {
     const held = (await read($, staged)).find(one => one.pull === key)
     const ids = new Set(picked.items.map(item => item.id))
     const chosen = (held?.items ?? []).map(item => item.id).filter(id => ids.has(id))
-    shown = { stage: "items", pull: key, ...picked, chosen }
+    shown = { stage: "items", pull: key, ...picked, chosen, at }
   } catch (error) {
     shown = { stage: "error", message: ctx.t.cannotRead(pullName(ref), message(error)) }
   }
@@ -1210,7 +1219,7 @@ async function stageChosen($: EngineInterface, ctx: Context) {
   const items = held.items.filter(item => held.chosen.includes(item.id))
   await update($, staged, list => [
     ...list.filter(one => one.pull !== held.pull),
-    ...(items.length === 0 ? [] : [{ pull: held.pull, title: held.title, url: held.url, head: held.head, items, language: ctx.language }]),
+    ...(items.length === 0 ? [] : [{ pull: held.pull, title: held.title, url: held.url, head: held.head, items, language: ctx.language, at: held.at }]),
   ])
   await $.ui.close({ id: PICK_PANE })
 }
@@ -1316,21 +1325,28 @@ export const register: Register = (on, options) => {
     // the pick may have read a result newer than that check's, which is not told again once a check catches up.
     const picked = ctx.ciToClaude ? pickedCi(held, ctx.found?.ref) : undefined
     const news = ctx.ciToClaude && picked === undefined ? await ciNews($, ctx).catch(() => undefined) : undefined
-    const toldKey = picked ?? news?.key
+    const told = picked ?? news
     if (held.length === 0 && news === undefined) return next(e)
     let toldBefore: string | null = null
-    if (toldKey !== undefined)
+    let toldAtBefore = 0
+    if (told !== undefined) {
       await update($, ciTold, before => {
         toldBefore = before
-        return toldKey
+        return told.key
       })
+      await update($, ciToldAt, before => {
+        toldAtBefore = before
+        return Math.max(before, told.at)
+      })
+    }
     const putBack = async () => {
       await update($, staged, list => [...held.filter(one => !list.some(other => other.pull === one.pull)), ...list])
-      if (toldKey !== undefined) await update($, ciTold, now => (now === toldKey ? toldBefore : now))
+      if (told === undefined || (await read($, ciTold)) !== told.key) return
+      await update($, ciTold, () => toldBefore)
+      await update($, ciToldAt, () => toldAtBefore)
     }
-    const told = news === undefined ? [] : [news.context]
     try {
-      const result = await next({ ...e, context: [...(e.context ?? []), ...told, ...stagedContext(held, ctx.language)] })
+      const result = await next({ ...e, context: [...(e.context ?? []), ...(news === undefined ? [] : [news.context]), ...stagedContext(held, ctx.language)] })
       if (result.drop !== undefined) await putBack()
       return result
     } catch (error) {

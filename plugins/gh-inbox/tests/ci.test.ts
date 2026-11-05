@@ -303,6 +303,37 @@ describe("CI told with a prompt", () => {
     expect(contexts[1]).toBeUndefined()
   })
 
+  test("after a pick told CI afresh, what the last check found before it is not told, nor the pick's once a check catches up", JA, async ($, on) => {
+    mock.store(on, {})
+    const clock = mock.clock(on, { now: 1_000_000 })
+    const github = fakeGitHub(on)
+    const contexts = sentContexts(on)
+    github.contexts = [job(11, "test", "FAILURE")]
+    await $.command.run(CHECK)
+    await $.prompt.submit({ ...PROMPT, text: "直して" })
+    expect(contexts[0]?.[0]).toContain("1件中1件が失敗しました。")
+
+    // A new commit passes before the next check, and the pick reads it so.
+    const NEW = "fedcba9876543210fedcba9876543210fedcba98"
+    github.oid = NEW
+    github.contexts = [job(21, "test", "SUCCESS")]
+    await clock.advance(10_000)
+    await $.command.run({ ...CHECK, args: "pick" })
+    const pane = await $.ui.mount(PANE)
+    await pane.press({ key: `ci:${NEW}:done` })
+    await pane.press({ key: "stage" })
+    await $.prompt.submit({ ...PROMPT, text: "通った？" })
+    expect(contexts[1]).toHaveLength(1)
+
+    // The last check still holds the old commit's failure: older than what was told, it is not told.
+    await $.prompt.submit({ ...PROMPT, text: "続けて" })
+    expect(contexts[2]).toBeUndefined()
+    await clock.advance(61_000)
+    await $.command.run(CHECK)
+    await $.prompt.submit({ ...PROMPT, text: "続けて" })
+    expect(contexts[3]).toBeUndefined()
+  })
+
   test("it can be turned off", { options: { language: "ja", ciToClaude: false } }, async ($, on) => {
     mock.store(on, {})
     mock.clock(on, { now: 1_000_000 })
