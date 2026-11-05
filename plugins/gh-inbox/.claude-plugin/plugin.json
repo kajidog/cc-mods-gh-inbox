@@ -46,6 +46,12 @@
       "description": "Keep a line under the prompt: where the branch's pull request stands (CI, approvals, conflicts, the newest comment), or how long ago each registered repository's last event happened. /inbox tray switches between them.",
       "default": true
     },
+    "ciToClaude": {
+      "type": "boolean",
+      "title": "GitHub: Tell Claude about CI",
+      "description": "While the branch has an open pull request, the next prompt you send tells Claude how its CI turned out, once each time it has a new result: the commit it passed on, or the workflow, job and step that failed and how to read its log. Nothing is told while checks still run with none failed.",
+      "default": true
+    },
     "notifySelf": {
       "type": "boolean",
       "title": "GitHub: Notify my own activity",

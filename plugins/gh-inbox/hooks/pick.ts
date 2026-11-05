@@ -3,8 +3,9 @@
 
 import type { GhPickItem, GhPickPull, GhStaged } from "../types"
 
-import { displayName, type Nicknames, snippet } from "./events"
-import { type Json, login, object, type PullRef, pullName, parsePullUrl, text } from "./github"
+import { ciItem } from "./ci"
+import { displayName, fence, type Nicknames, snippet } from "./events"
+import { checksFields, type Json, login, object, type PullRef, parseChecks, pullName, parsePullUrl, text } from "./github"
 import { type Language, MESSAGES, type Messages, toLanguage } from "./i18n"
 import { parseRepo, type RepoRef, repoName } from "./repo-events"
 
@@ -14,6 +15,8 @@ const PULLS_LISTED = 20
 const THREADS_LISTED = 100
 const REVIEWS_LISTED = 100
 const COMMENTS_LISTED = 30
+// Annotations listed at most of a check run: where it points in the code.
+const ANNOTATIONS_LISTED = 10
 // Replies kept of a thread, the newest.
 const REPLIES_LISTED = 49
 // Lines kept of a diff hunk, those up to the line commented on: a hunk of a new file runs from its first line.
@@ -30,6 +33,7 @@ export const PICK_QUERY = `query($owner: String!, $repo: String!, $number: Int!)
         replies: comments(last: ${REPLIES_LISTED}) { totalCount nodes { id author { login } body state } } } }
       reviews(last: ${REVIEWS_LISTED}) { totalCount nodes { id author { login } state body url submittedAt commit { abbreviatedOid } } }
       comments(last: ${COMMENTS_LISTED}) { totalCount nodes { id author { login } body url createdAt } }
+      head: commits(last: 1) { nodes { commit { ${checksFields(ANNOTATIONS_LISTED)} } } }
     }
   }
 }`
@@ -140,7 +144,6 @@ export function parsePulls(answer: string, language: Language = "en"): { pulls: 
 
 export type Picked = { title: string; url: string; head: string; items: GhPickItem[]; notes: string[] }
 
-const fence = (body: string) => "`".repeat(Math.max(3, ...[...body.matchAll(/`+/g)].map(run => run[0].length + 1)))
 const HIDDEN = /<!--[\s\S]*?(?:-->|$)|!\[[^\]]*\]\([^)]*\)/g
 // Whichever comes first: something hidden, an indented block (after a blank line, as one cannot break a paragraph),
 // a closed fenced block (no backtick after a backtick fence) or a code span closed on its line.
@@ -191,11 +194,11 @@ const total = (value: unknown) => Number(object(value).totalCount) || 0
 const oid = (value: unknown) => text(object(value).abbreviatedOid)
 
 /**
- * Reads `pickArgv`'s answer: each review, its threads under it, and the
- * conversation's comments, newest first. Resolved threads are listed too, so
- * what was done about them can be read; a thread goes under the review its
- * first comment came with, its replies inside it. A pending review, which no
- * one else sees yet, is left out with its threads.
+ * Reads `pickArgv`'s answer: the head commit's CI first, then each review, its
+ * threads under it, and the conversation's comments, newest first. Resolved
+ * threads are listed too, so what was done about them can be read; a thread
+ * goes under the review its first comment came with, its replies inside it. A
+ * pending review, which no one else sees yet, is left out with its threads.
  */
 export function parsePicked(ref: PullRef, answer: string, nicknames: Nicknames, language: Language = "en"): Picked {
   const t = MESSAGES[language]
@@ -300,7 +303,16 @@ export function parsePicked(ref: PullRef, answer: string, nicknames: Nicknames, 
     ...cut(t.commentsWhat, pull.comments, COMMENTS_LISTED),
   ]
 
-  return { title: text(pull.title), url: text(pull.url), head: text(pull.headRefOid).slice(0, 7), items: [...entries.flatMap(entry => entry.items), ...orphans], notes }
+  // Named as GitHub spells it, whatever case was typed.
+  const ci = ciItem(t, parsePullUrl(text(pull.url)) ?? ref, parseChecks(nodes(pull.head)[0]?.commit))
+
+  return {
+    title: text(pull.title),
+    url: text(pull.url),
+    head: text(pull.headRefOid).slice(0, 7),
+    items: [...(ci === null ? [] : [ci]), ...entries.flatMap(entry => entry.items), ...orphans],
+    notes,
+  }
 }
 
 /** The ids `id` stands for when pressed: a review with its threads, or itself alone. */

@@ -81,7 +81,19 @@ Apart from the branch's pull request, you can register repositories and be notif
 - What is attached goes with one prompt only, never with a slash command.
 - A line comment's diff is cut to the last 15 lines up to the line commented on. HTML comments, which GitHub does not show, are left out. Diffs and reviews name the commit they are about, and the preamble names the pull request's head commit now.
 - Up to the newest 100 threads and reviews and the newest 30 conversation comments are listed. When there are more, the pane says so.
+- The list starts with the CI of the pull request's head commit (`CI ✗ 1/3 abc1234: CI / test`). Chosen, it hands Claude the commit, each failed workflow, job and step with its link, the command that reads its failed steps' log (`gh run view --job 123 --log-failed -R owner/repo`), what the check reported (up to 10 annotations), and the names of the other checks.
 - What Claude reads with the prompt is in the language set in `/config`.
+
+## Telling Claude about CI
+
+While the branch has an open pull request, each new result of its CI goes to Claude with the next prompt you send. You do not have to pick it.
+
+- Passed: the commit it passed on, and the names of the checks.
+- Failed: the commit, each failed workflow, job and step with its link, the command that reads its failed steps' log (`gh run view --job 123 --log-failed -R owner/repo`), and the checks still running or passed.
+- Nothing is told while checks still run with none failed. A result is told once in each window: the rest finishing with nothing more failed is no new result; another check failing, or a new commit, is.
+- It is what the last check saw (every 60 seconds by default). Just after switching branches, nothing is told until the new branch is checked.
+- CI picked with `/inbox pick` as it stands is not told twice.
+- To turn it off, set **Tell Claude about CI** in `/config` to `false`.
 
 ## Commands
 
@@ -144,6 +156,7 @@ on("inbox.notified", async ($, e, next) => {
 | Repositories checked | 20 | How many repositories can be registered |
 | Language | en | `en`: English / `ja`: Japanese. For notices, commands, panes, and what is handed to Claude |
 | Notify my own activity | false | Also notify your own activity |
+| Tell Claude about CI | true | Tell Claude each new result of the branch's pull request's CI with the next prompt you send ([Telling Claude about CI](#telling-claude-about-ci)) |
 | Tray | true | A line under the prompt, kept up each check. While the branch has a pull request, where it stands (`GitHub: #12 \| CI ✗ 1/3 \| 2 approvals \| conflicts \| alice: Looks good 5m ago`); otherwise, or after `/inbox tray repos`, how long ago each registered repository's last event happened (`GitHub: r 5m ago \| other 2h ago`) |
 
 <details>
@@ -154,7 +167,8 @@ on("inbox.notified", async ($, e, next) => {
 - A branch with no pull request is looked up only every 5 minutes. A merged or closed pull request is not asked about any more.
 - Each prompt you send reads the branch with `git` alone (GitHub is not asked). Only when it has changed is the new branch checked at once, so a switch shows by the next prompt rather than the next check.
 - Each registered repository costs one Events API request (and one Actions API request when `ci-failure` is chosen). They are sent with an `ETag`, so an unchanged repository does not count against the rate limit. It is never asked more often than GitHub's `X-Poll-Interval` (usually 60 seconds).
-- `/inbox pick` sends one GraphQL request as it opens. The list of pull requests and `/inbox pick 12` look up the current repository once with `gh repo view`; the list also searches once per host.
+- Telling Claude about CI asks nothing more: it uses the answer of the usual check.
+- `/inbox pick` sends one GraphQL request as it opens, the head commit's CI and its annotations included. The list of pull requests and `/inbox pick 12` look up the current repository once with `gh repo view`; the list also searches once per host.
 - `/inbox log` asks what the comments, reviews and line comments on the page it shows say now, as the page shows: one GraphQL request (one point) a page, each page once each time the log opens. The Events API tells no edit or deletion, so nothing is asked between: edits and deletions show only in the log, never as notices.
 - Answers are shared between windows. The commits of a new push (up to 5 per check), pull request titles and failed steps are asked for only when needed.
 

@@ -43,6 +43,9 @@ export function snippet(body: string, length = SNIPPET_LENGTH): string {
   return line.length > length ? `${line.slice(0, length - 1)}…` : line
 }
 
+/** A fence of backticks longer than any run of them in `body`, so `body` cannot close it. */
+export const fence = (body: string) => "`".repeat(Math.max(3, ...[...body.matchAll(/`+/g)].map(run => run[0].length + 1)))
+
 /** `path:line` of a line comment. */
 const place = (comment: Pick<ReviewComment, "path" | "line">) => `${comment.path}${comment.line === null ? "" : `:${comment.line}`}`
 

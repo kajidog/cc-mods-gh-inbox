@@ -3,6 +3,7 @@ import type { EngineInterface, Register, Timer } from "claude-code"
 
 import type { GhEvent, GhEventItem, GhPick, GhPicker, GhPickPull, GhStaged, GhWatch, Inbox, InboxNotice } from "../types"
 
+import { type Ci, CI_ITEM_PREFIX, ciForPrompt, ciKey, isResult } from "./ci"
 import { displayName, mergeSeen, newEvents, type Nicknames, plain, pullIds, snippet } from "./events"
 import { type PullRef, type PullState, parsePull, parsePullUrl, pullArgv, pullName } from "./github"
 import {
@@ -158,6 +159,8 @@ const logRepo = atom({ plugin: "gh-inbox", key: "logRepo" } as const, null as st
 /** What the log pane's comments say now, by `latestKey`, asked for as their page shows. */
 const logLatest = atom({ plugin: "gh-inbox", key: "logLatest" } as const, {} as Record<string, Latest>)
 const pickUnfolded = atom({ plugin: "gh-inbox", key: "pickUnfolded" } as const, [] as string[])
+/** How CI of the branch's pull request stood when Claude was last told of it in this session: kept across a reload. */
+const ciTold = atom({ plugin: "gh-inbox", key: "ciTold" } as const, null as string | null)
 
 type Found = {
   branch: string
@@ -178,6 +181,8 @@ type Context = {
   notifySelf: boolean
   /** Whether the line under the prompt tells each repository's last event. */
   tray: boolean
+  /** Whether a prompt the person sends tells Claude of a result of the branch's pull request's CI it was not told of. */
+  ciToClaude: boolean
   language: Language
   /** What the mod says, in `language`. */
   t: Messages
@@ -207,6 +212,8 @@ type Context = {
   askedLatest: Set<string>
   /** How many times the log has opened: an answer asked for at an opening that is no longer the last is not shown. */
   logOpenings: number
+  /** The open pull request of the branch and its newest commit's CI, as the last check that read it found them. */
+  ci: { branch: string; ref: PullRef; title: string; url: string; ci: Ci } | undefined
 }
 
 const pullKey = (ref: PullRef) => `${ref.host}/${pullName(ref)}`
@@ -486,6 +493,7 @@ async function checkPull($: EngineInterface, ctx: Context, checked: Checked, isF
     ctx.branch = branch
     if (branch === null) {
       ctx.found = undefined
+      ctx.ci = undefined
       await update($, watch, () => ({ branch: null, pull: null, title: null, url: null, state: null, checkedAt: null, error: null, status: null }))
       return
     }
@@ -500,12 +508,17 @@ async function checkPull($: EngineInterface, ctx: Context, checked: Checked, isF
     }
     const ref = ctx.found.ref
     if (ref === null) {
+      ctx.ci = undefined
       await update($, watch, () => ({ branch, pull: null, title: null, url: null, state: null, checkedAt: now, error: null, status: null }))
       return
     }
-    if (ctx.found.isDone) return
+    if (ctx.found.isDone) {
+      ctx.ci = undefined
+      return
+    }
 
     const pull = await fetchPull($, ctx, ref, now)
+    ctx.ci = pull.state === "OPEN" ? { branch, ref, title: pull.title, url: pull.url, ci: { oid: pull.head, checks: pull.checks, total: pull.checks.length } } : undefined
 
     // Each session keeps its own seen ids, so every session lists every notice from its start.
     // Those a registered repository's notices took count too, so nothing is notified twice.
@@ -1055,6 +1068,20 @@ async function hereRepo($: EngineInterface) {
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
+/**
+ * What a prompt tells Claude of the branch's pull request's CI, unasked: a result it was not told of in
+ * this session, `key` saying how CI stood. Not while the rest still run with none failed, nor once the
+ * branch is not the one last checked: that one's CI goes with a prompt after it is checked.
+ */
+async function ciNews($: EngineInterface, ctx: Context): Promise<{ key: string; context: string } | undefined> {
+  const watched = ctx.ci
+  const key = watched === undefined ? null : ciKey(watched.ci)
+  if (watched === undefined || key === null || !isResult(key) || key === (await read($, ciTold))) return undefined
+  if ((await currentBranch($).catch(() => null)) !== watched.branch) return undefined
+
+  return { key, context: ciForPrompt(ctx.t, watched.ref, watched.title, watched.url, watched.ci) }
+}
+
 /** Shows what the pull request holds now in the pick pane, what is staged from it chosen already. */
 async function loadItems($: EngineInterface, ctx: Context, ref: PullRef) {
   ctx.picking += 1
@@ -1192,6 +1219,7 @@ export const register: Register = (on, options) => {
     channel: String(options.channel),
     notifySelf: options.notifySelf === true,
     tray: options.tray !== false,
+    ciToClaude: options.ciToClaude !== false,
     language,
     t,
     found: undefined,
@@ -1209,6 +1237,7 @@ export const register: Register = (on, options) => {
     isEnded: false,
     askedLatest: new Set(),
     logOpenings: 0,
+    ci: undefined,
   }
   let timer: Timer | undefined
 
@@ -1263,7 +1292,7 @@ export const register: Register = (on, options) => {
   on("prompt.submit", async ($, e, next) => {
     void touch($, ctx, true).catch(() => undefined)
     void followBranch($, ctx).catch(() => undefined)
-    // What is staged goes with the next prompt the person sends, not with a command or a prompt of a plugin's.
+    // What is staged, and CI's news, go with the next prompt the person sends, not with a command or a prompt of a plugin's.
     const isPersons = (e.origin.kind === "composer" || e.origin.kind === "bridge") && e.command === undefined && e.isMeta !== true
     if (!isPersons) return next(e)
     // Taken at once, so a second prompt sent meanwhile does not carry it too; put back when this one does not go.
@@ -1272,10 +1301,23 @@ export const register: Register = (on, options) => {
       held = list
       return []
     })
-    if (held.length === 0) return next(e)
-    const putBack = () => update($, staged, list => [...held.filter(one => !list.some(other => other.pull === one.pull)), ...list])
+    const news = ctx.ciToClaude ? await ciNews($, ctx).catch(() => undefined) : undefined
+    if (held.length === 0 && news === undefined) return next(e)
+    let toldBefore: string | null = null
+    if (news !== undefined)
+      await update($, ciTold, before => {
+        toldBefore = before
+        return news.key
+      })
+    const putBack = async () => {
+      await update($, staged, list => [...held.filter(one => !list.some(other => other.pull === one.pull)), ...list])
+      if (news !== undefined) await update($, ciTold, now => (now === news.key ? toldBefore : now))
+    }
+    // CI picked as it stands now goes once, as picked.
+    const isPicked = news !== undefined && held.some(one => one.items.some(item => item.id === `${CI_ITEM_PREFIX}${news.key}`))
+    const told = news === undefined || isPicked ? [] : [news.context]
     try {
-      const result = await next({ ...e, context: [...(e.context ?? []), ...stagedContext(held, ctx.language)] })
+      const result = await next({ ...e, context: [...(e.context ?? []), ...told, ...stagedContext(held, ctx.language)] })
       if (result.drop !== undefined) await putBack()
       return result
     } catch (error) {

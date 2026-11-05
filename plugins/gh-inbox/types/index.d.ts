@@ -87,7 +87,7 @@ export type GhPickPull = {
 
 /** One thing of a pull request the person can hand to Claude: a review, a thread of line comments, a comment. */
 export type GhPickItem = {
-  /** GitHub's node id. */
+  /** GitHub's node id; for the head commit's CI, `ci:` and how it stood (its commit, what failed). */
   id: string
   /** The line the pane shows. */
   label: string
@@ -206,6 +206,8 @@ declare module "claude-code" {
       >
       /** The pick pane's items unfolded to say in full what they say, by id. */
       pickUnfolded: string[]
+      /** How CI of the branch's pull request stood when Claude was last told of it in this session (`ciKey`); null before. */
+      ciTold: string | null
     }
   }
 }

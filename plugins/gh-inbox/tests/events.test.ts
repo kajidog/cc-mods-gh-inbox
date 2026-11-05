@@ -18,6 +18,7 @@ function pullWith(changes: Partial<Pull>): Pull {
     comments: [],
     reviews: [],
     commits: [],
+    head: "",
     checks: [],
     ciState: null,
     mergeable: "UNKNOWN",
@@ -26,6 +27,21 @@ function pullWith(changes: Partial<Pull>): Pull {
     ...changes,
   }
 }
+
+/** A check run of GitHub Actions, as the newest commit's checks list it. */
+const run = (id: string, name: string, failedStep: string | null) => ({
+  id,
+  name,
+  isFailed: failedStep !== null,
+  failedStep,
+  url: "",
+  isPending: false,
+  conclusion: failedStep === null ? "SUCCESS" : "FAILURE",
+  actions: null,
+  summary: "",
+  annotations: [],
+  annotationCount: 0,
+})
 
 const options = { nicknames: { "long-reviewer-name": "レビ" }, notifySelf: false, language: "ja" } as const
 const texts = (pull: Pull, seen: string[] = []) => newEvents(pull, new Set(seen), options).map(event => event.text)
@@ -100,8 +116,8 @@ describe("newEvents", () => {
   test("a failed check is notified once, with its failed step", async () => {
     const pull = pullWith({
       checks: [
-        { id: "run:1", name: "CI / test", isFailed: true, failedStep: "Run npm test", url: "", isPending: false },
-        { id: "run:2", name: "CI / lint", isFailed: false, failedStep: null, url: "", isPending: false },
+        run("run:1", "CI / test", "Run npm test"),
+        run("run:2", "CI / lint", null),
       ],
     })
     expect(texts(pull)).toEqual(["CI / testのCIが失敗しました。Run npm test"])
@@ -195,7 +211,7 @@ test("parsePull reads checks of the newest commit", async () => {
   }
   const pull = parsePull(ref, JSON.stringify(answer))
   expect(pull.commits[0]?.author).toBe("N")
-  expect(pull.checks).toEqual([{ id: "run:5", name: "CI / test", isFailed: true, failedStep: "Run tests", url: "", isPending: false }])
+  expect(pull.checks).toEqual([{ ...run("run:5", "CI / test", "Run tests"), actions: null }])
   expect(() => parsePull(ref, JSON.stringify({ errors: [{ message: "Bad credentials" }] }))).toThrow("Bad credentials")
 })
 
@@ -211,7 +227,7 @@ describe("newEvents in English, the default", () => {
       comments: [{ id: "c1", author: null, body: "hi", at: "2026-01-01T00:00:00Z", url: "" }],
       reviews: [review("1", "APPROVED", "LGTM", []), review("2", "CHANGES_REQUESTED", "Please fix"), review("3", "COMMENTED", ""), review("4", "COMMENTED", "Notes", [inline, inline])],
       commits: [commit("1", "a"), commit("2", "b"), commit("3", "c"), commit("4", "d")],
-      checks: [{ id: "run:1", name: "CI / test", isFailed: true, failedStep: "Run npm test", url: "", isPending: false }],
+      checks: [run("run:1", "CI / test", "Run npm test")],
     })
     expect(told(pull)).toEqual([
       "someone commented: hi",
