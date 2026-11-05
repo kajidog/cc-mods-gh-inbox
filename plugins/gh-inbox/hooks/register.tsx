@@ -30,6 +30,7 @@ import {
   unheld,
 } from "./history"
 import { type Language, MESSAGES, type Messages, splitNotice, toLanguage } from "./i18n"
+import { type Latest, latestArgv, latestKey, latestWanted, parseLatest, withLatest } from "./latest"
 import {
   CONTEXT_LIMIT,
   idsOf,
@@ -154,6 +155,8 @@ const staged = atom({ plugin: "gh-inbox", key: "staged" } as const, [] as GhStag
 const logPage = atom({ plugin: "gh-inbox", key: "logPage" } as const, 0)
 const logUnfolded = atom({ plugin: "gh-inbox", key: "logUnfolded" } as const, [] as string[])
 const logRepo = atom({ plugin: "gh-inbox", key: "logRepo" } as const, null as string | null)
+/** What the log pane's comments say now, by `latestKey`, asked for as their page shows. */
+const logLatest = atom({ plugin: "gh-inbox", key: "logLatest" } as const, {} as Record<string, Latest>)
 const pickUnfolded = atom({ plugin: "gh-inbox", key: "pickUnfolded" } as const, [] as string[])
 
 type Found = {
@@ -200,6 +203,8 @@ type Context = {
   picking: number
   /** Whether the session has ended: a check still under way then does not mark it alive again. */
   isEnded: boolean
+  /** The `latestKey`s the log pane has asked for since it opened, answered or not: each is asked once an opening. */
+  askedLatest: Set<string>
 }
 
 const pullKey = (ref: PullRef) => `${ref.host}/${pullName(ref)}`
@@ -379,6 +384,26 @@ async function readHistory($: EngineInterface) {
     if (key.startsWith(HISTORY_PREFIX)) histories.push(toSessionHistory(await $.store.get(key))?.events ?? [])
 
   return mergeHistories(histories)
+}
+
+/**
+ * Asks what the comments of `events` (the log pane's page) say now, those not asked for since the pane opened,
+ * one request a host; the pane shows them edited or deleted as the answer comes. A failed request is let be.
+ */
+async function lookUpLatest($: EngineInterface, ctx: Context, events: readonly GhEvent[]) {
+  for (const [host, ids] of latestWanted(events, ctx.askedLatest)) {
+    for (const id of ids) ctx.askedLatest.add(`${host}|${id}`)
+    const run = await $.process.run(latestArgv(host, ids)).catch(() => undefined)
+    // A comment deleted fails the request, but the answer still holds the others.
+    let latest: Map<string, Latest>
+    try {
+      latest = parseLatest(host, ids, run?.stdout ?? "")
+    } catch {
+      $.ui.log(`gh-inbox: comments of ${host}: ${firstLine(run?.stderr ?? "")}`, { to: "debug" })
+      continue
+    }
+    if (latest.size > 0) await update($, logLatest, held => ({ ...held, ...Object.fromEntries(latest) }))
+  }
 }
 
 /** The repositories the log keeps notices of, named by the registered repositories' short names where it can. */
@@ -1178,6 +1203,7 @@ export const register: Register = (on, options) => {
     toggling: Promise.resolve(),
     picking: 0,
     isEnded: false,
+    askedLatest: new Set(),
   }
   let timer: Timer | undefined
 
@@ -1280,6 +1306,9 @@ export const register: Register = (on, options) => {
         await update($, logPage, () => 0)
         await update($, logUnfolded, () => [])
         await update($, logRepo, () => narrowed?.repo ?? null)
+        // What the comments say now is asked for afresh each time the log opens.
+        await update($, logLatest, () => ({}))
+        ctx.askedLatest.clear()
         if (!asText && (await $.ui.open({ id: LOG_PANE, title: t.logTitle, focus: true })).isPlaced)
           return { text: t.logOpened(all.length) }
         const list = latest(all, LOG_SHOWN)
@@ -1421,6 +1450,8 @@ export const register: Register = (on, options) => {
     const shown = list.slice(page * LOG_PAGE, (page + 1) * LOG_PAGE)
     const now = await $.clock.now()
     const unfolded = await read($, logUnfolded)
+    const latestOf = await read($, logLatest)
+    void lookUpLatest($, ctx, shown)
     const turn = (to: number) => () => void update($, logPage, () => to)
     const narrow = (to: string | null) => async () => {
       await update($, logRepo, () => to)
@@ -1452,9 +1483,22 @@ export const register: Register = (on, options) => {
         <Text dimColor>{list.length === 0 ? t.noLog : t.logRange(page * LOG_PAGE + 1, page * LOG_PAGE + shown.length, list.length)}</Text>
         {shown.map((event, index) => {
           const at = Date.parse(event.at)
-          const row = { text: plain(event.text), url: plain(event.url), when: Number.isNaN(at) ? "" : t.paren(ago(t, now - at)) }
+          const latest = latestOf[latestKey(event) ?? ""]
+          const editedAt = latest?.state === "edited" ? Date.parse(latest.editedAt) : Number.NaN
+          // Beside when it happened, whether the comment was edited (and when) or deleted since.
+          const remarks = [
+            ...(Number.isNaN(at) ? [] : [ago(t, now - at)]),
+            ...(latest?.state === "deleted" ? [t.logDeleted] : []),
+            ...(latest?.state === "edited" ? [t.logEdited(Number.isNaN(editedAt) ? "" : ago(t, now - editedAt)).trim()] : []),
+          ]
+          const row = { text: plain(event.text), url: plain(event.url), when: remarks.length === 0 ? "" : t.paren(remarks.join(t.listSeparator)) }
           const key = `${event.pull}|${event.id}`
-          const full = saidInFull(event)
+          // An edited comment unfolds to what it says now, however short.
+          const said = saidInFull(event)
+          const full =
+            latest?.state === "edited"
+              ? withLatest(event, said ?? (Array.isArray(event.items) ? event.items : []), latest).filter(item => item.body.trim() !== "")
+              : said
           const isOpen = full !== undefined && unfolded.includes(key)
           // A row with more to say than its line unfolds by its mark, or the digit of its place on the page.
           const mark =
