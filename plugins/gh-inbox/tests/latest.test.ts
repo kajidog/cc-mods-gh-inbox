@@ -107,3 +107,15 @@ test("a review told with no words that has some now is edited; a notice kept wit
   expect(changeOf({ url: "r", text: "a approved: Ship it", items: [] }, now)).toBeUndefined()
   expect(changeOf({ url: "r", text: "a approved.", items: [] }, { ...now, body: "" })).toBeUndefined()
 })
+
+test("a comment kept as nothing (an HTML comment alone) that says something now is edited; one cut for room is not told apart", async () => {
+  const now: Latest = { state: "found", body: "Now with words", editedAt: "t" }
+  expect(changeOf({ url: "u", text: "a commented.", items: [{ body: "", url: "u" }] }, now)).toMatchObject({
+    editedAt: "t",
+    items: [{ body: "Now with words", url: "u", note: "edited" }],
+  })
+  const full = "x".repeat(1999)
+  const review: Latest = { state: "found", body: full, editedAt: null, comments: [{ url: "c", body: "Changed", editedAt: "t" }], isComplete: true }
+  const told = { url: "r", text: "a reviewed", items: [{ body: `${"x".repeat(1998)}…`, url: "r" }, { body: "", path: "a.ts", line: 1, url: "c" }] }
+  expect(changeOf(told, review)).toBeUndefined()
+})

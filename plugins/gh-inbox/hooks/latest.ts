@@ -4,6 +4,7 @@ import type { GhEvent, GhEventItem } from "../types"
 
 import { snippet } from "./events"
 import { object, text } from "./github"
+import { BODY_KEPT } from "./history"
 
 /** A line comment of a review, as GitHub answers it now. */
 export type LatestComment = { url: string; body: string; editedAt: string | null }
@@ -111,10 +112,11 @@ const asKept = (body: string) => body.replace(/<!--[\s\S]*?-->/g, "").trim()
 
 /**
  * Whether `now` says other than `kept` (what the log kept, cut with `…` where it was long). The log keeps what was
- * said when it was told, so an edit made before that is no change; a body the log kept nothing of is not told apart.
+ * said when it was told, so an edit made before that is no change. `isCut` is a body the log had no room left for,
+ * kept as nothing: not told apart; one kept as nothing with room left said nothing (an HTML comment alone).
  */
-function differs(kept: string | undefined, now: string): boolean {
-  if (kept === undefined || kept === "") return false
+function differs(kept: string | undefined, now: string, isCut: boolean): boolean {
+  if (kept === undefined || (kept === "" && isCut)) return false
   const said = asKept(now)
   return kept.endsWith("…") ? !said.startsWith(kept.slice(0, -1)) : said !== kept
 }
@@ -133,9 +135,13 @@ export function changeOf(event: Pick<GhEvent, "url" | "items" | "text">, latest:
   let editedAt: string | null = null
   let isPartDeleted = false
   const comments = new Map((latest.comments ?? []).map(comment => [comment.url, comment]))
+  // `keptItems` spends `BODY_KEPT` characters in order: a body kept as nothing after the last one was spent was cut.
+  let spent = 0
   const items: LatestItem[] = kept.map(item => {
+    const isCut = spent >= BODY_KEPT - 1
+    spent += typeof item.body === "string" ? item.body.length : 0
     if (item.url === event.url) {
-      if (!differs(item.body, latest.body)) return item
+      if (!differs(item.body, latest.body, isCut)) return item
       editedAt = newer(editedAt, latest.editedAt)
       return { ...item, body: asKept(latest.body), note: "edited" }
     }
@@ -147,7 +153,7 @@ export function changeOf(event: Pick<GhEvent, "url" | "items" | "text">, latest:
       isPartDeleted = true
       return { ...item, note: "deleted" }
     }
-    if (!differs(item.body, comment.body)) return item
+    if (!differs(item.body, comment.body, isCut)) return item
     editedAt = newer(editedAt, comment.editedAt)
     return { ...item, body: asKept(comment.body), note: "edited" }
   })
