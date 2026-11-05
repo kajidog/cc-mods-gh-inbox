@@ -10,6 +10,13 @@ const REF = { host: "github.com", owner: "o", repo: "r", number: 12 }
 const OID = "0123456789abcdef0123456789abcdef01234567"
 const CHECK = { command: "inbox", args: "check", origin: { kind: "composer" }, presentation: { isFullscreen: false, columns: 120 } } as const
 const PROMPT = { wait: false, origin: { kind: "composer" } } as const
+const PANE = {
+  plugin: "gh-inbox",
+  surface: "terminal",
+  component: "Pane",
+  requestId: "gh-inbox-pick",
+  props: { title: "", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 20 }, view: {} },
+} as const
 
 /** A job of GitHub Actions' run 900, as the commit's checks list it: running while `conclusion` is null. */
 const job = (id: number, name: string, conclusion: string | null, extra: Record<string, unknown> = {}) => ({
@@ -95,6 +102,21 @@ describe("what Claude reads of CI", () => {
     expect(isResult(key([job(12, "lint", null)]) ?? "")).toBe(false)
     expect(isResult(key([job(11, "test", "FAILURE"), job(12, "lint", null)]) ?? "")).toBe(true)
     expect(isResult(key([job(13, "build", "SUCCESS")]) ?? "")).toBe(true)
+  })
+
+  test("a list cut short is done only when GitHub's rollup of every check says it passed", () => {
+    const cut = (state: string) => ({ ...parseChecks(commit([job(13, "build", "SUCCESS")])), state, total: 150 })
+    expect(ciKey(cut("PENDING"))).toBe(`${OID}:running`)
+    expect(ciKey(cut("FAILURE"))).toBe(`${OID}:running`)
+    expect(ciKey(cut("SUCCESS"))).toBe(`${OID}:done`)
+    expect(ciKey({ ...parseChecks(commit([job(11, "test", "FAILURE")])), state: "FAILURE", total: 150 })).toBe(`${OID}:failed:run:11`)
+    expect(ciContext(MESSAGES.en, REF, cut("PENDING"))).toContain(
+      "Only 1 of the 150 checks are listed, and none of them failed or still runs; GitHub rolls up all of them as pending.",
+    )
+    expect(ciContext(MESSAGES.ja, REF, cut("FAILURE"))).toContain("150件中1件だけを出しています。そのどれも失敗・実行中ではありませんが、GitHub は全体を「失敗」としています。")
+    expect(ciContext(MESSAGES.en, REF, cut("SUCCESS"))).toContain("CI passed: none of its 150 checks failed.")
+    expect(ciContext(MESSAGES.en, REF, cut("SUCCESS"))).toContain("(149 more checks not listed)")
+    expect(ciItem(MESSAGES.en, REF, cut("PENDING"))?.label).toBe("CI … 1/150 0123456")
   })
 
   test("the pick item tells how CI stands at the head commit, what failed named", () => {
@@ -241,13 +263,7 @@ describe("CI told with a prompt", () => {
 
     await $.command.run(CHECK)
     await $.command.run({ ...CHECK, args: "pick" })
-    const pane = await $.ui.mount({
-      plugin: "gh-inbox",
-      surface: "terminal",
-      component: "Pane",
-      requestId: "gh-inbox-pick",
-      props: { title: "", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 20 }, view: {} },
-    })
+    const pane = await $.ui.mount(PANE)
     const key = `ci:${OID}:failed:run:11`
     expect((await pane.find({ key }))?.props.label).toBe("[ ] CI ✗ 1/2 0123456: CI / test")
     await pane.press({ key })
@@ -259,6 +275,30 @@ describe("CI told with a prompt", () => {
     expect(picked).toContain("src/a.ts:12 failure: Type 'string' is not assignable to type 'number'.")
     expect(picked).not.toContain("gh-inbox mod が添えた")
     // Told by the pick, it is not told again.
+    await $.prompt.submit({ ...PROMPT, text: "続けて" })
+    expect(contexts[1]).toBeUndefined()
+  })
+
+  test("CI picked newer than the last check found counts as told, not told again once a check catches up", JA, async ($, on) => {
+    mock.store(on, {})
+    const clock = mock.clock(on, { now: 1_000_000 })
+    const github = fakeGitHub(on)
+    const contexts = sentContexts(on)
+    github.contexts = [job(12, "lint", null), job(13, "build", "SUCCESS")]
+    await $.command.run(CHECK)
+
+    // CI finishes before the next check, and the pick reads it so.
+    github.contexts = [job(12, "lint", "SUCCESS"), job(13, "build", "SUCCESS")]
+    await $.command.run({ ...CHECK, args: "pick" })
+    const pane = await $.ui.mount(PANE)
+    await pane.press({ key: `ci:${OID}:done` })
+    await pane.press({ key: "stage" })
+    await $.prompt.submit({ ...PROMPT, text: "通った？" })
+    expect(contexts[0]).toHaveLength(1)
+    expect(contexts[0]?.[0]).not.toContain("gh-inbox mod が添えた")
+
+    await clock.advance(61_000)
+    await $.command.run(CHECK)
     await $.prompt.submit({ ...PROMPT, text: "続けて" })
     expect(contexts[1]).toBeUndefined()
   })

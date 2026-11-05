@@ -143,6 +143,7 @@ describe("one notice for what the pull request and the repository both see", () 
     closedBy: null,
     closedAt: "2026-10-16T02:49:46Z",
     head: "",
+    checksTotal: 0,
     ciState: null,
     mergeable: "UNKNOWN",
     reviewDecision: null,

@@ -13,8 +13,8 @@ const SAID_LENGTH = 500
 /** The id a pick item of CI has, before how CI stands. */
 export const CI_ITEM_PREFIX = "ci:"
 
-/** A commit's checks: `total` counts those not listed too. */
-export type Ci = { oid: string; checks: readonly Check[]; total: number }
+/** A commit's checks: `state` is GitHub's rollup of every one of them, `total` counts those not listed too. */
+export type Ci = { oid: string; state: string | null; checks: readonly Check[]; total: number }
 
 function groups(checks: readonly Check[]) {
   const failed = checks.filter(check => check.isFailed)
@@ -25,14 +25,27 @@ function groups(checks: readonly Check[]) {
 }
 
 /**
+ * Whether the commit's CI failed, still runs or is done; null with no checks. Where the list was cut
+ * short, it is done only when GitHub's rollup of every check says it passed: one not listed may still
+ * run, or have failed.
+ */
+function standing(ci: Ci): "failed" | "running" | "done" | null {
+  if (ci.oid === "" || ci.checks.length === 0) return null
+  const { failed, running } = groups(ci.checks)
+  if (failed.length > 0) return "failed"
+  if (running.length > 0 || (ci.total > ci.checks.length && ci.state !== "SUCCESS")) return "running"
+  return "done"
+}
+
+/**
  * How the commit's CI stands, as a key that changes with it: the checks that failed, or whether
  * the rest still run; null with no checks to tell of.
  */
 export function ciKey(ci: Ci): string | null {
-  if (ci.oid === "" || ci.checks.length === 0) return null
-  const { failed, running } = groups(ci.checks)
-  if (failed.length > 0) return `${ci.oid}:failed:${failed.map(check => check.id).sort().join(",")}`
-  return `${ci.oid}:${running.length > 0 ? "running" : "done"}`
+  const stands = standing(ci)
+  if (stands === null) return null
+  if (stands !== "failed") return `${ci.oid}:${stands}`
+  return `${ci.oid}:failed:${groups(ci.checks).failed.map(check => check.id).sort().join(",")}`
 }
 
 /** Whether CI standing at `key` is a result: something failed, or every check is done. Not while the rest run with none failed. */
@@ -82,7 +95,10 @@ function failedLines(t: Messages, ref: PullRef, check: Check) {
  */
 export function ciContext(t: Messages, ref: PullRef, ci: Ci): string {
   const { failed, running, passed, other } = groups(ci.checks)
-  const lines = [t.ciHeading(ci.oid), t.ciSummary(failed.length, running.length, ci.checks.length)]
+  // None listed fails or runs, but the list is cut short and GitHub's rollup does not say all passed.
+  const isUnsure = standing(ci) === "running" && running.length === 0
+  const summary = isUnsure ? t.ciSummaryCut(ci.checks.length, ci.total, t.conclusion(ci.state ?? "UNKNOWN")) : t.ciSummary(failed.length, running.length, ci.total)
+  const lines = [t.ciHeading(ci.oid), summary]
   for (const check of failed) lines.push("", ...failedLines(t, ref, check))
   const rest = [
     ...(running.length === 0 ? [] : [`${t.ciGroup(t.ciGroups.running, running.length)}: ${names(t, running, false)}`]),
@@ -98,10 +114,11 @@ export function ciContext(t: Messages, ref: PullRef, ci: Ci): string {
 /** The pick pane's item of the head commit's CI, its id telling how CI stood; null with no checks. */
 export function ciItem(t: Messages, ref: PullRef, ci: Ci): GhPickItem | null {
   const key = ciKey(ci)
-  if (key === null) return null
+  const stands = standing(ci)
+  if (key === null || stands === null) return null
   const { failed, running } = groups(ci.checks)
-  const total = ci.checks.length
-  const status = failed.length > 0 ? t.ciFailing(failed.length, total) : running.length > 0 ? t.ciRunning(total - running.length, total) : t.ciPassed
+  const status =
+    stands === "failed" ? t.ciFailing(failed.length, ci.total) : stands === "running" ? t.ciRunning(ci.checks.length - running.length, ci.total) : t.ciPassed
 
   return {
     id: `${CI_ITEM_PREFIX}${key}`,

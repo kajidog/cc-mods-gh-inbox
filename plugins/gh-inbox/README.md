@@ -92,7 +92,8 @@ While the branch has an open pull request, each new result of its CI goes to Cla
 - Failed: the commit, each failed workflow, job and step with its link, the command that reads its failed steps' log (`gh run view --job 123 --log-failed -R owner/repo`), and the checks still running or passed.
 - Nothing is told while checks still run with none failed. A result is told once in each window: the rest finishing with nothing more failed is no new result; another check failing, or a new commit, is.
 - It is what the last check saw (every 60 seconds by default). Just after switching branches, nothing is told until the new branch is checked.
-- CI picked with `/inbox pick` as it stands is not told twice.
+- CI of the branch's pull request picked with `/inbox pick` goes in its place, and counts as told: it is not told again. A newer result than the one picked goes with a later prompt.
+- A commit with more than 100 checks is read as passed only when GitHub's rollup of all of them says so.
 - To turn it off, set **Tell Claude about CI** in `/config` to `false`.
 
 ## Commands

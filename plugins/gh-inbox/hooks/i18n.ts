@@ -301,6 +301,8 @@ const en = {
       : running > 0
         ? `${running} of ${count(total, "check")} still running; none failed so far.`
         : `CI passed: ${total === 1 ? "its one check did not fail" : `none of its ${total} checks failed`}.`,
+  ciSummaryCut: (listed: number, total: number, state: string) =>
+    `Only ${listed} of the ${total} checks are listed, and none of them failed or still runs; GitHub rolls up all of them as ${state}.`,
   ciGroups: { failed: "Failed", running: "Still running", passed: "Passed", other: "Other" },
   ciGroup: (name: string, n: number) => `${name} (${n})`,
   ciStep: (step: string) => `, at step "${step}"`,
@@ -339,6 +341,9 @@ const CONCLUSIONS_JA: Record<string, string> = {
   NEUTRAL: "中立",
   ACTION_REQUIRED: "対応が必要",
   STALE: "古い",
+  PENDING: "実行中",
+  EXPECTED: "待ち",
+  UNKNOWN: "不明",
 }
 
 const ja: Messages = {
@@ -536,6 +541,7 @@ const ja: Messages = {
       : running > 0
         ? `${total}件中${running}件がまだ実行中です。今のところ失敗はありません。`
         : `CI は通っています。${total}件とも失敗はありません。`,
+  ciSummaryCut: (listed, total, state) => `${total}件中${listed}件だけを出しています。そのどれも失敗・実行中ではありませんが、GitHub は全体を「${state}」としています。`,
   ciGroups: { failed: "失敗", running: "実行中", passed: "成功", other: "その他" },
   ciGroup: (name, n) => `${name}（${n}件）`,
   ciStep: step => `、ステップ「${step}」`,

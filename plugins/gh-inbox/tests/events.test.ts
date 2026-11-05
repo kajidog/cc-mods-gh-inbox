@@ -20,6 +20,7 @@ function pullWith(changes: Partial<Pull>): Pull {
     commits: [],
     head: "",
     checks: [],
+    checksTotal: 0,
     ciState: null,
     mergeable: "UNKNOWN",
     reviewDecision: null,

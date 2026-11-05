@@ -518,7 +518,10 @@ async function checkPull($: EngineInterface, ctx: Context, checked: Checked, isF
     }
 
     const pull = await fetchPull($, ctx, ref, now)
-    ctx.ci = pull.state === "OPEN" ? { branch, ref, title: pull.title, url: pull.url, ci: { oid: pull.head, checks: pull.checks, total: pull.checks.length } } : undefined
+    ctx.ci =
+      pull.state === "OPEN"
+        ? { branch, ref, title: pull.title, url: pull.url, ci: { oid: pull.head, state: pull.ciState, checks: pull.checks, total: pull.checksTotal } }
+        : undefined
 
     // Each session keeps its own seen ids, so every session lists every notice from its start.
     // Those a registered repository's notices took count too, so nothing is notified twice.
@@ -1082,6 +1085,14 @@ async function ciNews($: EngineInterface, ctx: Context): Promise<{ key: string; 
   return { key, context: ciForPrompt(ctx.t, watched.ref, watched.title, watched.url, watched.ci) }
 }
 
+/** How CI of the branch's pull request (`ref`) stood as it was picked to go with a prompt (its `ciKey`); undefined where none was. */
+function pickedCi(held: readonly GhStaged[], ref: PullRef | null | undefined): string | undefined {
+  if (ref === null || ref === undefined) return undefined
+  const key = pullKey(ref).toLowerCase()
+  const item = held.find(one => one.pull.toLowerCase() === key)?.items.find(one => one.id.startsWith(CI_ITEM_PREFIX))
+  return item?.id.slice(CI_ITEM_PREFIX.length)
+}
+
 /** Shows what the pull request holds now in the pick pane, what is staged from it chosen already. */
 async function loadItems($: EngineInterface, ctx: Context, ref: PullRef) {
   ctx.picking += 1
@@ -1301,21 +1312,23 @@ export const register: Register = (on, options) => {
       held = list
       return []
     })
-    const news = ctx.ciToClaude ? await ciNews($, ctx).catch(() => undefined) : undefined
+    // CI of the branch's pull request picked goes as picked, in place of what the last check found, and counts as told:
+    // the pick may have read a result newer than that check's, which is not told again once a check catches up.
+    const picked = ctx.ciToClaude ? pickedCi(held, ctx.found?.ref) : undefined
+    const news = ctx.ciToClaude && picked === undefined ? await ciNews($, ctx).catch(() => undefined) : undefined
+    const toldKey = picked ?? news?.key
     if (held.length === 0 && news === undefined) return next(e)
     let toldBefore: string | null = null
-    if (news !== undefined)
+    if (toldKey !== undefined)
       await update($, ciTold, before => {
         toldBefore = before
-        return news.key
+        return toldKey
       })
     const putBack = async () => {
       await update($, staged, list => [...held.filter(one => !list.some(other => other.pull === one.pull)), ...list])
-      if (news !== undefined) await update($, ciTold, now => (now === news.key ? toldBefore : now))
+      if (toldKey !== undefined) await update($, ciTold, now => (now === toldKey ? toldBefore : now))
     }
-    // CI picked as it stands now goes once, as picked.
-    const isPicked = news !== undefined && held.some(one => one.items.some(item => item.id === `${CI_ITEM_PREFIX}${news.key}`))
-    const told = news === undefined || isPicked ? [] : [news.context]
+    const told = news === undefined ? [] : [news.context]
     try {
       const result = await next({ ...e, context: [...(e.context ?? []), ...told, ...stagedContext(held, ctx.language)] })
       if (result.drop !== undefined) await putBack()

@@ -71,6 +71,8 @@ export type Pull = {
   head: string
   /** The checks of the newest commit. */
   checks: Check[]
+  /** How many checks the newest commit has, those not listed in `checks` too. */
+  checksTotal: number
   /** The newest commit's checks together, as GitHub rolls them up; null with none. */
   ciState: string | null
   /** Whether it merges into its base cleanly; UNKNOWN while GitHub works it out. */
@@ -291,6 +293,7 @@ export function parsePull(ref: PullRef, answer: string, language: Language = "en
     commits,
     head: latest.oid,
     checks: latest.checks,
+    checksTotal: latest.total,
     ciState: latest.state,
     mergeable: pull.mergeable === "MERGEABLE" || pull.mergeable === "CONFLICTING" ? pull.mergeable : "UNKNOWN",
     reviewDecision: text(pull.reviewDecision) || null,
