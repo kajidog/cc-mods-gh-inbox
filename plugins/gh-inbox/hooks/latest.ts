@@ -111,14 +111,22 @@ export function parseLatest(host: string, ids: readonly string[], answer: string
 const asKept = (body: string) => body.replace(/<!--[\s\S]*?-->/g, "").trim()
 
 /**
- * Whether `now` says other than `kept` (what the log kept, cut with `…` where it was long). The log keeps what was
- * said when it was told, so an edit made before that is no change. `isCut` is a body the log had no room left for,
- * kept as nothing: not told apart; one kept as nothing with room left said nothing (an HTML comment alone).
+ * How `keptItems` kept a body with `left` characters of `BODY_KEPT` still to spend: `whole`, `cut` (its start and
+ * `…`, the rest spent), or `none` (no room was left for any of it).
  */
-function differs(kept: string | undefined, now: string, isCut: boolean): boolean {
-  if (kept === undefined || (kept === "" && isCut)) return false
+function howKept(body: string, left: number): "whole" | "cut" | "none" {
+  if (left <= 1 && body === "") return "none"
+  return body.length === left && body.endsWith("…") ? "cut" : "whole"
+}
+
+/**
+ * Whether `now` says other than `kept`. The log keeps what was said when it was told, so an edit made before that
+ * is no change; a body it cut is compared as far as it kept it, one it had no room for not at all.
+ */
+function differs(kept: string | undefined, now: string, how: "whole" | "cut" | "none"): boolean {
+  if (kept === undefined || how === "none") return false
   const said = asKept(now)
-  return kept.endsWith("…") ? !said.startsWith(kept.slice(0, -1)) : said !== kept
+  return how === "cut" ? !said.startsWith(kept.slice(0, -1)) : said !== kept
 }
 
 const newer = (a: string | null, b: string | null) => (a === null ? b : b === null ? a : a > b ? a : b)
@@ -135,13 +143,14 @@ export function changeOf(event: Pick<GhEvent, "url" | "items" | "text">, latest:
   let editedAt: string | null = null
   let isPartDeleted = false
   const comments = new Map((latest.comments ?? []).map(comment => [comment.url, comment]))
-  // `keptItems` spends `BODY_KEPT` characters in order: a body kept as nothing after the last one was spent was cut.
-  let spent = 0
+  // `keptItems` spends `BODY_KEPT` characters in order, cutting only the body that spends the last of them.
+  let left = BODY_KEPT
   const items: LatestItem[] = kept.map(item => {
-    const isCut = spent >= BODY_KEPT - 1
-    spent += typeof item.body === "string" ? item.body.length : 0
+    const body = typeof item.body === "string" ? item.body : ""
+    const how = howKept(body, left)
+    left -= body.length
     if (item.url === event.url) {
-      if (!differs(item.body, latest.body, isCut)) return item
+      if (!differs(item.body, latest.body, how)) return item
       editedAt = newer(editedAt, latest.editedAt)
       return { ...item, body: asKept(latest.body), note: "edited" }
     }
@@ -153,7 +162,7 @@ export function changeOf(event: Pick<GhEvent, "url" | "items" | "text">, latest:
       isPartDeleted = true
       return { ...item, note: "deleted" }
     }
-    if (!differs(item.body, comment.body, isCut)) return item
+    if (!differs(item.body, comment.body, how)) return item
     editedAt = newer(editedAt, comment.editedAt)
     return { ...item, body: asKept(comment.body), note: "edited" }
   })

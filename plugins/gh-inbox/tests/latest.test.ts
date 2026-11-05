@@ -64,8 +64,12 @@ test("a comment edited since it was told says what it says now; one edited befor
     isPartDeleted: false,
     items: [{ body: "fixed again", url: "u", note: "edited" }],
   })
-  // What the log cut short is compared as far as it kept it.
-  expect(changeOf({ url: "u", text: "a commented: long…", items: [{ body: "long…", url: "u" }] }, { state: "found", body: "long text", editedAt: "t" })).toBeUndefined()
+  // What the log cut short is compared as far as it kept it; a body that ends in "…" of its own, in full.
+  const cut = `${"x".repeat(1999)}…`
+  expect(changeOf({ url: "u", text: "a commented: x…", items: [{ body: cut, url: "u" }] }, { state: "found", body: `${"x".repeat(1999)}yz`, editedAt: "t" })).toBeUndefined()
+  expect(changeOf({ url: "u", text: "a commented: Working…", items: [{ body: "Working…", url: "u" }] }, { state: "found", body: "Working on it", editedAt: "t" })).toMatchObject({
+    items: [{ body: "Working on it", url: "u", note: "edited" }],
+  })
   expect(changeOf(told, { state: "deleted" })).toMatchObject({ isDeleted: true })
   expect(changeOf(told, undefined)).toBeUndefined()
 })
@@ -114,8 +118,7 @@ test("a comment kept as nothing (an HTML comment alone) that says something now 
     editedAt: "t",
     items: [{ body: "Now with words", url: "u", note: "edited" }],
   })
-  const full = "x".repeat(1999)
-  const review: Latest = { state: "found", body: full, editedAt: null, comments: [{ url: "c", body: "Changed", editedAt: "t" }], isComplete: true }
-  const told = { url: "r", text: "a reviewed", items: [{ body: `${"x".repeat(1998)}…`, url: "r" }, { body: "", path: "a.ts", line: 1, url: "c" }] }
+  const review: Latest = { state: "found", body: "x".repeat(2100), editedAt: null, comments: [{ url: "c", body: "Changed", editedAt: "t" }], isComplete: true }
+  const told = { url: "r", text: "a reviewed", items: [{ body: `${"x".repeat(1999)}…`, url: "r" }, { body: "", path: "a.ts", line: 1, url: "c" }] }
   expect(changeOf(told, review)).toBeUndefined()
 })
