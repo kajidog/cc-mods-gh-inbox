@@ -4,12 +4,26 @@ import type { GhEvent, GhEventItem } from "../types"
 
 import { object, text } from "./github"
 
-/** What a comment, a review or a line comment says now; `same` where it is as it was told. */
-export type Latest = { state: "edited"; body: string; editedAt: string } | { state: "deleted" } | { state: "same" }
+/** A line comment of a review, as GitHub answers it now. */
+export type LatestComment = { url: string; body: string; editedAt: string | null }
+/**
+ * What GitHub answers now for a notice's comment or review: deleted, or its body and when it was last
+ * edited, and a review's line comments (`isComplete` where all of them were answered).
+ */
+export type Latest =
+  | { state: "deleted" }
+  | { state: "found"; body: string; editedAt: string | null; comments?: LatestComment[]; isComplete?: boolean }
+
+/** A part of a notice as it reads now: `note` where it changed since it was told. */
+export type LatestItem = GhEventItem & { note?: "edited" | "deleted" }
+/** What changed since a notice was told: its own comment deleted, edited (the newest edit), a line comment of it deleted. */
+export type Change = { isDeleted: boolean; editedAt: string | null; isPartDeleted: boolean; items: LatestItem[] }
 
 // A node id is letters, digits and `_-=`; the other ids a notice has (`run:1`, `merged:#3`, a commit's sha on a commit) are not asked for.
 const NODE_ID = /^[A-Za-z0-9_=-]+$/
 const ASKED_KINDS = new Set(["comment", "review"])
+// Line comments of a review answered at most: a review with more is not told to have lost any.
+const REVIEW_COMMENTS = 100
 const hostOf = (url: string) => /^https?:\/\/([^/]+)\//.exec(url)?.[1] ?? ""
 
 /** Where `latestKey` files what `event`'s comment says now; undefined for a notice that is no comment. */
@@ -31,7 +45,7 @@ export function latestWanted(events: readonly GhEvent[], known: ReadonlySet<stri
   return wanted
 }
 
-/** Asks what the comments `ids` (a page's, a few) say now, in one GraphQL request: one point. */
+/** Asks what the comments `ids` (a page's, a few) say now, a review's line comments with it, in one GraphQL request. */
 export function latestArgv(host: string, ids: readonly string[]): string[] {
   // Node ids are written into the query as they are, `NODE_ID` holding them to what needs no escaping.
   const list = ids
@@ -44,8 +58,13 @@ export function latestArgv(host: string, ids: readonly string[]): string[] {
     ...(host === "github.com" ? [] : ["--hostname", host]),
     "graphql",
     "-f",
-    `query=query { nodes(ids: [${list}]) { ... on Comment { body lastEditedAt } } }`,
+    `query=query { nodes(ids: [${list}]) { ... on Comment { body lastEditedAt } ... on PullRequestReview { comments(first: ${REVIEW_COMMENTS}) { totalCount nodes { url body lastEditedAt } } } } }`,
   ]
+}
+
+const nodesOf = (value: unknown) => {
+  const list = object(value).nodes
+  return Array.isArray(list) ? list.map(object) : []
 }
 
 /**
@@ -68,19 +87,74 @@ export function parseLatest(host: string, ids: readonly string[], answer: string
       if (gone.has(index)) latest.set(`${host}|${id}`, { state: "deleted" })
       return
     }
-    const editedAt = text(object(node).lastEditedAt)
-    latest.set(`${host}|${id}`, editedAt === "" ? { state: "same" } : { state: "edited", body: text(object(node).body), editedAt })
+    const json = object(node)
+    const connection = object(json.comments)
+    const comments = nodesOf(connection).map(comment => ({
+      url: text(comment.url),
+      body: text(comment.body),
+      editedAt: text(comment.lastEditedAt) || null,
+    }))
+    latest.set(`${host}|${id}`, {
+      state: "found",
+      body: text(json.body),
+      editedAt: text(json.lastEditedAt) || null,
+      ...(json.comments === undefined ? {} : { comments, isComplete: comments.length === Number(connection.totalCount) }),
+    })
   })
 
   return latest
 }
 
-/** `items` with what `event`'s own comment says now in place of what it said, where it was edited. */
-export function withLatest(event: Pick<GhEvent, "url">, items: readonly GhEventItem[], latest: Latest | undefined): GhEventItem[] {
-  if (latest?.state !== "edited") return [...items]
-  // As the log keeps what was said: no HTML comment, which GitHub does not show.
-  const body = latest.body.replace(/<!--[\s\S]*?-->/g, "").trim()
-  const at = items.findIndex(item => item.url === event.url)
-  if (at === -1) return body === "" ? [...items] : [{ body, url: event.url }, ...items]
-  return items.map((item, index) => (index === at ? { ...item, body } : item))
+// As the log keeps what was said: no HTML comment, which GitHub does not show.
+const asKept = (body: string) => body.replace(/<!--[\s\S]*?-->/g, "").trim()
+
+/**
+ * Whether `now` says other than `kept` (what the log kept, cut with `…` where it was long). The log keeps what was
+ * said when it was told, so an edit made before that is no change; a body the log kept nothing of is not told apart.
+ */
+function differs(kept: string | undefined, now: string): boolean {
+  if (kept === undefined || kept === "") return false
+  const said = asKept(now)
+  return kept.endsWith("…") ? !said.startsWith(kept.slice(0, -1)) : said !== kept
+}
+
+const newer = (a: string | null, b: string | null) => (a === null ? b : b === null ? a : a > b ? a : b)
+
+/**
+ * What changed of `event` since it was told, by what GitHub answers now: undefined where nothing did. A part
+ * edited says what it says now; a line comment no longer among its review's is marked deleted, where all were answered.
+ */
+export function changeOf(event: Pick<GhEvent, "url" | "items">, latest: Latest | undefined): Change | undefined {
+  if (latest === undefined) return undefined
+  const kept: GhEventItem[] = Array.isArray(event.items) ? event.items : []
+  if (latest.state === "deleted") return { isDeleted: true, editedAt: null, isPartDeleted: false, items: kept }
+
+  let editedAt: string | null = null
+  let isPartDeleted = false
+  const comments = new Map((latest.comments ?? []).map(comment => [comment.url, comment]))
+  const items: LatestItem[] = kept.map(item => {
+    if (item.url === event.url) {
+      if (!differs(item.body, latest.body)) return item
+      editedAt = newer(editedAt, latest.editedAt)
+      return { ...item, body: asKept(latest.body), note: "edited" }
+    }
+    // A review's line comment, by its URL.
+    if (item.path === undefined || latest.comments === undefined) return item
+    const comment = comments.get(item.url ?? "")
+    if (comment === undefined) {
+      if (latest.isComplete !== true) return item
+      isPartDeleted = true
+      return { ...item, note: "deleted" }
+    }
+    if (!differs(item.body, comment.body)) return item
+    editedAt = newer(editedAt, comment.editedAt)
+    return { ...item, body: asKept(comment.body), note: "edited" }
+  })
+  // A review told with no words of its own may have some now.
+  if (!kept.some(item => item.url === event.url) && asKept(latest.body) !== "" && latest.comments !== undefined && kept.length > 0) {
+    editedAt = newer(editedAt, latest.editedAt)
+    items.unshift({ body: asKept(latest.body), url: event.url, note: "edited" })
+  }
+  const isEdited = items.some(item => item.note === "edited")
+  return isEdited || isPartDeleted ? { isDeleted: false, editedAt: isEdited ? (editedAt ?? "") : null, isPartDeleted, items } : undefined
 }

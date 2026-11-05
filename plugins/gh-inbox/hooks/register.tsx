@@ -30,7 +30,7 @@ import {
   unheld,
 } from "./history"
 import { type Language, MESSAGES, type Messages, splitNotice, toLanguage } from "./i18n"
-import { type Latest, latestArgv, latestKey, latestWanted, parseLatest, withLatest } from "./latest"
+import { changeOf, type Latest, type LatestItem, latestArgv, latestKey, latestWanted, parseLatest } from "./latest"
 import {
   CONTEXT_LIMIT,
   idsOf,
@@ -205,6 +205,8 @@ type Context = {
   isEnded: boolean
   /** The `latestKey`s the log pane has asked for since it opened, answered or not: each is asked once an opening. */
   askedLatest: Set<string>
+  /** How many times the log has opened: an answer asked for at an opening that is no longer the last is not shown. */
+  logOpenings: number
 }
 
 const pullKey = (ref: PullRef) => `${ref.host}/${pullName(ref)}`
@@ -391,6 +393,7 @@ async function readHistory($: EngineInterface) {
  * one request a host; the pane shows them edited or deleted as the answer comes. A failed request is let be.
  */
 async function lookUpLatest($: EngineInterface, ctx: Context, events: readonly GhEvent[]) {
+  const opening = ctx.logOpenings
   for (const [host, ids] of latestWanted(events, ctx.askedLatest)) {
     for (const id of ids) ctx.askedLatest.add(`${host}|${id}`)
     const run = await $.process.run(latestArgv(host, ids)).catch(() => undefined)
@@ -402,6 +405,7 @@ async function lookUpLatest($: EngineInterface, ctx: Context, events: readonly G
       $.ui.log(`gh-inbox: comments of ${host}: ${firstLine(run?.stderr ?? "")}`, { to: "debug" })
       continue
     }
+    if (opening !== ctx.logOpenings) return
     if (latest.size > 0) await update($, logLatest, held => ({ ...held, ...Object.fromEntries(latest) }))
   }
 }
@@ -1204,6 +1208,7 @@ export const register: Register = (on, options) => {
     picking: 0,
     isEnded: false,
     askedLatest: new Set(),
+    logOpenings: 0,
   }
   let timer: Timer | undefined
 
@@ -1307,8 +1312,9 @@ export const register: Register = (on, options) => {
         await update($, logUnfolded, () => [])
         await update($, logRepo, () => narrowed?.repo ?? null)
         // What the comments say now is asked for afresh each time the log opens.
-        await update($, logLatest, () => ({}))
+        ctx.logOpenings += 1
         ctx.askedLatest.clear()
+        await update($, logLatest, () => ({}))
         if (!asText && (await $.ui.open({ id: LOG_PANE, title: t.logTitle, focus: true })).isPlaced)
           return { text: t.logOpened(all.length) }
         const list = latest(all, LOG_SHOWN)
@@ -1365,7 +1371,7 @@ export const register: Register = (on, options) => {
     row: LogRow,
     made: LogMade | undefined,
     // The log pane's: what unfolds the row, and what it says in full once unfolded.
-    fold?: { mark: ReturnType<typeof ui.Button>; full?: readonly GhEventItem[] },
+    fold?: { mark: ReturnType<typeof ui.Button>; full?: readonly LatestItem[] },
   ) => {
     const { Box, Text, Link } = ui
     // A notice kept with its head says its short name, or that it has none.
@@ -1378,10 +1384,13 @@ export const register: Register = (on, options) => {
     const isPush = CHANGED_KINDS.has(made?.kind ?? "")
     const full = fold?.full?.map((item, i) => (
       <Box key={`item:${i}`} flexDirection="column">
-        {item.path === undefined ? null : (
+        {item.path === undefined ? (
+          item.note === undefined ? null : <Text dimColor>{t.paren(t.logItemNote(item.note)).trim()}</Text>
+        ) : (
           <Text dimColor>
             {plain(item.path)}
             {typeof item.line === "number" ? `:${item.line}` : ""}
+            {item.note === undefined ? "" : t.paren(t.logItemNote(item.note))}
           </Text>
         )}
         {isPush ? <Text>・{plain(item.body)}</Text> : lines(item.body, `body:${i}`)}
@@ -1483,22 +1492,21 @@ export const register: Register = (on, options) => {
         <Text dimColor>{list.length === 0 ? t.noLog : t.logRange(page * LOG_PAGE + 1, page * LOG_PAGE + shown.length, list.length)}</Text>
         {shown.map((event, index) => {
           const at = Date.parse(event.at)
-          const latest = latestOf[latestKey(event) ?? ""]
-          const editedAt = latest?.state === "edited" ? Date.parse(latest.editedAt) : Number.NaN
-          // Beside when it happened, whether the comment was edited (and when) or deleted since.
+          const change = changeOf(event, latestOf[latestKey(event) ?? ""])
+          const editedAt = Date.parse(change?.editedAt ?? "")
+          // Beside when it happened, whether the comment was edited (and when) or deleted since it was told.
           const remarks = [
             ...(Number.isNaN(at) ? [] : [ago(t, now - at)]),
-            ...(latest?.state === "deleted" ? [t.logDeleted] : []),
-            ...(latest?.state === "edited" ? [t.logEdited(Number.isNaN(editedAt) ? "" : ago(t, now - editedAt)).trim()] : []),
+            ...(change?.isDeleted === true ? [t.logDeleted] : []),
+            ...(change?.editedAt != null ? [t.logEdited(Number.isNaN(editedAt) ? "" : ago(t, now - editedAt)).trim()] : []),
+            ...(change?.isPartDeleted === true ? [t.logPartDeleted] : []),
           ]
           const row = { text: plain(event.text), url: plain(event.url), when: remarks.length === 0 ? "" : t.paren(remarks.join(t.listSeparator)) }
           const key = `${event.pull}|${event.id}`
-          // An edited comment unfolds to what it says now, however short.
+          // An edited comment unfolds to what it says now, however short; a review, to which of its comments changed.
           const said = saidInFull(event)
           const full =
-            latest?.state === "edited"
-              ? withLatest(event, said ?? (Array.isArray(event.items) ? event.items : []), latest).filter(item => item.body.trim() !== "")
-              : said
+            change !== undefined && !change.isDeleted ? change.items.filter(item => item.body.trim() !== "" || item.note !== undefined) : said
           const isOpen = full !== undefined && unfolded.includes(key)
           // A row with more to say than its line unfolds by its mark, or the digit of its place on the page.
           const mark =

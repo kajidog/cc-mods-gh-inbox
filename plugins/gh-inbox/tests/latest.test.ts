@@ -2,7 +2,7 @@ import { expect, test } from "claude-code/testing"
 
 import type { GhEvent } from "../types"
 
-import { latestArgv, latestKey, latestWanted, parseLatest, withLatest } from "../hooks/latest"
+import { changeOf, latestArgv, latestKey, latestWanted, parseLatest } from "../hooks/latest"
 
 const event = (id: string, kind: GhEvent["kind"], url = "https://github.com/o/r/pull/3#c"): GhEvent => ({
   id,
@@ -29,29 +29,68 @@ test("only comments and reviews by their node ids are asked for, once each, by h
   ])
 })
 
-test("latestArgv asks in one GraphQL request, another host by its name", async () => {
-  expect(latestArgv("github.com", ["IC_1", "PRRC_2"]).at(-1)).toBe(
-    'query=query { nodes(ids: ["IC_1", "PRRC_2"]) { ... on Comment { body lastEditedAt } } }',
-  )
+test("latestArgv asks in one GraphQL request, a review's line comments with it, another host by its name", async () => {
+  const query = latestArgv("github.com", ["IC_1", "PRR_2"]).at(-1) ?? ""
+  expect(query.startsWith('query=query { nodes(ids: ["IC_1", "PRR_2"]) { ... on Comment { body lastEditedAt }')).toBe(true)
+  expect(query).toContain("... on PullRequestReview { comments(first: 100) { totalCount nodes { url body lastEditedAt } } }")
   expect(latestArgv("ghe.example.com", ["IC_1"]).slice(0, 4)).toEqual(["gh", "api", "--hostname", "ghe.example.com"])
 })
 
-test("parseLatest tells an edit, a deletion, and leaves out what failed for now", async () => {
+test("parseLatest reads a body, a review's line comments, a deletion, and leaves out what failed for now", async () => {
   const answer = JSON.stringify({
-    data: { nodes: [{ body: "new", lastEditedAt: "2026-10-17T00:00:00Z" }, null, { body: "same", lastEditedAt: null }, null] },
+    data: {
+      nodes: [
+        { body: "new", lastEditedAt: "2026-10-17T00:00:00Z" },
+        null,
+        { body: "", lastEditedAt: null, comments: { totalCount: 1, nodes: [{ url: "c", body: "x", lastEditedAt: null }] } },
+        null,
+      ],
+    },
     errors: [{ type: "NOT_FOUND", path: ["nodes", 1], message: "Could not resolve to a node" }, { type: "FORBIDDEN", path: ["nodes", 3] }],
   })
-  expect([...parseLatest("github.com", ["IC_1", "IC_2", "IC_3", "IC_4"], answer)]).toEqual([
-    ["github.com|IC_1", { state: "edited", body: "new", editedAt: "2026-10-17T00:00:00Z" }],
+  expect([...parseLatest("github.com", ["IC_1", "IC_2", "PRR_3", "IC_4"], answer)]).toEqual([
+    ["github.com|IC_1", { state: "found", body: "new", editedAt: "2026-10-17T00:00:00Z" }],
     ["github.com|IC_2", { state: "deleted" }],
-    ["github.com|IC_3", { state: "same" }],
+    ["github.com|PRR_3", { state: "found", body: "", editedAt: null, comments: [{ url: "c", body: "x", editedAt: null }], isComplete: true }],
   ])
 })
 
-test("withLatest puts what an edited comment says now in place of what it said, its place kept", async () => {
-  const edited = { state: "edited", body: "now <!-- hidden -->", editedAt: "" } as const
-  const items = [{ body: "then", path: "a.ts", line: 3, url: "u" }, { body: "other", url: "v" }]
-  expect(withLatest({ url: "u" }, items, edited)).toEqual([{ body: "now", path: "a.ts", line: 3, url: "u" }, { body: "other", url: "v" }])
-  expect(withLatest({ url: "w" }, items, edited)[0]).toEqual({ body: "now", url: "w" })
-  expect(withLatest({ url: "u" }, items, { state: "deleted" })).toEqual(items)
+test("a comment edited since it was told says what it says now; one edited before it was told is no change", async () => {
+  const told = { url: "u", items: [{ body: "fixed", url: "u" }] }
+  expect(changeOf(told, { state: "found", body: "fixed <!-- x -->", editedAt: "2026-10-16T00:00:00Z" })).toBeUndefined()
+  expect(changeOf(told, { state: "found", body: "fixed again", editedAt: "2026-10-17T00:00:00Z" })).toEqual({
+    isDeleted: false,
+    editedAt: "2026-10-17T00:00:00Z",
+    isPartDeleted: false,
+    items: [{ body: "fixed again", url: "u", note: "edited" }],
+  })
+  // What the log cut short is compared as far as it kept it.
+  expect(changeOf({ url: "u", items: [{ body: "long…", url: "u" }] }, { state: "found", body: "long text", editedAt: "t" })).toBeUndefined()
+  expect(changeOf(told, { state: "deleted" })).toMatchObject({ isDeleted: true })
+  expect(changeOf(told, undefined)).toBeUndefined()
+})
+
+test("a review's line comments edited or deleted since it was told are told apart, by their URLs", async () => {
+  const review = {
+    url: "r",
+    items: [
+      { body: "Please", url: "r" },
+      { body: "Rename", path: "a.ts", line: 3, url: "c1" },
+      { body: "Drop", path: "b.ts", line: 4, url: "c2" },
+    ],
+  }
+  const now = (comments: Array<{ url: string; body: string; editedAt: string | null }>, isComplete = true) =>
+    ({ state: "found", body: "Please", editedAt: null, comments, isComplete }) as const
+  expect(changeOf(review, now([{ url: "c1", body: "Rename it", editedAt: "t1" }]))).toEqual({
+    isDeleted: false,
+    editedAt: "t1",
+    isPartDeleted: true,
+    items: [
+      { body: "Please", url: "r" },
+      { body: "Rename it", path: "a.ts", line: 3, url: "c1", note: "edited" },
+      { body: "Drop", path: "b.ts", line: 4, url: "c2", note: "deleted" },
+    ],
+  })
+  // With more line comments than were answered, one missing is not taken for deleted.
+  expect(changeOf(review, now([{ url: "c1", body: "Rename", editedAt: null }], false))).toBeUndefined()
 })
