@@ -178,6 +178,14 @@ const en = {
   logNoRepo: (name: string, names: readonly string[]) =>
     `No notices of a repository named ${name} are kept.${names.length === 0 ? "" : ` Kept: ${names.join(", ")}`}`,
   newer: "Newer",
+  /** A log row's comment edited since it was told, and when. */
+  logEdited: (ago: string) => `edited ${ago}`,
+  /** A log row's comment deleted since it was told. */
+  logDeleted: "deleted",
+  /** A log row's review with a line comment deleted since it was told. */
+  logPartDeleted: "a comment deleted",
+  /** An unfolded part of a log row changed since it was told. */
+  logItemNote: (note: "edited" | "deleted"): string => (note === "edited" ? "edited" : "deleted"),
   usage: "Usage: /inbox [status|check|log [repo] [text]|pick [PR]|clear|repo|nick [login [nickname]]|tray [pull|repos]]",
   trayShows: (view: string): string =>
     view === "pull"
@@ -380,6 +388,10 @@ const ja: Messages = {
   logAll: "すべて",
   logNoRepo: (name, names) => `${name} というリポジトリの通知は保存されていません。${names.length === 0 ? "" : `保存されているもの: ${names.join("、")}`}`,
   newer: "新しい方へ",
+  logEdited: ago => `編集済み・${ago}`,
+  logDeleted: "削除済み",
+  logPartDeleted: "一部削除済み",
+  logItemNote: note => (note === "edited" ? "編集済み" : "削除済み"),
   usage: "使い方: /inbox [status|check|log [リポジトリ] [text]|pick [PR]|clear|repo|nick [login [ニックネーム]]|tray [pull|repos]]",
   trayShows: view =>
     view === "pull"

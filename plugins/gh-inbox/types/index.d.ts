@@ -192,6 +192,18 @@ declare module "claude-code" {
       logUnfolded: string[]
       /** The repository (`owner/repo`) the log pane is narrowed to; null for all. */
       logRepo: string | null
+      /** What the log pane's comments say now, by `host|node id`, asked for as their page shows. */
+      logLatest: Record<
+        string,
+        | { state: "deleted" }
+        | {
+            state: "found"
+            body: string
+            editedAt: string | null
+            comments?: Array<{ url: string; body: string; editedAt: string | null }>
+            isComplete?: boolean
+          }
+      >
       /** The pick pane's items unfolded to say in full what they say, by id. */
       pickUnfolded: string[]
     }

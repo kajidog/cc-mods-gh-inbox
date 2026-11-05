@@ -28,7 +28,7 @@ type Answer = { stdout?: string; stderr?: string; exitCode?: number }
  * another, then a `304` while the ETag asked with is the one last given.
  * `other` answers first where it returns something.
  */
-function fakeGitHub(on: On, answers: unknown[][], other: (argv: string[]) => Answer | undefined = () => undefined) {
+function fakeGitHub(on: On, answers: unknown[][], other: (argv: string[]) => Answer | undefined | Promise<Answer | undefined> = () => undefined) {
   const asked: string[][] = []
   const toasts: string[] = []
   const logs: string[] = []
@@ -37,7 +37,7 @@ function fakeGitHub(on: On, answers: unknown[][], other: (argv: string[]) => Ans
     const argv = [...e.argv]
     asked.push(argv)
     const done = (stdout: string, exitCode = 0, stderr = "") => ({ value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false } })
-    const answered = other(argv)
+    const answered = await other(argv)
     if (answered !== undefined) return done(answered.stdout ?? "", answered.exitCode ?? 0, answered.stderr ?? "")
     if (argv[0] === "git") return done("", 128)
     if (argv.includes("user")) return done("me\n")
@@ -984,3 +984,93 @@ for (const [language, hint] of [["en", "nick [login [nickname]]"], ["ja", "nick 
     expect(registered[0]?.description.startsWith(language === "en" ? "GitHub notices" : "このブランチの PR")).toBe(true)
   })
 }
+
+test("the log pane asks what its page's comments say now, and shows them edited, with what they say now, or deleted", JA, async ($, on) => {
+  const at = "2026-10-16T23:00:00Z"
+  const comment = (id: string, body: string) => ({
+    id,
+    kind: "comment",
+    pull: "o/r#3",
+    author: "a",
+    at,
+    text: `aさんがコメントしました。${body}`,
+    url: `https://github.com/o/r/pull/3#${id}`,
+    items: [{ body, url: `https://github.com/o/r/pull/3#${id}` }],
+  })
+  mock.store(on, { "history:other": toKept([comment("IC_1", "first"), comment("IC_2", "second"), comment("IC_3", "third")] as GhEvent[], 1) })
+  mock.clock(on, { now: Date.parse("2026-10-17T00:00:00Z") })
+  // GitHub answers in the order asked: IC_1 edited, IC_2 deleted, IC_3 edited before it was told, so as it was.
+  const now = {
+    IC_1: { body: "first, fixed", lastEditedAt: "2026-10-16T23:30:00Z" },
+    IC_2: null,
+    IC_3: { body: "third", lastEditedAt: "2026-10-16T22:59:00Z" },
+  } as Record<string, unknown>
+  const answer = (argv: string[]) => {
+    const ids = [...(argv.at(-1) ?? "").matchAll(/"(\w+)"/g)].map(match => match[1] ?? "")
+    const errors = ids.flatMap((id, index) => (now[id] === null ? [{ type: "NOT_FOUND", path: ["nodes", index] }] : []))
+    return { stdout: JSON.stringify({ data: { nodes: ids.map(id => now[id]) }, errors }), exitCode: errors.length > 0 ? 1 : 0 }
+  }
+  const github = fakeGitHub(on, [[]], argv => (argv.includes("graphql") ? answer(argv) : undefined))
+  on("ui.open", async () => ({ value: { isPlaced: true } }))
+
+  await $.command.run({ ...CHECK, args: "log" })
+  const pane = await $.ui.mount({
+    plugin: "gh-inbox",
+    surface: "terminal",
+    component: "Pane",
+    requestId: "gh-inbox-log",
+    props: { title: "", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 20 }, view: {} },
+  })
+  expect(await pane.find({ type: "Text", text: "（1時間前、編集済み・30分前）" })).toBeDefined()
+  expect(await pane.find({ type: "Text", text: "（1時間前、削除済み）" })).toBeDefined()
+  expect(await pane.find({ type: "Text", text: "（1時間前）" })).toBeDefined()
+  // Only the edited one unfolds: the others say all they said.
+  expect(await pane.find({ key: "unfold:o/r#3|IC_2" })).toBeUndefined()
+  expect(await pane.find({ key: "unfold:o/r#3|IC_3" })).toBeUndefined()
+  // One request for the page, not one a render.
+  expect(github.asked.filter(argv => argv.includes("graphql"))).toHaveLength(1)
+
+  // The edited comment unfolds to what it says now; the line keeps what was told.
+  await pane.press({ key: "unfold:o/r#3|IC_1" })
+  expect(await pane.find({ type: "Text", text: "first, fixed" })).toBeDefined()
+  expect(github.asked.filter(argv => argv.includes("graphql"))).toHaveLength(1)
+})
+
+test("an answer asked for at an earlier opening of the log is not shown over a later one's", JA, async ($, on) => {
+  const at = "2026-10-16T23:00:00Z"
+  const told = { id: "IC_1", kind: "comment", pull: "o/r#3", author: "a", at, text: "aさんがコメントしました。first", url: "https://github.com/o/r/pull/3#c1", items: [{ body: "first", url: "https://github.com/o/r/pull/3#c1" }] }
+  mock.store(on, { "history:other": toKept([told] as GhEvent[], 1) })
+  mock.clock(on, { now: Date.parse("2026-10-17T00:00:00Z") })
+  const said = (body: string, editedAt: string) => ({ stdout: JSON.stringify({ data: { nodes: [{ body, lastEditedAt: editedAt }] } }) })
+  let release: (answer: Answer) => void = () => undefined
+  const pending = new Promise<Answer>(resolve => {
+    release = resolve
+  })
+  let asked = 0
+  fakeGitHub(on, [[]], argv => {
+    if (!argv.includes("graphql")) return undefined
+    asked += 1
+    return asked === 1 ? pending : said("newest", "2026-10-16T23:50:00Z")
+  })
+  on("ui.open", async () => ({ value: { isPlaced: true } }))
+  const mount = () =>
+    $.ui.mount({
+      plugin: "gh-inbox",
+      surface: "terminal",
+      component: "Pane",
+      requestId: "gh-inbox-log",
+      props: { title: "", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 20 }, view: {} },
+    })
+
+  await $.command.run({ ...CHECK, args: "log" })
+  const pane = await mount()
+  // Opened again while the first answer is still on its way.
+  await $.command.run({ ...CHECK, args: "log" })
+  expect(await pane.find({ type: "Text", text: "（1時間前、編集済み・10分前）" })).toBeDefined()
+
+  // The first opening's answer comes last, and is let be.
+  release(said("older", "2026-10-16T23:10:00Z"))
+  await pending
+  expect(await pane.find({ type: "Text", text: "（1時間前、編集済み・10分前）" })).toBeDefined()
+  expect(await pane.find({ type: "Text", text: "（1時間前、編集済み・50分前）" })).toBeUndefined()
+})
