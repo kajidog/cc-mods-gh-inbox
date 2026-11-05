@@ -2,6 +2,7 @@
 // asks for the comments of the page it shows, as it shows them, and nothing between.
 import type { GhEvent, GhEventItem } from "../types"
 
+import { snippet } from "./events"
 import { object, text } from "./github"
 
 /** A line comment of a review, as GitHub answers it now. */
@@ -124,7 +125,7 @@ const newer = (a: string | null, b: string | null) => (a === null ? b : b === nu
  * What changed of `event` since it was told, by what GitHub answers now: undefined where nothing did. A part
  * edited says what it says now; a line comment no longer among its review's is marked deleted, where all were answered.
  */
-export function changeOf(event: Pick<GhEvent, "url" | "items">, latest: Latest | undefined): Change | undefined {
+export function changeOf(event: Pick<GhEvent, "url" | "items" | "text">, latest: Latest | undefined): Change | undefined {
   if (latest === undefined) return undefined
   const kept: GhEventItem[] = Array.isArray(event.items) ? event.items : []
   if (latest.state === "deleted") return { isDeleted: true, editedAt: null, isPartDeleted: false, items: kept }
@@ -150,10 +151,12 @@ export function changeOf(event: Pick<GhEvent, "url" | "items">, latest: Latest |
     editedAt = newer(editedAt, comment.editedAt)
     return { ...item, body: asKept(comment.body), note: "edited" }
   })
-  // A review told with no words of its own may have some now.
-  if (!kept.some(item => item.url === event.url) && asKept(latest.body) !== "" && latest.comments !== undefined && kept.length > 0) {
+  // A notice that kept no words of its own (a review told with none, one kept before the log kept them) is
+  // compared by its line, which ends in the start of what was said.
+  const now = asKept(latest.body)
+  if (!kept.some(item => item.url === event.url) && now !== "" && !event.text.includes(snippet(now))) {
     editedAt = newer(editedAt, latest.editedAt)
-    items.unshift({ body: asKept(latest.body), url: event.url, note: "edited" })
+    items.unshift({ body: now, url: event.url, note: "edited" })
   }
   const isEdited = items.some(item => item.note === "edited")
   return isEdited || isPartDeleted ? { isDeleted: false, editedAt: isEdited ? (editedAt ?? "") : null, isPartDeleted, items } : undefined

@@ -2,7 +2,7 @@ import { expect, test } from "claude-code/testing"
 
 import type { GhEvent } from "../types"
 
-import { changeOf, latestArgv, latestKey, latestWanted, parseLatest } from "../hooks/latest"
+import { changeOf, type Latest, latestArgv, latestKey, latestWanted, parseLatest } from "../hooks/latest"
 
 const event = (id: string, kind: GhEvent["kind"], url = "https://github.com/o/r/pull/3#c"): GhEvent => ({
   id,
@@ -56,7 +56,7 @@ test("parseLatest reads a body, a review's line comments, a deletion, and leaves
 })
 
 test("a comment edited since it was told says what it says now; one edited before it was told is no change", async () => {
-  const told = { url: "u", items: [{ body: "fixed", url: "u" }] }
+  const told = { url: "u", text: "a commented: fixed", items: [{ body: "fixed", url: "u" }] }
   expect(changeOf(told, { state: "found", body: "fixed <!-- x -->", editedAt: "2026-10-16T00:00:00Z" })).toBeUndefined()
   expect(changeOf(told, { state: "found", body: "fixed again", editedAt: "2026-10-17T00:00:00Z" })).toEqual({
     isDeleted: false,
@@ -65,7 +65,7 @@ test("a comment edited since it was told says what it says now; one edited befor
     items: [{ body: "fixed again", url: "u", note: "edited" }],
   })
   // What the log cut short is compared as far as it kept it.
-  expect(changeOf({ url: "u", items: [{ body: "long…", url: "u" }] }, { state: "found", body: "long text", editedAt: "t" })).toBeUndefined()
+  expect(changeOf({ url: "u", text: "a commented: long…", items: [{ body: "long…", url: "u" }] }, { state: "found", body: "long text", editedAt: "t" })).toBeUndefined()
   expect(changeOf(told, { state: "deleted" })).toMatchObject({ isDeleted: true })
   expect(changeOf(told, undefined)).toBeUndefined()
 })
@@ -73,6 +73,7 @@ test("a comment edited since it was told says what it says now; one edited befor
 test("a review's line comments edited or deleted since it was told are told apart, by their URLs", async () => {
   const review = {
     url: "r",
+    text: "a requested changes (2 comments): Please",
     items: [
       { body: "Please", url: "r" },
       { body: "Rename", path: "a.ts", line: 3, url: "c1" },
@@ -93,4 +94,16 @@ test("a review's line comments edited or deleted since it was told are told apar
   })
   // With more line comments than were answered, one missing is not taken for deleted.
   expect(changeOf(review, now([{ url: "c1", body: "Rename", editedAt: null }], false))).toBeUndefined()
+})
+
+test("a review told with no words that has some now is edited; a notice kept with none is compared by its line", async () => {
+  const now: Latest = { state: "found", body: "Ship it", editedAt: "t", comments: [], isComplete: true }
+  expect(changeOf({ url: "r", text: "a approved.", items: [] }, now)).toEqual({
+    isDeleted: false,
+    editedAt: "t",
+    isPartDeleted: false,
+    items: [{ body: "Ship it", url: "r", note: "edited" }],
+  })
+  expect(changeOf({ url: "r", text: "a approved: Ship it", items: [] }, now)).toBeUndefined()
+  expect(changeOf({ url: "r", text: "a approved.", items: [] }, { ...now, body: "" })).toBeUndefined()
 })
