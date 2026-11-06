@@ -1369,3 +1369,27 @@ test("a pull request added again, in this window or another, starts over: what c
   await $.command.run(CHECK)
   expect(github.toasts).toEqual(["[r#12] bobさんがコメントしました。And this"])
 })
+
+test("the branch's own pull request, watched, goes on as a watched one once the branch is switched away from: what comes is told one by one", JA, async ($, on) => {
+  mock.store(on, {})
+  const clock = mock.clock(on, { now: 1_000_000 })
+  let branch = "feat"
+  let says: PullSays = {}
+  const github = fakeGitHub(on, [[]], argv => {
+    if (argv[0] === "git") return { stdout: `${branch}\n` }
+    if (argv.includes("pr") && argv.includes("view"))
+      return branch === "feat" ? { stdout: JSON.stringify({ url: "https://github.com/o/r/pull/12", state: "OPEN" }) } : { exitCode: 1, stderr: 'no pull requests found for branch "main"' }
+    return askedPull(argv) === 12 ? { stdout: pullAnswer(says) } : undefined
+  })
+
+  await $.command.run(CHECK)
+  expect(await $.command.run({ ...CHECK, args: "watch add o/r#12" })).toMatchObject({ text: expect.stringContaining("の通知を始めます") })
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+
+  branch = "main"
+  says = { comments: [SAID] }
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(github.toasts.at(-1)).toBe("[r#12] aliceさんがコメントしました。Looks good")
+})

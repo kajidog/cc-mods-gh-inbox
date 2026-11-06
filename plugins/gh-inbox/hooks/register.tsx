@@ -647,15 +647,17 @@ async function checkWatched($: EngineInterface, ctx: Context, checked: Checked) 
   for (const [key, entry] of entries) {
     ctx.watchErrors.delete(key)
     const ref = refOfPullKey(key)
-    if (ref === null || isBranchPull(ctx, key)) continue
+    if (ref === null) continue
     try {
       // Added again since this session last looked (here or in another window), it starts over from a first look:
-      // what came while it was not watched is no news. The branch's own keeps what it has seen.
+      // what came while it was not watched is no news. The branch's own keeps what it has seen, and is taken as looked
+      // at, so it goes on from there once the branch is switched away from.
       const since = entry.since ?? 0
       if ((await read($, watchedSince))[key] !== since) {
         if (!isBranchPull(ctx, key)) await update($, seenIds, ({ [key]: _, ...others }) => others)
         await update($, watchedSince, held => ({ ...held, [key]: since }))
       }
+      if (isBranchPull(ctx, key)) continue
       const { value: seenByKey = {} } = await $.state.get({ plugin: "gh-inbox", key: "seen" })
       const own = seenForPull(seenByKey, ref)
       if (entry.done !== undefined && (own === undefined || own.has(MERGED_ID) || own.has(CLOSED_ID))) continue
