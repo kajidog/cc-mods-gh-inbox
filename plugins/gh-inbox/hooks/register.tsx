@@ -1,11 +1,11 @@
 import { atom, read, update } from "claude-code"
 import type { EngineInterface, Register, Timer } from "claude-code"
 
-import type { GhEvent, GhEventItem, GhPick, GhPicker, GhPickPull, GhStaged, GhWatch, Inbox, InboxNotice } from "../types"
+import type { GhEvent, GhEventItem, GhPick, GhPicker, GhPickPull, GhStaged, GhWatch, GhWatchPick, Inbox, InboxNotice } from "../types"
 
 import { type Ci, CI_ITEM_PREFIX, ciForPrompt, ciKey, isResult } from "./ci"
-import { displayName, mergeSeen, newEvents, type Nicknames, plain, pullIds, snippet } from "./events"
-import { type PullRef, type PullState, parsePull, parsePullUrl, pullArgv, pullName } from "./github"
+import { CLOSED_ID, displayName, MERGED_ID, mergeSeen, newEvents, type Nicknames, plain, pullIds, snippet } from "./events"
+import { type Pull, type PullRef, type PullState, parsePull, parsePullUrl, pullArgv, pullName } from "./github"
 import {
   addSharedSeen,
   HISTORIES_KEPT,
@@ -105,6 +105,7 @@ import {
   toTitles,
 } from "./repos"
 import { pullStatus, statusParts, TRAY_VIEW_KEY, TRAY_VIEWS, type TrayView, toTrayView } from "./status"
+import { dropDone, findWatched, toWatched, type Watched, WATCHED_KEY, WATCHED_MAX, type WatchedEntry } from "./watched"
 
 const COMMAND = "inbox"
 const NICKNAMES_KEY = "nicknames"
@@ -142,6 +143,7 @@ const CACHE_KEPT_MS = 60 * 60 * 1000
 const PICKER_PANE = "gh-inbox-kinds"
 const PICK_PANE = "gh-inbox-pick"
 const LOG_PANE = "gh-inbox-log"
+const WATCH_PANE = "gh-inbox-watch"
 // Titles asked for in one GraphQL request at most.
 const TITLES_AT_ONCE = 50
 // A lookup that fails for now (no network, a rate limit) is tried at this many checks, its notice held meanwhile.
@@ -159,6 +161,9 @@ const logRepo = atom({ plugin: "gh-inbox", key: "logRepo" } as const, null as st
 /** What the log pane's comments say now, by `latestKey`, asked for as their page shows. */
 const logLatest = atom({ plugin: "gh-inbox", key: "logLatest" } as const, {} as Record<string, Latest>)
 const pickUnfolded = atom({ plugin: "gh-inbox", key: "pickUnfolded" } as const, [] as string[])
+const watchPick = atom({ plugin: "gh-inbox", key: "watchPick" } as const, null as GhWatchPick | null)
+/** When each watched pull request was added, as this session last checked it: added again since, it starts over from a first look. */
+const watchedSince = atom({ plugin: "gh-inbox", key: "watchedSince" } as const, {} as Record<string, number>)
 /** How CI of the branch's pull request stood when Claude was last told of it in this session: kept across a reload. */
 const ciTold = atom({ plugin: "gh-inbox", key: "ciTold" } as const, null as string | null)
 /** When what Claude was last told of CI was asked of GitHub: an answer asked for before it is older news, not told. */
@@ -202,6 +207,13 @@ type Context = {
   viewers: Map<string, string>
   /** The last check's error, by `host/owner/repo`. */
   repoErrors: Map<string, string>
+  /** The last check's error of a watched pull request, by `host/owner/repo#number`. */
+  watchErrors: Map<string, string>
+  /**
+   * The newest commits of the watched pull requests this check asked about, by `host/owner/repo`: their failed
+   * checks are told there, so a registered repository does not tell their runs.
+   */
+  watchHeads: Map<string, Set<string>>
   /** The failed tries of a lookup tried again, by the id of its push or run. */
   retries: Map<string, number>
   /** The picker's toggles, one after another. */
@@ -462,22 +474,31 @@ async function shareSeen($: EngineInterface, key: string, ids: readonly string[]
   await $.store.set(`${SHARED_SEEN_PREFIX}${key}`, addSharedSeen(held && { ...held, ids: held.ids.filter(keep) }, ids, now))
 }
 
+/** The answer to `PULL_QUERY` the store holds for the pull request, and when it was asked, whatever its age; undefined with none. */
+async function cachedPull($: EngineInterface, ctx: Context, ref: PullRef): Promise<{ pull: Pull; at: number } | undefined> {
+  const cached = await $.store.get(`${CACHE_PREFIX}${pullKey(ref)}`)
+  if (typeof cached !== "object" || cached === null) return undefined
+  const { at, text } = cached as { at?: unknown; text?: unknown }
+  if (typeof at !== "number" || typeof text !== "string") return undefined
+  try {
+    return { pull: parsePull(ref, text, ctx.language), at }
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * The pull request as GitHub answers `PULL_QUERY`, and when it was asked: another
  * session's answer when it is younger than one interval, so sessions watching the
  * same pull request ask GitHub once between them.
  */
 async function fetchPull($: EngineInterface, ctx: Context, ref: PullRef, now: number) {
-  const key = `${CACHE_PREFIX}${pullKey(ref)}`
-  const cached = await $.store.get(key)
-  if (typeof cached === "object" && cached !== null) {
-    const { at, text } = cached as { at?: unknown; text?: unknown }
-    if (typeof at === "number" && typeof text === "string" && now - at < ctx.intervalSeconds * 1000) return { pull: parsePull(ref, text, ctx.language), at }
-  }
+  const cached = await cachedPull($, ctx, ref)
+  if (cached !== undefined && now - cached.at < ctx.intervalSeconds * 1000) return cached
   const fetched = await $.process.run(pullArgv(ref))
   if (fetched.exitCode !== 0) throw new Error(firstLine(fetched.stderr) || ctx.t.exitedWith("gh api", fetched.exitCode))
   const pull = parsePull(ref, fetched.stdout, ctx.language)
-  await $.store.set(key, { at: now, text: fetched.stdout })
+  await $.store.set(`${CACHE_PREFIX}${pullKey(ref)}`, { at: now, text: fetched.stdout })
 
   return { pull, at: now }
 }
@@ -543,6 +564,8 @@ async function checkPull($: EngineInterface, ctx: Context, checked: Checked, isF
     if (pull.state !== "OPEN") {
       ctx.found.isDone = true
       ctx.found.doneAt = ctx.checks
+      // Watched too, its end is marked as a watched one's is, so it leaves the list; no request more.
+      await markWatchedDone($, key, pull.state, now)
     }
     await update($, watch, () => ({
       branch,
@@ -569,6 +592,105 @@ async function checkPull($: EngineInterface, ctx: Context, checked: Checked, isF
       status: held?.status ?? null,
     }))
     $.ui.log(`gh-inbox: ${message}`, { to: "debug" })
+  }
+}
+
+async function readWatched($: EngineInterface) {
+  return toWatched(await $.store.get(WATCHED_KEY))
+}
+
+/**
+ * Changes one watched pull request's entry: read, changed and written at once, as every session writes the same key;
+ * the others keep their place.
+ */
+async function writeWatched($: EngineInterface, key: string, change: (entry: WatchedEntry | undefined) => WatchedEntry | undefined) {
+  const watched = await readWatched($)
+  const changed = change(watched[key])
+  const { [key]: _, ...others } = watched
+  const written: Watched = changed === undefined ? others : { ...watched, [key]: changed }
+  await $.store.set(WATCHED_KEY, written)
+}
+
+/** Whether `key` (`host/owner/repo#number`) is the branch's pull request, which is checked as the branch's. */
+const isBranchPull = (ctx: Context, key: string) => ctx.found?.ref != null && pullKey(ctx.found.ref).toLowerCase() === key.toLowerCase()
+
+/** Marks a watched pull request (`key` whatever its case) merged or closed, where it is watched and not marked yet. */
+async function markWatchedDone($: EngineInterface, key: string, state: Exclude<PullState, "OPEN">, now: number) {
+  const watched = await readWatched($)
+  const held = findWatched(watched, key)
+  if (held === undefined || watched[held]?.done !== undefined) return
+  await writeWatched($, held, one => one && { ...one, done: one.done ?? { state, at: now } })
+}
+
+/** What a watched pull request's notices start with in brackets: its repository's short name, registered or not, and its number. */
+function watchLabel(repos: Repos, ref: PullRef) {
+  const key = Object.keys(repos).find(one => one.toLowerCase() === repoKey(ref).toLowerCase())
+  const entry = key === undefined ? undefined : repos[key]
+  return `${key === undefined || entry === undefined ? ref.repo : repoLabel(key, entry)}#${ref.number}`
+}
+
+/**
+ * Checks the pull requests `/inbox watch` chose as the branch's is checked, one GraphQL request each; their notices go
+ * to `checked`, their names in brackets in front. One seen merged or closed is asked about no more by a session that
+ * told its end or never looked at it, and leaves the list a day after.
+ */
+async function checkWatched($: EngineInterface, ctx: Context, checked: Checked) {
+  ctx.watchHeads = new Map()
+  const now = await $.clock.now()
+  const held = await readWatched($)
+  const kept = dropDone(held, now)
+  if (Object.keys(kept).length < Object.keys(held).length) await $.store.set(WATCHED_KEY, kept)
+  const entries = Object.entries(kept).slice(0, WATCHED_MAX)
+  if (entries.length === 0) return
+  const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
+  const repos = await readRepos($)
+  for (const [key, entry] of entries) {
+    ctx.watchErrors.delete(key)
+    const ref = refOfPullKey(key)
+    if (ref === null) continue
+    try {
+      // Added again since this session last looked (here or in another window), it starts over from a first look:
+      // what came while it was not watched is no news. The branch's own keeps what it has seen, and is taken as looked
+      // at, so it goes on from there once the branch is switched away from.
+      const since = entry.since ?? 0
+      if ((await read($, watchedSince))[key] !== since) {
+        if (!isBranchPull(ctx, key)) await update($, seenIds, ({ [key]: _, ...others }) => others)
+        await update($, watchedSince, held => ({ ...held, [key]: since }))
+      }
+      if (isBranchPull(ctx, key)) continue
+      const { value: seenByKey = {} } = await $.state.get({ plugin: "gh-inbox", key: "seen" })
+      const own = seenForPull(seenByKey, ref)
+      if (entry.done !== undefined && (own === undefined || own.has(MERGED_ID) || own.has(CLOSED_ID))) continue
+      const { pull } = await fetchPull($, ctx, ref, now)
+      // Each session keeps its own seen ids, as for the branch's; those a registered repository's notices took count too.
+      const seen = own ?? seenForPull(await sharedSeen($), ref)
+      const bucket = checked[await bucketOf($, ctx, own, now)]
+      const label = watchLabel(repos, ref)
+      for (const event of newEvents(pull, seen, { nicknames, notifySelf: ctx.notifySelf, language: ctx.language })) {
+        const text = `[${label}] ${event.text}`
+        const isSelf = event.author !== null && event.author === pull.viewer
+        bucket.push({ event: { ...event, label, text }, source: "watch", repo: repoKey(ref), label, isSelf, text: plain(text) })
+      }
+      await update($, seenIds, seenOf => ({ ...seenOf, [key]: mergeSeen(seenOf[key] ?? [], pullIds(pull)) }))
+      await shareSeen($, key, pullIds(pull), now)
+
+      const head = pull.commits.at(-1)?.oid
+      const repo = repoKey(ref).toLowerCase()
+      if (head !== undefined) ctx.watchHeads.set(repo, new Set([...(ctx.watchHeads.get(repo) ?? []), head]))
+      // Its end marked once (and unmarked, opened again), so the list can say it and drop it. The shared list is
+      // written only then, not at every check, so a check seldom writes over what another window just changed.
+      const done = pull.state === "OPEN" ? undefined : (entry.done ?? { state: pull.state, at: now })
+      if (done !== entry.done)
+        await writeWatched($, key, one => {
+          if (one === undefined) return undefined
+          const { done: _, ...rest } = one
+          return { ...rest, title: pull.title, ...(done === undefined ? {} : { done: one.done ?? done }) }
+        })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      ctx.watchErrors.set(key, message)
+      $.ui.log(`gh-inbox: ${pullName(ref)}: ${message}`, { to: "debug" })
+    }
   }
 }
 
@@ -743,6 +865,8 @@ async function checkRepo(
   // The check that sees the pull request merged or closed tells its failed checks too: their runs are not told twice.
   const isWatched = watched !== undefined && (!watched.isDone || watched.doneAt === ctx.checks)
   const watchedHead = isWatched && watched.ref !== null && repoKey(watched.ref) === key ? (watched.head ?? null) : null
+  // The watched pull requests' failed checks are told there too.
+  const watchedHeads = new Set([...(watchedHead === null ? [] : [watchedHead]), ...(ctx.watchHeads.get(key.toLowerCase()) ?? [])])
 
   let viewer = ""
   let titles: Titles = {}
@@ -753,7 +877,7 @@ async function checkRepo(
     if (viewer === "") throw new Error(ctx.t.viewerUnknown)
     const pending = pendingEvents({ kinds: entry.kinds, events: cache.events, viewer }, seen, ctx.notifySelf)
     const isPrimed = entry.kinds.includes("ci-failure") && seen.has(ACTIONS_PRIMED)
-    const failedRuns = isPrimed ? cache.runs.filter(run => !seen.has(run.id) && run.headSha !== watchedHead) : []
+    const failedRuns = isPrimed ? cache.runs.filter(run => !seen.has(run.id) && !watchedHeads.has(run.headSha)) : []
     ;({ cache, deferred } = await lookUpDetails($, ctx, ref, cache, pending, failedRuns))
     titles = await titlesFor($, ref, pending)
   }
@@ -762,7 +886,7 @@ async function checkRepo(
   const runs = cache.runs.filter(run => !deferred.has(run.id))
   const label = repoLabel(key, entry)
   const fresh = newRepoEvents(
-    { ref, label, kinds: entry.kinds, events, runs, titles, viewer, watchedHead },
+    { ref, label, kinds: entry.kinds, events, runs, titles, viewer, watchedHeads },
     seen,
     { nicknames, notifySelf: ctx.notifySelf, language: ctx.language },
   )
@@ -836,6 +960,8 @@ async function runCheck($: EngineInterface, ctx: Context, isForced: boolean) {
   try {
     const checked: Checked = { fresh: [], missed: [], adopted: [] }
     await checkPull($, ctx, checked, isForced)
+    // Before the repositories, so what a pull request tells in full is not told by a repository's event first.
+    await checkWatched($, ctx, checked)
     await checkRepos($, ctx, checked)
     await touch($, ctx, false)
     const { fresh, missed, adopted } = checked
@@ -935,6 +1061,8 @@ async function status($: EngineInterface, ctx: Context) {
   }
   if (held?.checkedAt != null) lines.push(t.lastChecked(ago(t, now - held.checkedAt), ctx.intervalSeconds))
   if (held?.error != null) lines.push(t.error(held.error))
+  const watched = Object.keys(await readWatched($)).length
+  if (watched > 0) lines.push(t.watchedCount(watched))
   const repos = Object.keys(toRepos(await $.store.get(REPOS_KEY))).length
   if (repos > 0) lines.push(t.registeredCount(repos))
   lines.push((await isShowing($, ctx, now)) ? t.showsHere : t.showsElsewhere)
@@ -1125,8 +1253,37 @@ async function loadItems($: EngineInterface, ctx: Context, ref: PullRef) {
   if (token === ctx.picking) await update($, pick, () => shown)
 }
 
-/** Lists in the pick pane the open pull requests of this repository and those of the registered ones the person is involved in. */
-/** Lists pull requests to choose from; `failure` says why the branch's own could not be looked up. */
+/**
+ * The open pull requests of this repository and those of the registered ones the person is involved in, one search a
+ * host; `errors` says which hosts could not be searched, and why.
+ */
+async function searchPulls($: EngineInterface, ctx: Context) {
+  const here = await hereRepo($)
+  const registered = Object.keys(toRepos(await $.store.get(REPOS_KEY)))
+    .map(refOfKey)
+    .filter(ref => here === null || repoKey(ref).toLowerCase() !== repoKey(here).toLowerCase())
+  const hosts = [...new Set([...(here === null ? [] : [here.host]), ...registered.map(ref => ref.host)])]
+  const pulls: GhPickPull[] = []
+  const notes: string[] = []
+  const errors: string[] = []
+  for (const host of hosts) {
+    const argv = pullsArgv(host, here?.host === host ? here : null, registered.filter(ref => ref.host === host))
+    if (argv === null) continue
+    try {
+      const run = await $.process.run(argv)
+      if (run.exitCode !== 0) throw new Error(firstLine(run.stderr) || ctx.t.exitedWith("gh api", run.exitCode))
+      const found = parsePulls(run.stdout, ctx.language)
+      pulls.push(...found.pulls.filter(pull => !pulls.some(one => one.key === pull.key)))
+      notes.push(...found.notes)
+    } catch (error) {
+      errors.push(`${host}: ${message(error)}`)
+    }
+  }
+
+  return { pulls, notes, errors }
+}
+
+/** Lists in the pick pane pull requests to choose from; `failure` says why the branch's own could not be looked up. */
 async function loadPulls($: EngineInterface, ctx: Context, failure?: string) {
   ctx.picking += 1
   const token = ctx.picking
@@ -1134,27 +1291,8 @@ async function loadPulls($: EngineInterface, ctx: Context, failure?: string) {
   await update($, pick, (): GhPick => ({ stage: "loading", message: t.searchingPulls }))
   let shown: GhPick
   try {
-    const here = await hereRepo($)
-    const registered = Object.keys(toRepos(await $.store.get(REPOS_KEY)))
-      .map(refOfKey)
-      .filter(ref => here === null || repoKey(ref).toLowerCase() !== repoKey(here).toLowerCase())
-    const hosts = [...new Set([...(here === null ? [] : [here.host]), ...registered.map(ref => ref.host)])]
-    const pulls: GhPickPull[] = []
-    const notes: string[] = []
-    const errors: string[] = failure === undefined ? [] : [failure]
-    for (const host of hosts) {
-      const argv = pullsArgv(host, here?.host === host ? here : null, registered.filter(ref => ref.host === host))
-      if (argv === null) continue
-      try {
-        const run = await $.process.run(argv)
-        if (run.exitCode !== 0) throw new Error(firstLine(run.stderr) || t.exitedWith("gh api", run.exitCode))
-        const found = parsePulls(run.stdout, ctx.language)
-        pulls.push(...found.pulls.filter(pull => !pulls.some(one => one.key === pull.key)))
-        notes.push(...found.notes)
-      } catch (error) {
-        errors.push(`${host}: ${message(error)}`)
-      }
-    }
+    const { pulls, notes, errors: failed } = await searchPulls($, ctx)
+    const errors = [...(failure === undefined ? [] : [failure]), ...failed]
     shown = pulls.length === 0 && errors.length > 0 ? { stage: "error", message: t.searchFailed(errors.join(" / ")) } : { stage: "pulls", pulls, notes: [...errors.map(t.notSearched), ...notes] }
   } catch (error) {
     shown = { stage: "error", message: t.searchFailed(message(error)) }
@@ -1230,6 +1368,140 @@ const pullLabel = (key: string) => {
   return ref === null ? key : `${ref.host === "github.com" ? "" : `${ref.host}/`}${pullName(ref)}`
 }
 
+/**
+ * Starts watching a pull request (`key` as GitHub spells it): a first look at the next check takes what it holds as
+ * seen, so its notices start from now.
+ */
+async function startWatching($: EngineInterface, ctx: Context, key: string, title: string) {
+  // What another window's check under way at a removal wrote back is not the first look's baseline.
+  await $.store.delete(`${SHARED_SEEN_PREFIX}${key}`)
+  // When it was added: every window that watched it before starts over from a first look.
+  const since = await $.clock.now()
+  await writeWatched($, key, () => ({ title, since }))
+  void check($, ctx)
+}
+
+/** Stops watching a pull request; watched again, it starts over from a first look in every window (`since`). */
+async function stopWatching($: EngineInterface, ctx: Context, key: string) {
+  await writeWatched($, key, () => undefined)
+  ctx.watchErrors.delete(key)
+}
+
+/** The watched pull requests, a few lines each: where each stands as the last check that read it found it. */
+async function watchList($: EngineInterface, ctx: Context): Promise<string | undefined> {
+  const { t } = ctx
+  const entries = Object.entries(await readWatched($))
+  if (entries.length === 0) return undefined
+  const now = await $.clock.now()
+  const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
+  const lines: string[] = []
+  for (const [key, entry] of entries) {
+    const ref = refOfPullKey(key)
+    if (ref === null) continue
+    const cached = await cachedPull($, ctx, ref)
+    const state = cached?.pull.state ?? entry.done?.state ?? "OPEN"
+    lines.push(`${pullLabel(key)} ${cached?.pull.title ?? entry.title}${t.paren(t.pullState(state))}${isBranchPull(ctx, key) ? t.watchIsBranch : ""}`)
+    if (cached !== undefined) {
+      // Where it stands, as the line under the prompt tells the branch's, the number left off.
+      const since = (at: string) => {
+        const ms = Date.parse(at)
+        return Number.isNaN(ms) ? undefined : ago(t, now - ms)
+      }
+      const parts = state === "OPEN" ? statusParts(t, ref.number, state, pullStatus(cached.pull, nicknames, ctx.language), since).slice(1) : []
+      if (parts.length > 0) lines.push(`  ${parts.join(" · ")}`)
+      lines.push(`  ${t.lastCheckedRepo(ago(t, now - cached.at))}`)
+    }
+    const error = ctx.watchErrors.get(key)
+    if (error !== undefined) lines.push(`  ${t.error(error)}`)
+  }
+
+  return lines.map(plain).join("\n")
+}
+
+async function watchCommand($: EngineInterface, ctx: Context, words: readonly string[]): Promise<string> {
+  const { t } = ctx
+  const usage = t.watchUsage(WATCHED_MAX)
+  const [action, ...rest] = words
+  if (action === undefined) return (await watchList($, ctx)) ?? `${t.noWatched}\n${usage}`
+  if (action !== "add" && action !== "remove") return usage
+  const arg = rest.join(" ")
+  if (arg === "") {
+    if (action === "remove") return usage
+    return (await openWatch($, ctx)) ? t.watchPaneOpened : t.paneNotOpened
+  }
+  const isBare = /^#?\d+$/.test(arg)
+  const ref = parsePullArg(arg, isBare ? await hereRepo($) : null)
+  if (ref === null) return isBare ? t.watchNoHereRepo : t.pullFormat
+  const watched = await readWatched($)
+  const held = findWatched(watched, pullKey(ref))
+  if (action === "remove") {
+    if (held === undefined) return t.notWatched(pullLabel(pullKey(ref)))
+    await stopWatching($, ctx, held)
+    return t.unwatched(pullLabel(held))
+  }
+  if (held !== undefined) return t.alreadyWatched(pullLabel(held))
+  if (Object.keys(watched).length >= WATCHED_MAX) return t.tooManyWatched(WATCHED_MAX)
+  let pull: Pull
+  try {
+    pull = (await fetchPull($, ctx, ref, await $.clock.now())).pull
+  } catch (error) {
+    return t.cannotRead(pullLabel(pullKey(ref)), message(error))
+  }
+  // Watched as GitHub spells it, the key the branch's own and a registered repository's notices go by, so each is told once.
+  const key = pullKeyOfUrl(pull.url, ref)
+  const named = findWatched(watched, key)
+  if (named !== undefined) return t.alreadyWatched(pullLabel(named))
+  if (pull.state !== "OPEN") return t.watchNotOpen(pullLabel(key), t.pullState(pull.state))
+  await startWatching($, ctx, key, pull.title)
+
+  return t.watching(pullLabel(key), plain(pull.title))
+}
+
+/** Opens the pane of `/inbox watch` on the pull requests to choose from. */
+async function openWatch($: EngineInterface, ctx: Context) {
+  await update($, watchPick, (): GhWatchPick => ({ stage: "loading", message: ctx.t.searchingPulls }))
+  const opened = await $.ui.open({ id: WATCH_PANE, title: ctx.t.watchTitle, focus: true })
+  if (!opened.isPlaced) return false
+  let shown: GhWatchPick
+  try {
+    const found = await searchPulls($, ctx)
+    const watched = await readWatched($)
+    // Those watched that the search did not find (of another repository, or merged) are listed too, to stop watching them.
+    const others = Object.entries(watched)
+      .filter(([key]) => !found.pulls.some(pull => pull.key.toLowerCase() === key.toLowerCase()))
+      .map(([key, entry]): GhPickPull => ({ key, title: entry.title, author: null }))
+    const pulls = [...found.pulls, ...others]
+    const notes = [...found.errors.map(ctx.t.notSearched), ...found.notes]
+    shown =
+      pulls.length === 0 && found.errors.length > 0
+        ? { stage: "error", message: ctx.t.searchFailed(found.errors.join(" / ")) }
+        : { stage: "pulls", pulls, notes, chosen: pulls.filter(pull => findWatched(watched, pull.key) !== undefined).map(pull => pull.key) }
+  } catch (error) {
+    shown = { stage: "error", message: ctx.t.searchFailed(message(error)) }
+  }
+  await update($, watchPick, () => shown)
+
+  return true
+}
+
+/** Starts or stops watching one pull request of the pane, saved at once. */
+async function toggleWatched($: EngineInterface, ctx: Context, pull: GhPickPull) {
+  const held = await read($, watchPick)
+  if (held?.stage !== "pulls") return
+  const watched = await readWatched($)
+  const key = findWatched(watched, pull.key)
+  const isFull = key === undefined && Object.keys(watched).length >= WATCHED_MAX
+  if (key !== undefined) await stopWatching($, ctx, key)
+  else if (!isFull) await startWatching($, ctx, pull.key, pull.title)
+  const after = await readWatched($)
+  await update($, watchPick, one => {
+    if (one?.stage !== "pulls") return one
+    const { refusal: _, ...rest } = one
+    const chosen = one.pulls.filter(each => findWatched(after, each.key) !== undefined).map(each => each.key)
+    return { ...rest, chosen, ...(isFull ? { refusal: ctx.t.tooManyWatched(WATCHED_MAX) } : {}) }
+  })
+}
+
 export const register: Register = (on, options) => {
   const language = toLanguage(options.language)
   const t = MESSAGES[language]
@@ -1251,6 +1523,8 @@ export const register: Register = (on, options) => {
     touchedAt: 0,
     viewers: new Map(),
     repoErrors: new Map(),
+    watchErrors: new Map(),
+    watchHeads: new Map(),
     retries: new Map(),
     toggling: Promise.resolve(),
     picking: 0,
@@ -1403,6 +1677,8 @@ export const register: Register = (on, options) => {
       }
       case "pick":
         return { text: await pickCommand($, ctx, rest) }
+      case "watch":
+        return { text: await watchCommand($, ctx, rest) }
       case "tray":
         return { text: await trayCommand($, ctx, rest) }
       case "clear": {
@@ -1599,6 +1875,44 @@ export const register: Register = (on, options) => {
           {page > 0 && <Button key="newer" hotkey="p" label={t.newer} onPress={turn(page - 1)} />}
           <Button key="close" hotkey="q" label={t.close} onPress={() => void $.ui.close({ id: LOG_PANE })} />
         </Box>
+      </Box>
+    )
+  })
+
+  on("ui.render", { component: "Pane", requestId: WATCH_PANE }, async ($, e) => {
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const held = await read($, watchPick)
+    const close = <Button key="close" hotkey="q" label={t.close} onPress={() => void $.ui.close({ id: WATCH_PANE })} />
+    if (held === null || held.stage !== "pulls")
+      return (
+        <Box flexDirection="column">
+          {held?.stage === "error" ? <Text>{plain(held.message)}</Text> : <Text dimColor>{held?.message ?? t.loading}</Text>}
+          {close}
+        </Box>
+      )
+
+    return (
+      <Box flexDirection="column">
+        <Text>{held.pulls.length === 0 ? t.noCandidates : t.watchHint}</Text>
+        {held.notes.map(note => (
+          <Text key={note} color="warning">
+            {plain(note)}
+          </Text>
+        ))}
+        {held.refusal !== undefined && <Text color="warning">{held.refusal}</Text>}
+        {held.pulls.map((pull, index) => (
+          <Button
+            key={pull.key}
+            hotkey={index < 9 ? String(index + 1) : undefined}
+            plain
+            label={`[${held.chosen.includes(pull.key) ? "x" : " "}] ${plain(pullLabel(pull.key))} ${plain(pull.title)}${pull.author === null ? "" : t.paren(plain(pull.author))}`}
+            onPress={() => {
+              // Keys pressed in a row each read what the one before saved.
+              ctx.toggling = ctx.toggling.then(() => toggleWatched($, ctx, pull)).catch(() => undefined)
+            }}
+          />
+        ))}
+        {close}
       </Box>
     )
   })

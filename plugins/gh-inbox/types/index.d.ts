@@ -28,7 +28,10 @@ export type GhEvent = {
   who?: string
   /** What the line starts with before what a person wrote (a comment, a title): who did it and what. */
   head?: string
-  /** The short name of the registered repository the line starts with, in brackets, before its head. */
+  /**
+   * What the line starts with in brackets, before its head: the registered repository's short name, or for a pull
+   * request `/inbox watch` chose, that name and its number (`tts#20`).
+   */
   label?: string
 }
 
@@ -76,6 +79,22 @@ export type GhWatch = {
   /** Where the pull request stood at the last check that read it; null or absent with none. */
   status?: GhPullStatus | null
 }
+
+/** What the pane of `/inbox watch` shows: pull requests to start or stop watching. */
+export type GhWatchPick =
+  | { stage: "loading"; message: string }
+  | { stage: "error"; message: string }
+  | {
+      stage: "pulls"
+      /** Those found open, then those watched that were not found. */
+      pulls: GhPickPull[]
+      /** The hosts that could not be searched and what was left out, said in a line each. */
+      notes: string[]
+      /** The `host/owner/repo#number` of those watched. */
+      chosen: string[]
+      /** Why the last one pressed could not be watched; absent where it could. */
+      refusal?: string
+    }
 
 /** An open pull request `/inbox pick` lists to choose from. */
 export type GhPickPull = {
@@ -142,11 +161,14 @@ export type GhStaged = {
 /** One notice about to be shown, as `$.inbox.notify` takes it. */
 export type InboxNotice = {
   event: GhEvent
-  /** pull: the checked-out branch's pull request. repo: a registered repository. */
-  source: "pull" | "repo"
+  /** pull: the checked-out branch's pull request. watch: a pull request `/inbox watch` chose. repo: a registered repository. */
+  source: "pull" | "watch" | "repo"
   /** `host/owner/repo`. */
   repo: string
-  /** The registered repository's label, its alias or its name, that leads `text` in brackets; null for the branch's pull request. */
+  /**
+   * What leads `text` in brackets: the registered repository's alias or its name, with the number of a pull
+   * request `/inbox watch` chose (`tts#20`); null for the branch's pull request.
+   */
   label: string | null
   /** Whether the account `gh` is logged in as did it. */
   isSelf: boolean
@@ -210,6 +232,10 @@ declare module "claude-code" {
       >
       /** The pick pane's items unfolded to say in full what they say, by id. */
       pickUnfolded: string[]
+      /** What the pane of `/inbox watch` shows. */
+      watchPick: GhWatchPick | null
+      /** When each watched pull request (`host/owner/repo#number`) was added, as this session last checked it. */
+      watchedSince: Record<string, number>
       /** How CI of the branch's pull request stood when Claude was last told of it in this session (`ciKey`); null before. */
       ciTold: string | null
       /** When what Claude was last told of CI was asked of GitHub, ms since the epoch; 0 before. */

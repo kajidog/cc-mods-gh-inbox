@@ -1074,3 +1074,322 @@ test("an answer asked for at an earlier opening of the log is not shown over a l
   expect(await pane.find({ type: "Text", text: "（1時間前、編集済み・10分前）" })).toBeDefined()
   expect(await pane.find({ type: "Text", text: "（1時間前、編集済み・50分前）" })).toBeUndefined()
 })
+
+type PullSays = {
+  number?: number
+  title?: string
+  state?: "OPEN" | "MERGED" | "CLOSED"
+  comments?: Array<{ id: string; author: string; body: string; at: string }>
+  head?: string
+  /** The newest commit's checks, failed ones by name. */
+  failed?: string[]
+}
+
+/** `PULL_QUERY`'s answer for o/r#number, as GitHub would give it. */
+function pullAnswer(says: PullSays) {
+  const number = says.number ?? 12
+  const failed = says.failed ?? []
+  return JSON.stringify({
+    data: {
+      viewer: { login: "me" },
+      repository: {
+        pullRequest: {
+          title: says.title ?? "Add things",
+          url: `https://github.com/o/r/pull/${number}`,
+          state: says.state ?? "OPEN",
+          closedAt: says.state === undefined || says.state === "OPEN" ? null : "2026-10-16T01:00:00Z",
+          mergeable: "MERGEABLE",
+          reviewDecision: null,
+          mergedBy: says.state === "MERGED" ? { login: "alice" } : null,
+          latestOpinionatedReviews: { nodes: [] },
+          closed: { nodes: [] },
+          comments: { nodes: (says.comments ?? []).map(one => ({ id: one.id, author: { login: one.author }, body: one.body, createdAt: one.at, url: `https://github.com/o/r/pull/${number}#${one.id}` })) },
+          reviews: { nodes: [] },
+          commits: {
+            nodes:
+              says.head === undefined
+                ? []
+                : [{ commit: { oid: says.head, messageHeadline: "feat: x", additions: 1, deletions: 0, committedDate: "2026-10-16T00:00:00Z", url: "", author: { name: "me", user: { login: "me" } } } }],
+          },
+          latest: {
+            nodes: [
+              {
+                commit: {
+                  oid: says.head ?? "",
+                  statusCheckRollup: {
+                    state: failed.length > 0 ? "FAILURE" : "SUCCESS",
+                    contexts: {
+                      nodes: failed.map((name, index) => ({
+                        __typename: "CheckRun",
+                        databaseId: 900 + index,
+                        name,
+                        status: "COMPLETED",
+                        conclusion: "FAILURE",
+                        detailsUrl: "",
+                        steps: { nodes: [] },
+                      })),
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+  })
+}
+
+/** The number a `PULL_QUERY` asks about; undefined for another request. */
+const askedPull = (argv: string[]) => (argv.some(word => word.startsWith("query=query($owner") && word.includes("latestOpinionatedReviews")) ? Number(argv.find(word => word.startsWith("number="))?.slice(7)) : undefined)
+
+const SAID = { id: "IC_9", author: "alice", body: "Looks good", at: "2026-10-16T00:30:00Z" }
+
+test("a watched pull request is checked as the branch's is, at every check, its notices named in brackets", JA, async ($, on) => {
+  mock.store(on, { watched: { "github.com/o/r#12": { title: "Add things" } } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  let says: PullSays = {}
+  const github = fakeGitHub(on, [[]], argv => (askedPull(argv) === 12 ? { stdout: pullAnswer(says) } : undefined))
+
+  // The first look takes what is there as seen.
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual([])
+
+  says = { comments: [SAID] }
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual(["[r#12] aliceさんがコメントしました。Looks good"])
+  // One GraphQL request a check, not the Events API.
+  expect(github.asked.filter(argv => askedPull(argv) === 12)).toHaveLength(2)
+  expect(github.asked.filter(argv => (argv.at(-1) ?? "").includes("/events"))).toHaveLength(0)
+  expect(await $.command.run({ ...CHECK, args: "log text" })).toMatchObject({ text: expect.stringContaining("[r#12] aliceさんがコメントしました。Looks good") })
+  expect(await $.command.run({ ...CHECK, args: "status" })).toMatchObject({ text: expect.stringContaining("通知する PR: 1件（/inbox watch）") })
+})
+
+test("a hook on inbox.notify is told a watched pull request's notice as one, named by its repository's alias and number", async ($, on) => {
+  mock.store(on, { watched: { "github.com/o/r#12": { title: "Add things" } }, repos: { [KEY]: { kinds: [], alias: "tts" } } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  let says: PullSays = {}
+  const github = fakeGitHub(on, [[]], argv => (askedPull(argv) === 12 ? { stdout: pullAnswer(says) } : undefined))
+  const told: Array<{ source: string; label: string | null; repo: string; text: string }> = []
+  on("inbox.notify", async (_$, e, next) => {
+    told.push({ source: e.source, label: e.label, repo: e.repo, text: e.text })
+    return next(e)
+  })
+
+  await $.command.run(CHECK)
+  says = { comments: [SAID] }
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(told).toEqual([{ source: "watch", label: "tts#12", repo: KEY, text: "[tts#12] alice commented: Looks good" }])
+  expect(github.toasts).toEqual(["[tts#12] alice commented: Looks good"])
+})
+
+test("what a watched pull request and its registered repository both see is told once, by the pull request", JA, async ($, on) => {
+  mock.store(on, { watched: { "github.com/o/r#3": { title: "Add things" } }, repos: { [KEY]: { kinds: ["comment"], alias: "r" } } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  let says: PullSays = { number: 3 }
+  // The repository's events tell the same comment, IC_1 on #3.
+  const github = fakeGitHub(on, [[], [COMMENT]], argv => (askedPull(argv) === 3 ? { stdout: pullAnswer(says) } : undefined))
+
+  await $.command.run(CHECK)
+  says = { number: 3, comments: [{ id: "IC_1", author: "someone", body: "Looks good", at: COMMENT.created_at }] }
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual(["[r#3] someoneさんがコメントしました。Looks good"])
+})
+
+test("a failed run of a watched pull request's newest commit is told by the pull request, not its registered repository", JA, async ($, on) => {
+  mock.store(on, { watched: { "github.com/o/r#12": { title: "Add things" } }, repos: { [KEY]: { kinds: ["ci-failure"], alias: "r" } } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const run = { id: 39000000009, name: "test", head_branch: "feat", head_sha: "c0ffee", html_url: "", updated_at: "2026-10-16T12:00:00Z", run_attempt: 1, conclusion: "failure" }
+  let runs: unknown[] = []
+  let says: PullSays = { head: "c0ffee" }
+  const github = fakeGitHub(on, [[]], argv => {
+    if (askedPull(argv) === 12) return { stdout: pullAnswer(says) }
+    const path = argv.find(word => word.includes("/actions/runs")) ?? ""
+    if (path.endsWith("/jobs")) return { stdout: JSON.stringify({ jobs: [] }) }
+    if (path !== "") return { stdout: `HTTP/2.0 200 OK\nEtag: "r${runs.length}"\n\n${JSON.stringify({ workflow_runs: runs })}` }
+    return undefined
+  })
+
+  await $.command.run(CHECK)
+  runs = [run]
+  says = { head: "c0ffee", failed: ["test"] }
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual(["[r#12] testのCIが失敗しました。"])
+})
+
+test("a watched pull request seen merged is told once, then not asked about, and leaves the list a day later", JA, async ($, on) => {
+  mock.store(on, { watched: { "github.com/o/r#12": { title: "Add things" } } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  let says: PullSays = {}
+  const github = fakeGitHub(on, [[]], argv => (askedPull(argv) === 12 ? { stdout: pullAnswer(says) } : undefined))
+  const asked = () => github.asked.filter(argv => askedPull(argv) === 12).length
+
+  await $.command.run(CHECK)
+  says = { state: "MERGED" }
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual(["[r#12] #12 がマージされました。"])
+  expect(await $.command.run({ ...CHECK, args: "watch" })).toMatchObject({ text: expect.stringContaining("o/r#12 Add things（マージ済み）") })
+
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(asked()).toBe(2)
+  expect(github.toasts).toHaveLength(1)
+
+  await clock.advance(24 * 3600_000)
+  await $.command.run(CHECK)
+  expect(await $.command.run({ ...CHECK, args: "watch" })).toMatchObject({ text: expect.stringMatching(/^通知する PR はありません。/) })
+})
+
+test("the branch's own pull request, watched too, is asked about once a check, as the branch's", JA, async ($, on) => {
+  mock.store(on, { watched: { "github.com/o/r#12": { title: "Add things" } } })
+  mock.clock(on, { now: Date.parse(COMMENT.created_at) + 5 * 60_000 })
+  const github = fakeGitHub(on, [[]], branchPull(COMMENT.created_at))
+
+  await $.command.run(CHECK)
+  expect(github.asked.filter(argv => argv.includes("graphql"))).toHaveLength(1)
+  const listed = await $.command.run({ ...CHECK, args: "watch" })
+  expect(listed).toMatchObject({ text: expect.stringContaining("o/r#12 Add things（通知中）（今のブランチの PR として通知中）") })
+  expect(listed).toMatchObject({ text: expect.stringContaining("\n  CI ✗ 1/2 · 承認2 · コンフリクト · aliceさん「Looks good」 5分前\n") })
+})
+
+test("/inbox watch add takes a pull request as GitHub spells it and refuses one watched or merged; remove stops it", JA, async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: 1_000_000 })
+  const github = fakeGitHub(on, [[]], argv => {
+    if (argv.includes("repo") && argv.includes("view")) return { stdout: "https://github.com/o/r\n" }
+    const number = askedPull(argv)
+    if (number === 404) return { exitCode: 1, stderr: "gh: Could not resolve to a PullRequest with the number of 404." }
+    return number === undefined ? undefined : { stdout: pullAnswer({ number, state: number === 13 ? "MERGED" : "OPEN" }) }
+  })
+  const run = (args: string) => $.command.run({ ...CHECK, args })
+
+  expect(await run("watch add O/R#12")).toEqual({ text: "o/r#12 Add things の通知を始めます。今のブランチの PR と同じように通知します。" })
+  expect(await run("watch add 12")).toEqual({ text: "o/r#12 はもう通知しています。" })
+  expect(await run("watch add https://github.com/o/r/pull/12")).toEqual({ text: "o/r#12 はもう通知しています。" })
+  expect(await run("watch add o/r#13")).toEqual({ text: "o/r#13 はマージ済みです。これ以上通知するものはありません。" })
+  expect(await run("watch add o/r#404")).toEqual({ text: "o/r#404 を読めませんでした: gh: Could not resolve to a PullRequest with the number of 404." })
+  expect(await run("watch add nonsense")).toEqual({ text: "PR は 12・owner/repo#12・PR の URL のどれかで指定します。" })
+  expect(await run("watch")).toMatchObject({ text: expect.stringMatching(/^o\/r#12 Add things（通知中）\n {2}最後の確認: /) })
+  expect(github.toasts).toEqual([])
+
+  expect(await run("watch remove o/r#13")).toEqual({ text: "o/r#13 は通知していません。" })
+  expect(await run("watch remove 12")).toEqual({ text: "o/r#12 の通知をやめました。" })
+  expect(await run("watch")).toMatchObject({ text: expect.stringMatching(/^通知する PR はありません。\n使い方:/) })
+  expect(await run("watch other")).toMatchObject({ text: expect.stringMatching(/^使い方:/) })
+})
+
+test("the watch pane lists pull requests to choose from and those watched, and turns watching on and off, saved at once", JA, async ($, on) => {
+  mock.store(on, { watched: { "github.com/x/y#5": { title: "Elsewhere" } } })
+  mock.clock(on, { now: 1_000_000 })
+  const found = { issueCount: 1, nodes: [{ number: 12, title: "Add things", url: "https://github.com/o/r/pull/12", updatedAt: "2026-10-16T00:00:00Z", author: { login: "alice" } }] }
+  fakeGitHub(on, [[]], argv => {
+    if (argv.includes("repo") && argv.includes("view")) return { stdout: "https://github.com/o/r\n" }
+    if (argv.some(word => word.includes("search("))) return { stdout: JSON.stringify({ data: { here: found } }) }
+    const number = askedPull(argv)
+    return number === undefined ? undefined : { stdout: pullAnswer({ number }) }
+  })
+  on("ui.open", async () => ({ value: { isPlaced: true } }))
+
+  expect(await $.command.run({ ...CHECK, args: "watch add" })).toEqual({ text: "ペインで通知する PR を押してください。すぐに保存します。" })
+  const pane = await $.ui.mount({
+    plugin: "gh-inbox",
+    surface: "terminal",
+    component: "Pane",
+    requestId: "gh-inbox-watch",
+    props: { title: "", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 20 }, view: {} },
+  })
+  expect((await pane.find({ key: "github.com/o/r#12" }))?.props.label).toBe("[ ] o/r#12 Add things（alice）")
+  expect((await pane.find({ key: "github.com/x/y#5" }))?.props.label).toBe("[x] x/y#5 Elsewhere")
+
+  await pane.press({ key: "github.com/o/r#12" })
+  await pane.press({ key: "github.com/x/y#5" })
+  expect((await pane.find({ key: "github.com/o/r#12" }))?.props.label).toBe("[x] o/r#12 Add things（alice）")
+  expect((await pane.find({ key: "github.com/x/y#5" }))?.props.label).toBe("[ ] x/y#5 Elsewhere")
+  expect(await $.command.run({ ...CHECK, args: "watch" })).toMatchObject({ text: expect.stringMatching(/^o\/r#12 Add things（通知中）/) })
+})
+
+test("the branch's own pull request, watched too, is marked merged as the branch's check sees it, and leaves the list a day later", JA, async ($, on) => {
+  mock.store(on, { watched: { "github.com/o/r#12": { title: "Add things" } } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  let state: "OPEN" | "MERGED" = "OPEN"
+  const github = fakeGitHub(on, [[]], argv => {
+    if (argv[0] === "git") return { stdout: "feat\n" }
+    if (argv.includes("pr") && argv.includes("view")) return { stdout: JSON.stringify({ url: "https://github.com/o/r/pull/12", state }) }
+    return askedPull(argv) === 12 ? { stdout: pullAnswer({ state }) } : undefined
+  })
+
+  await $.command.run(CHECK)
+  state = "MERGED"
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  // Told as the branch's, not again as a watched one's.
+  expect(github.toasts).toEqual(["GitHub: #12 の通知を始めます。Add things", "#12 がマージされました。"])
+  expect(await $.command.run({ ...CHECK, args: "watch" })).toMatchObject({ text: expect.stringContaining("o/r#12 Add things（マージ済み）") })
+
+  // The window stays on the branch.
+  await clock.advance(24 * 3600_000 + 61_000)
+  await $.command.run(CHECK)
+  expect(await $.command.run({ ...CHECK, args: "watch" })).toMatchObject({ text: expect.stringMatching(/^通知する PR はありません。/) })
+})
+
+test("a pull request added again, in this window or another, starts over: what came while it was not watched is no news", JA, async ($, on) => {
+  // The store, by hand, to change it as another window would.
+  const store = new Map<string, unknown>([["watched", { "github.com/o/r#12": { title: "Add things", since: 1 } }]])
+  on("store.get", async (_$, e) => ({ value: store.get(e.key) }))
+  on("store.set", async (_$, e) => {
+    store.set(e.key, e.value)
+    return { value: undefined }
+  })
+  on("store.delete", async (_$, e) => {
+    store.delete(e.key)
+    return { value: undefined }
+  })
+  on("store.keys", async () => ({ value: [...store.keys()] }))
+  const clock = mock.clock(on, { now: 1_000_000 })
+  let says: PullSays = {}
+  const github = fakeGitHub(on, [[]], argv => (askedPull(argv) === 12 ? { stdout: pullAnswer(says) } : undefined))
+  const later = { id: "IC_10", author: "bob", body: "And this", at: "2026-10-16T00:40:00Z" }
+
+  await $.command.run(CHECK)
+  // Another window removes it, a comment comes, and it is added again there: the list says when.
+  says = { comments: [SAID] }
+  store.set("watched", { "github.com/o/r#12": { title: "Add things", since: 2 } })
+  store.delete("shared-seen:github.com/o/r#12")
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual([])
+
+  says = { comments: [SAID, later] }
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual(["[r#12] bobさんがコメントしました。And this"])
+})
+
+test("the branch's own pull request, watched, goes on as a watched one once the branch is switched away from: what comes is told one by one", JA, async ($, on) => {
+  mock.store(on, {})
+  const clock = mock.clock(on, { now: 1_000_000 })
+  let branch = "feat"
+  let says: PullSays = {}
+  const github = fakeGitHub(on, [[]], argv => {
+    if (argv[0] === "git") return { stdout: `${branch}\n` }
+    if (argv.includes("pr") && argv.includes("view"))
+      return branch === "feat" ? { stdout: JSON.stringify({ url: "https://github.com/o/r/pull/12", state: "OPEN" }) } : { exitCode: 1, stderr: 'no pull requests found for branch "main"' }
+    return askedPull(argv) === 12 ? { stdout: pullAnswer(says) } : undefined
+  })
+
+  await $.command.run(CHECK)
+  expect(await $.command.run({ ...CHECK, args: "watch add o/r#12" })).toMatchObject({ text: expect.stringContaining("の通知を始めます") })
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+
+  branch = "main"
+  says = { comments: [SAID] }
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(github.toasts.at(-1)).toBe("[r#12] aliceさんがコメントしました。Looks good")
+})

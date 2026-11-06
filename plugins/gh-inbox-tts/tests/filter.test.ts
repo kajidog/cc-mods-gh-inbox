@@ -34,6 +34,13 @@ test("repos name a repository by owner/repo, host/owner/repo or its alias, the b
   expect(shouldRead(toSettings({ repos: "x/y,other" }), notice())).toBe(false)
 })
 
+test("a watched pull request is named by its repository's alias, or by its label alone", async () => {
+  const watched = notice({ source: "watch", label: "tts#12", text: "[tts#12] someoneさんがコメントしました。Looks good" })
+  for (const repos of ["o/r", "tts", "TTS#12"]) expect(shouldRead(toSettings({ repos }), watched)).toBe(true)
+  expect(shouldRead(toSettings({ repos: "tts#13" }), watched)).toBe(false)
+  expect(speechOf("{body}", watched)).toBe("someoneさんがコメントしました。Looks good")
+})
+
 test("the format fills its placeholders, an unknown one left as written", async () => {
   expect(speechOf("{label}、{body}", notice())).toBe("r、someoneさんが #3 にコメントしました。Looks good")
   expect(speechOf("{repo} {kind} {author} {nope}", notice())).toBe("o/r comment someone {nope}")

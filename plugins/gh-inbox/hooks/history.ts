@@ -181,14 +181,15 @@ export type LogRepo = { repo: string; label: string }
 
 /**
  * The repositories `history` has notices of, the one with the newest first: each named as `labels` names it (the
- * registered repository's short name), else as its newest notice was labelled, else by the repository's name.
+ * registered repository's short name), else as its newest notice was labelled (a watched pull request's number
+ * left off), else by the repository's name.
  */
 export function logRepos(history: readonly GhEvent[], labels: ReadonlyMap<string, string>): LogRepo[] {
   const repos = new Map<string, string>()
   for (const event of latest(history, history.length).reverse()) {
     const repo = repoOfEvent(event)
     if (repo === "" || repos.has(repo)) continue
-    repos.set(repo, labels.get(repo) ?? event.label ?? repo.slice(repo.indexOf("/") + 1))
+    repos.set(repo, labels.get(repo) ?? event.label?.replace(/#\d+$/, "") ?? repo.slice(repo.indexOf("/") + 1))
   }
 
   return [...repos].map(([repo, label]) => ({ repo, label }))

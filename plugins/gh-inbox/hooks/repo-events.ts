@@ -403,10 +403,10 @@ export type RepoInput = {
   titles: Titles
   viewer: string
   /**
-   * The newest commit of the pull request this session watches: its failed runs
-   * are notified there, while those of an older commit are not and come here.
+   * The newest commits of the pull requests this session checked as pull requests (the branch's, those
+   * `/inbox watch` chose): their failed runs are notified there, while those of an older commit are not and come here.
    */
-  watchedHead: string | null
+  watchedHeads: ReadonlySet<string>
 }
 
 export type RepoEventOptions = { nicknames: Nicknames; notifySelf: boolean; language?: Language }
@@ -561,7 +561,7 @@ export function newRepoEvents(input: RepoInput, seen: ReadonlySet<string> | unde
 
   if (input.kinds.includes("ci-failure") && seen.has(ACTIONS_PRIMED)) {
     for (const run of input.runs) {
-      if (seen.has(run.id) || run.headSha === input.watchedHead) continue
+      if (seen.has(run.id) || input.watchedHeads.has(run.headSha)) continue
       const name = run.failure ? `${run.workflow} / ${run.failure.job}` : run.workflow
       add({
         id: run.id,

@@ -27,7 +27,7 @@ tts は別のマーケットプレイスにあるので、先にそのマーケ�
 | 項目 | 初期値 | 内容 |
 | --- | --- | --- |
 | Kinds read | （空） | 読む種類をカンマ区切りで。`comment` `review` `commit` `ci` `merge` `close` `branch` `open` `push`。空ならすべて |
-| Repositories read | （空） | 読むリポジトリをカンマ区切りで。`owner/repo`、`host/owner/repo`、`/inbox repo alias` の別名のどれでも。空ならすべて（今のブランチの PR も含む） |
+| Repositories read | （空） | 読むリポジトリをカンマ区切りで。`owner/repo`、`host/owner/repo`、`/inbox repo alias` の別名のどれでも（`/inbox watch` で選んだその PR も含む。`別名#12` でその PR だけ）。空ならすべて（今のブランチの PR も含む） |
 | Read my own activity | false | 自分の操作の通知も読む |
 | What is said | `{text}` | 読む文。`{text}` 表示する文、`{body}` 先頭の `[別名]` を除いた文、`{label}` 別名、`{repo}` owner/repo、`{kind}` 種類、`{author}` GitHub のログイン名 |
 | Interrupt | false | tts が読んでいる途中でも止めて、すぐに読む |
