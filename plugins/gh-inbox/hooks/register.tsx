@@ -162,6 +162,8 @@ const logRepo = atom({ plugin: "gh-inbox", key: "logRepo" } as const, null as st
 const logLatest = atom({ plugin: "gh-inbox", key: "logLatest" } as const, {} as Record<string, Latest>)
 const pickUnfolded = atom({ plugin: "gh-inbox", key: "pickUnfolded" } as const, [] as string[])
 const watchPick = atom({ plugin: "gh-inbox", key: "watchPick" } as const, null as GhWatchPick | null)
+/** When each watched pull request was added, as this session last checked it: added again since, it starts over from a first look. */
+const watchedSince = atom({ plugin: "gh-inbox", key: "watchedSince" } as const, {} as Record<string, number>)
 /** How CI of the branch's pull request stood when Claude was last told of it in this session: kept across a reload. */
 const ciTold = atom({ plugin: "gh-inbox", key: "ciTold" } as const, null as string | null)
 /** When what Claude was last told of CI was asked of GitHub: an answer asked for before it is older news, not told. */
@@ -562,6 +564,8 @@ async function checkPull($: EngineInterface, ctx: Context, checked: Checked, isF
     if (pull.state !== "OPEN") {
       ctx.found.isDone = true
       ctx.found.doneAt = ctx.checks
+      // Watched too, its end is marked as a watched one's is, so it leaves the list; no request more.
+      await markWatchedDone($, key, pull.state, now)
     }
     await update($, watch, () => ({
       branch,
@@ -610,6 +614,14 @@ async function writeWatched($: EngineInterface, key: string, change: (entry: Wat
 /** Whether `key` (`host/owner/repo#number`) is the branch's pull request, which is checked as the branch's. */
 const isBranchPull = (ctx: Context, key: string) => ctx.found?.ref != null && pullKey(ctx.found.ref).toLowerCase() === key.toLowerCase()
 
+/** Marks a watched pull request (`key` whatever its case) merged or closed, where it is watched and not marked yet. */
+async function markWatchedDone($: EngineInterface, key: string, state: Exclude<PullState, "OPEN">, now: number) {
+  const watched = await readWatched($)
+  const held = findWatched(watched, key)
+  if (held === undefined || watched[held]?.done !== undefined) return
+  await writeWatched($, held, one => one && { ...one, done: one.done ?? { state, at: now } })
+}
+
 /** What a watched pull request's notices start with in brackets: its repository's short name, registered or not, and its number. */
 function watchLabel(repos: Repos, ref: PullRef) {
   const key = Object.keys(repos).find(one => one.toLowerCase() === repoKey(ref).toLowerCase())
@@ -637,6 +649,13 @@ async function checkWatched($: EngineInterface, ctx: Context, checked: Checked) 
     const ref = refOfPullKey(key)
     if (ref === null || isBranchPull(ctx, key)) continue
     try {
+      // Added again since this session last looked (here or in another window), it starts over from a first look:
+      // what came while it was not watched is no news. The branch's own keeps what it has seen.
+      const since = entry.since ?? 0
+      if ((await read($, watchedSince))[key] !== since) {
+        if (!isBranchPull(ctx, key)) await update($, seenIds, ({ [key]: _, ...others }) => others)
+        await update($, watchedSince, held => ({ ...held, [key]: since }))
+      }
       const { value: seenByKey = {} } = await $.state.get({ plugin: "gh-inbox", key: "seen" })
       const own = seenForPull(seenByKey, ref)
       if (entry.done !== undefined && (own === undefined || own.has(MERGED_ID) || own.has(CLOSED_ID))) continue
@@ -656,10 +675,15 @@ async function checkWatched($: EngineInterface, ctx: Context, checked: Checked) 
       const head = pull.commits.at(-1)?.oid
       const repo = repoKey(ref).toLowerCase()
       if (head !== undefined) ctx.watchHeads.set(repo, new Set([...(ctx.watchHeads.get(repo) ?? []), head]))
-      // Its title kept up, and its end marked once, so the list can say it and drop it.
+      // Its end marked once (and unmarked, opened again), so the list can say it and drop it. The shared list is
+      // written only then, not at every check, so a check seldom writes over what another window just changed.
       const done = pull.state === "OPEN" ? undefined : (entry.done ?? { state: pull.state, at: now })
-      if (pull.title !== entry.title || done !== entry.done)
-        await writeWatched($, key, one => one && { title: pull.title, ...(done === undefined ? {} : { done: one.done ?? done }) })
+      if (done !== entry.done)
+        await writeWatched($, key, one => {
+          if (one === undefined) return undefined
+          const { done: _, ...rest } = one
+          return { ...rest, title: pull.title, ...(done === undefined ? {} : { done: one.done ?? done }) }
+        })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       ctx.watchErrors.set(key, message)
@@ -1349,16 +1373,15 @@ const pullLabel = (key: string) => {
 async function startWatching($: EngineInterface, ctx: Context, key: string, title: string) {
   // What another window's check under way at a removal wrote back is not the first look's baseline.
   await $.store.delete(`${SHARED_SEEN_PREFIX}${key}`)
-  await writeWatched($, key, () => ({ title }))
+  // When it was added: every window that watched it before starts over from a first look.
+  const since = await $.clock.now()
+  await writeWatched($, key, () => ({ title, since }))
   void check($, ctx)
 }
 
-/** Stops watching a pull request; watched again, it starts over from a first look, unless it is the branch's. */
+/** Stops watching a pull request; watched again, it starts over from a first look in every window (`since`). */
 async function stopWatching($: EngineInterface, ctx: Context, key: string) {
-  // A check under way would write back what is removed here.
-  while (ctx.running !== undefined) await ctx.running
   await writeWatched($, key, () => undefined)
-  if (!isBranchPull(ctx, key)) await update($, seenIds, ({ [key]: _, ...others }) => others)
   ctx.watchErrors.delete(key)
 }
 

@@ -1312,3 +1312,60 @@ test("the watch pane lists pull requests to choose from and those watched, and t
   expect((await pane.find({ key: "github.com/x/y#5" }))?.props.label).toBe("[ ] x/y#5 Elsewhere")
   expect(await $.command.run({ ...CHECK, args: "watch" })).toMatchObject({ text: expect.stringMatching(/^o\/r#12 Add things（通知中）/) })
 })
+
+test("the branch's own pull request, watched too, is marked merged as the branch's check sees it, and leaves the list a day later", JA, async ($, on) => {
+  mock.store(on, { watched: { "github.com/o/r#12": { title: "Add things" } } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  let state: "OPEN" | "MERGED" = "OPEN"
+  const github = fakeGitHub(on, [[]], argv => {
+    if (argv[0] === "git") return { stdout: "feat\n" }
+    if (argv.includes("pr") && argv.includes("view")) return { stdout: JSON.stringify({ url: "https://github.com/o/r/pull/12", state }) }
+    return askedPull(argv) === 12 ? { stdout: pullAnswer({ state }) } : undefined
+  })
+
+  await $.command.run(CHECK)
+  state = "MERGED"
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  // Told as the branch's, not again as a watched one's.
+  expect(github.toasts).toEqual(["GitHub: #12 の通知を始めます。Add things", "#12 がマージされました。"])
+  expect(await $.command.run({ ...CHECK, args: "watch" })).toMatchObject({ text: expect.stringContaining("o/r#12 Add things（マージ済み）") })
+
+  // The window stays on the branch.
+  await clock.advance(24 * 3600_000 + 61_000)
+  await $.command.run(CHECK)
+  expect(await $.command.run({ ...CHECK, args: "watch" })).toMatchObject({ text: expect.stringMatching(/^通知する PR はありません。/) })
+})
+
+test("a pull request added again, in this window or another, starts over: what came while it was not watched is no news", JA, async ($, on) => {
+  // The store, by hand, to change it as another window would.
+  const store = new Map<string, unknown>([["watched", { "github.com/o/r#12": { title: "Add things", since: 1 } }]])
+  on("store.get", async (_$, e) => ({ value: store.get(e.key) }))
+  on("store.set", async (_$, e) => {
+    store.set(e.key, e.value)
+    return { value: undefined }
+  })
+  on("store.delete", async (_$, e) => {
+    store.delete(e.key)
+    return { value: undefined }
+  })
+  on("store.keys", async () => ({ value: [...store.keys()] }))
+  const clock = mock.clock(on, { now: 1_000_000 })
+  let says: PullSays = {}
+  const github = fakeGitHub(on, [[]], argv => (askedPull(argv) === 12 ? { stdout: pullAnswer(says) } : undefined))
+  const later = { id: "IC_10", author: "bob", body: "And this", at: "2026-10-16T00:40:00Z" }
+
+  await $.command.run(CHECK)
+  // Another window removes it, a comment comes, and it is added again there: the list says when.
+  says = { comments: [SAID] }
+  store.set("watched", { "github.com/o/r#12": { title: "Add things", since: 2 } })
+  store.delete("shared-seen:github.com/o/r#12")
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual([])
+
+  says = { comments: [SAID, later] }
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual(["[r#12] bobさんがコメントしました。And this"])
+})

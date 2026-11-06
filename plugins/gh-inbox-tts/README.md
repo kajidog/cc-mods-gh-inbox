@@ -27,7 +27,7 @@ tts lives in another marketplace, so add that marketplace first.
 | Setting | Default | What it does |
 | --- | --- | --- |
 | Kinds read | (empty) | Comma-separated kinds to read: `comment` `review` `commit` `ci` `merge` `close` `branch` `open` `push`. Empty: every kind |
-| Repositories read | (empty) | Comma-separated repositories to read, each as `owner/repo`, `host/owner/repo` or its `/inbox repo alias`. Empty: every repository (the branch's pull request included) |
+| Repositories read | (empty) | Comma-separated repositories to read, each as `owner/repo`, `host/owner/repo` or its `/inbox repo alias` (which covers the pull requests watched there too; `alias#12` names one of them alone). Empty: every repository (the branch's pull request included) |
 | Read my own activity | false | Also read notices of your own activity |
 | What is said | `{text}` | The text read. `{text}` the line shown, `{body}` the same without its leading `[alias]`, `{label}` the alias, `{repo}` owner/repo, `{kind}` the kind, `{author}` the GitHub login |
 | Interrupt | false | Stop what tts is saying and read the notice at once |

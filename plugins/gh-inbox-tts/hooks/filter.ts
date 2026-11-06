@@ -33,10 +33,14 @@ export function toSettings(options: Record<string, unknown>): Settings {
 /** `host/owner/repo` as `owner/repo`. */
 const ownerRepo = (repo: string) => repo.split("/").slice(-2).join("/")
 
-/** A word names the repository by `owner/repo`, `host/owner/repo` or its alias. */
+/**
+ * A word names the repository by `owner/repo`, `host/owner/repo` or its alias. A pull request `/inbox watch` chose is
+ * labelled with its number (`tts#12`): the alias is what comes before it, and the whole label names that one alone.
+ */
 function isNamed(word: string, notice: InboxNotice) {
   const repo = notice.repo.toLowerCase()
-  return word === repo || word === ownerRepo(repo) || (notice.label !== null && word === notice.label.toLowerCase())
+  const label = notice.label?.toLowerCase() ?? null
+  return word === repo || word === ownerRepo(repo) || (label !== null && (word === label || word === label.replace(/#\d+$/, "")))
 }
 
 export function shouldRead(settings: Settings, notice: InboxNotice) {

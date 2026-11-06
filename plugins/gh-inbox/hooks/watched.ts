@@ -18,6 +18,8 @@ export type WatchedEntry = {
   title: string
   /** How it ended, and when a check first saw it so (ms since the epoch); absent while it is open. */
   done?: { state: Exclude<PullState, "OPEN">; at: number }
+  /** When it was added, ms since the epoch: a window that watched it before it was added again starts over. */
+  since?: number
 }
 export type Watched = Record<string, WatchedEntry>
 
@@ -33,6 +35,7 @@ export function toWatched(value: unknown): Watched {
     watched[key] = {
       title: typeof entry.title === "string" ? entry.title : "",
       ...(state !== undefined && typeof done?.at === "number" ? { done: { state, at: done.at } } : {}),
+      ...(typeof entry.since === "number" ? { since: entry.since } : {}),
     }
   }
 

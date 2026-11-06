@@ -234,6 +234,8 @@ declare module "claude-code" {
       pickUnfolded: string[]
       /** What the pane of `/inbox watch` shows. */
       watchPick: GhWatchPick | null
+      /** When each watched pull request (`host/owner/repo#number`) was added, as this session last checked it. */
+      watchedSince: Record<string, number>
       /** How CI of the branch's pull request stood when Claude was last told of it in this session (`ciKey`); null before. */
       ciTold: string | null
       /** When what Claude was last told of CI was asked of GitHub, ms since the epoch; 0 before. */

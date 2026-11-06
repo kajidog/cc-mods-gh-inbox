@@ -76,7 +76,7 @@ Pull requests other than the branch's can be notified the same way as the branch
 
 - Its notices are those of the branch's pull request ([What it notifies](#what-it-notifies)), led by the repository's short name and the number: `[tts#20] reviewer approved.` The short name is a registered repository's alias, else the repository's name.
 - The pane lists the open pull requests of this repository and those in registered repositories you are involved in (as `/inbox pick` does), then the ones watched. Pressing one starts or stops watching it, saved at once.
-- On a pull request the window watches for the first time, what is already there is not notified.
+- On a pull request the window watches for the first time, what is already there is not notified. Removed and added again, it starts over from then in every window.
 - While it is the checked-out branch's pull request, it is notified as that, once.
 - An event that reaches both a watched pull request and its registered repository is notified once, as the pull request's notice. So is a CI run of its newest commit that failed.
 - Once seen merged or closed, that is notified and it is asked about no more; it leaves the list a day later. One merged or closed already cannot be added.
