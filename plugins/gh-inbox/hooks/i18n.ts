@@ -159,14 +159,15 @@ const en = {
 
   // `/inbox`
   commandDescription:
-    "GitHub notices for this branch's pull request and registered repositories: status, check now, recent notices, pick review comments to hand to Claude, repositories, nicknames, what the line under the prompt shows",
-  commandHint: "[status|check|log [repo] [text]|pick [pr]|clear|repo [add|set|remove|alias ...]|nick [login [nickname]]|tray [pull|repos]]",
+    "GitHub notices for this branch's pull request, pull requests you watch and registered repositories: status, check now, recent notices, pick review comments to hand to Claude, pull requests to watch, repositories, nicknames, what the line under the prompt shows",
+  commandHint: "[status|check|log [repo] [text]|pick [pr]|clear|watch [add|remove [pr]]|repo [add|set|remove|alias ...]|nick [login [nickname]]|tray [pull|repos]]",
   noBranch: "The branch is not known (outside a git repository, or a detached HEAD).",
   noPull: (branch: string) => `${branch} has no pull request.`,
   pullState: (state: string | null): string => (state === "OPEN" ? "watching" : state === "MERGED" ? "merged" : "closed"),
   lastChecked: (ago: string, interval: number) => `Last checked ${ago}; checked every ${interval}s.`,
   error: (message: string) => `Error: ${message}`,
   registeredCount: (n: number) => `Registered repositories: ${n} (/inbox repo)`,
+  watchedCount: (n: number) => `Watched pull requests: ${n} (/inbox watch)`,
   showsHere: "Notices show in this window.",
   showsElsewhere: "Notices show in the other window used last (/inbox log lists them here too).",
   noLog: "No notices yet.",
@@ -186,7 +187,7 @@ const en = {
   logPartDeleted: "a comment deleted",
   /** An unfolded part of a log row changed since it was told. */
   logItemNote: (note: "edited" | "deleted"): string => (note === "edited" ? "edited" : "deleted"),
-  usage: "Usage: /inbox [status|check|log [repo] [text]|pick [PR]|clear|repo|nick [login [nickname]]|tray [pull|repos]]",
+  usage: "Usage: /inbox [status|check|log [repo] [text]|pick [PR]|clear|watch|repo|nick [login [nickname]]|tray [pull|repos]]",
   trayShows: (view: string): string =>
     view === "pull"
       ? "The line under the prompt now shows this branch's pull request (all registered repositories while it has none). /inbox tray switches back."
@@ -225,6 +226,30 @@ const en = {
   noRepoChosen: "No repository is chosen.",
   pickerHint: (name: string) => `${name}: press a kind to turn it on or off; it is saved at once.`,
   close: "Close",
+
+  // `/inbox watch`
+  watchUsage: (max: number) =>
+    [
+      "Usage:",
+      "  /inbox watch            List the pull requests watched",
+      "  /inbox watch add [PR]   Watch one: 12, owner/repo#12 or its URL (none: opens a pane to choose)",
+      "  /inbox watch remove PR  Stop watching it",
+      `Each is checked as the branch's pull request is, at every check; up to ${max}.`,
+    ].join("\n"),
+  noWatched: "No pull requests are watched.",
+  notWatched: (name: string) => `${name} is not watched.`,
+  alreadyWatched: (name: string) => `${name} is watched already.`,
+  tooManyWatched: (max: number) => `Up to ${max} pull requests can be watched. Stop watching one with /inbox watch remove first.`,
+  watchNotOpen: (name: string, state: string) => `${name} is ${state}: there is nothing more to watch.`,
+  watching: (name: string, title: string) => `Watching ${name} ${title}: its notices come as the branch's pull request's do.`,
+  unwatched: (name: string) => `Stopped watching ${name}.`,
+  watchNoHereRepo: "The repository of this directory is not known. Name it with /inbox watch add owner/repo#12.",
+  /** A watched pull request that is the branch's own, whose notices come as the branch's. */
+  watchIsBranch: " (this branch's: told as its pull request)",
+  watchPaneOpened: "Press the pull requests to watch in the pane; it is saved at once.",
+  watchTitle: "Pull requests to watch",
+  watchHint: "Press a pull request to start or stop watching it; it is saved at once. Each is checked as the branch's pull request is.",
+  noCandidates: "No open pull requests were found. Name one with /inbox watch add owner/repo#12.",
 
   // `/inbox nick`
   noNicknames: "No nicknames yet. Add one with /inbox nick <login> <nickname>.",
@@ -409,14 +434,15 @@ const ja: Messages = {
   },
   noKinds: "なし",
 
-  commandDescription: "このブランチの PR と登録したリポジトリの GitHub 通知: 状態、すぐに確認、最近の通知、Claude に渡すレビューを選ぶ、リポジトリ、ニックネーム、プロンプトの下の表示",
-  commandHint: "[status|check|log [リポジトリ] [text]|pick [PR]|clear|repo [add|set|remove|alias ...]|nick [login [ニックネーム]]|tray [pull|repos]]",
+  commandDescription: "このブランチの PR、選んだ PR、登録したリポジトリの GitHub 通知: 状態、すぐに確認、最近の通知、Claude に渡すレビューを選ぶ、通知する PR、リポジトリ、ニックネーム、プロンプトの下の表示",
+  commandHint: "[status|check|log [リポジトリ] [text]|pick [PR]|clear|watch [add|remove [PR]]|repo [add|set|remove|alias ...]|nick [login [ニックネーム]]|tray [pull|repos]]",
   noBranch: "ブランチが分かりません（git リポジトリの外か、detached HEAD です）。",
   noPull: branch => `${branch} の PR はありません。`,
   pullState: state => (state === "OPEN" ? "通知中" : state === "MERGED" ? "マージ済み" : "クローズ済み"),
   lastChecked: (ago, interval) => `最後の確認: ${ago}、${interval}秒ごとに確認します。`,
   error: message => `エラー: ${message}`,
   registeredCount: n => `登録したリポジトリ: ${n}件（/inbox repo）`,
+  watchedCount: n => `通知する PR: ${n}件（/inbox watch）`,
   showsHere: "通知はこの窓に出します。",
   showsElsewhere: "通知は最後に操作した別の窓に出します（/inbox log で一覧を見られます）。",
   noLog: "通知はまだありません。",
@@ -431,7 +457,7 @@ const ja: Messages = {
   logDeleted: "削除済み",
   logPartDeleted: "一部削除済み",
   logItemNote: note => (note === "edited" ? "編集済み" : "削除済み"),
-  usage: "使い方: /inbox [status|check|log [リポジトリ] [text]|pick [PR]|clear|repo|nick [login [ニックネーム]]|tray [pull|repos]]",
+  usage: "使い方: /inbox [status|check|log [リポジトリ] [text]|pick [PR]|clear|watch|repo|nick [login [ニックネーム]]|tray [pull|repos]]",
   trayShows: view =>
     view === "pull"
       ? "プロンプトの下に、このブランチの PR の状態を出します（PR がないあいだは、登録したリポジトリの一覧）。/inbox tray で戻せます。"
@@ -469,6 +495,28 @@ const ja: Messages = {
   noRepoChosen: "リポジトリが選ばれていません。",
   pickerHint: name => `${name}: 押すとオン・オフが切り替わり、すぐに保存します。`,
   close: "閉じる",
+
+  watchUsage: max =>
+    [
+      "使い方:",
+      "  /inbox watch            通知する PR の一覧",
+      "  /inbox watch add [PR]   通知する PR を足す。12・owner/repo#12・URL で指定（省くと選ぶペインを開く）",
+      "  /inbox watch remove PR  通知をやめる",
+      `どれも今のブランチの PR と同じく、確認のたびに問い合わせます（${max}件まで）。`,
+    ].join("\n"),
+  noWatched: "通知する PR はありません。",
+  notWatched: name => `${name} は通知していません。`,
+  alreadyWatched: name => `${name} はもう通知しています。`,
+  tooManyWatched: max => `通知できる PR は${max}件までです。先に /inbox watch remove で外してください。`,
+  watchNotOpen: (name, state) => `${name} は${state}です。これ以上通知するものはありません。`,
+  watching: (name, title) => `${name} ${title} の通知を始めます。今のブランチの PR と同じように通知します。`,
+  unwatched: name => `${name} の通知をやめました。`,
+  watchNoHereRepo: "このディレクトリのリポジトリが分かりません。/inbox watch add owner/repo#12 で指定します。",
+  watchIsBranch: "（今のブランチの PR として通知中）",
+  watchPaneOpened: "ペインで通知する PR を押してください。すぐに保存します。",
+  watchTitle: "通知する PR",
+  watchHint: "押すと通知のオン・オフが切り替わり、すぐに保存します。どれも今のブランチの PR と同じように確認します。",
+  noCandidates: "開いている PR が見つかりません。/inbox watch add owner/repo#12 で指定できます。",
 
   noNicknames: "ニックネームはまだありません。/inbox nick <login> <ニックネーム> で登録します。",
   noNickname: login => `${login} のニックネームはありません。`,

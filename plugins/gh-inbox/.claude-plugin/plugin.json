@@ -1,7 +1,7 @@
 {
   "name": "gh-inbox",
   "version": "0.11.0",
-  "description": "Shows GitHub events (comments, reviews, commits, CI failures, merges) for the checked-out branch's pull request and for repositories you register, to read and hand to Claude. Read-only: it never writes to GitHub.",
+  "description": "Shows GitHub events (comments, reviews, commits, CI failures, merges) for the checked-out branch's pull request, for pull requests you choose to watch and for repositories you register, to read and hand to Claude. Read-only: it never writes to GitHub.",
   "author": {
     "name": "kajidog"
   },
@@ -10,7 +10,7 @@
     "intervalSeconds": {
       "type": "number",
       "title": "GitHub: Check interval (seconds)",
-      "description": "How often the pull request of the checked-out branch is checked. Values under 30 are raised to 30.",
+      "description": "How often the pull request of the checked-out branch, and those /inbox watch chose, are checked. Values under 30 are raised to 30.",
       "default": 60
     },
     "channel": {

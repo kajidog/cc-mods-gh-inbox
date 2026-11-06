@@ -3,7 +3,7 @@
 English | [日本語](README.ja.md)
 
 A Claude Code mod.
-It shows GitHub events on the checked-out branch's pull request and on repositories you register inside Claude Code, and lets you hand the ones you pick to Claude.
+It shows GitHub events on the checked-out branch's pull request, on pull requests you choose to watch and on repositories you register inside Claude Code, and lets you hand the ones you pick to Claude.
 
 Posting comments, merging, labelling and the like are out of its scope: it never writes to GitHub.
 
@@ -60,7 +60,27 @@ Apart from the branch's pull request, you can register repositories and be notif
 - Registered without kinds, a repository starts with `pr-open`, `pr-merge`, `comment`, `review` and `ci-failure`.
 - On a repository the window sees for the first time, what is already there is not notified.
 - An event that reaches both the branch's pull request and a registered repository is notified once. CI on the newest commit of the branch's pull request is notified as that pull request's notice.
-- **Repository events are not real time.** They come from GitHub's Events API, which GitHub says can take from 30 seconds to 6 hours. Only the last 90 days and 300 events are kept.
+- **Repository events are not real time.** They come from GitHub's Events API, which GitHub says can take from 30 seconds to 6 hours. Only the last 90 days and 300 events are kept. To follow a pull request without that delay, watch it ([Watching pull requests](#watching-pull-requests)).
+
+## Watching pull requests
+
+Pull requests other than the branch's can be notified the same way as the branch's: each is asked about at every check (every 60 seconds by default) with one GraphQL request, not through the Events API, so its notices come without that API's delay. You choose which ones. The list is shared across the machine: every window watches the same ones.
+
+```
+/inbox watch add                  # opens a pane to choose from
+/inbox watch add 12               # #12 of this repository
+/inbox watch add owner/repo#12    # or the pull request's URL
+/inbox watch remove owner/repo#12 # stop watching it
+/inbox watch                      # the pull requests watched, and where each stands
+```
+
+- Its notices are those of the branch's pull request ([What it notifies](#what-it-notifies)), led by the repository's short name and the number: `[tts#20] reviewer approved.` The short name is a registered repository's alias, else the repository's name.
+- The pane lists the open pull requests of this repository and those in registered repositories you are involved in (as `/inbox pick` does), then the ones watched. Pressing one starts or stops watching it, saved at once.
+- On a pull request the window watches for the first time, what is already there is not notified.
+- While it is the checked-out branch's pull request, it is notified as that, once.
+- An event that reaches both a watched pull request and its registered repository is notified once, as the pull request's notice. So is a CI run of its newest commit that failed.
+- Once seen merged or closed, that is notified and it is asked about no more; it leaves the list a day later. One merged or closed already cannot be added.
+- Up to 20 can be watched.
 
 ## Handing reviews to Claude
 
@@ -106,6 +126,9 @@ While the branch has an open pull request, each new result of its CI goes to Cla
 | `/inbox log text` | Lists the newest 20 in the transcript instead, for Claude to read |
 | `/inbox pick [PR]` | Choose threads, reviews and comments to hand to Claude |
 | `/inbox clear` | Detach what is attached |
+| `/inbox watch` | The pull requests watched, where each stands (CI, approvals, conflicts, the newest comment) and when it was last checked |
+| `/inbox watch add [PR]` | Watch a pull request: `12`, `owner/repo#12` or its URL (without one, opens a pane to choose) |
+| `/inbox watch remove PR` | Stop watching it |
 | `/inbox repo` | The registered repositories, the kinds they notify, and when each was last checked and last had an event |
 | `/inbox repo add owner/repo [kind,...]` | Register (without kinds, opens a pane to choose them) |
 | `/inbox repo set owner/repo [kind,...]` | Change the kinds (without kinds, opens the pane) |
@@ -136,9 +159,9 @@ on("inbox.notified", async ($, e, next) => {
 | Field | What |
 | --- | --- |
 | `event` | The event the notice came from: `kind` (`comment` `review` `commit` `ci` `merge` `close` `branch` `open` `push`), `pull`, `author`, `url`, the bodies in `items`, and so on |
-| `source` | `pull`: the branch's pull request / `repo`: a registered repository |
+| `source` | `pull`: the branch's pull request / `watch`: a pull request watched with `/inbox watch` / `repo`: a registered repository |
 | `repo` | `host/owner/repo` |
-| `label` | The registered repository's alias (its name when it has none). `null` for the branch's pull request |
+| `label` | The registered repository's alias (its name when it has none), with the number for a watched pull request (`tts#20`). `null` for the branch's pull request |
 | `isSelf` | Whether the account `gh` is logged in as did it |
 | `text` | The line shown, in the language set in `/config` |
 
@@ -166,6 +189,7 @@ on("inbox.notified", async ($, e, next) => {
 - Checks run every 60 seconds by default (never more often than every 30).
 - Checking one pull request costs one GraphQL request, 1 point (5,000 points an hour are available).
 - A branch with no pull request is looked up only every 5 minutes. A merged or closed pull request is not asked about any more.
+- Each watched pull request costs one GraphQL request (1 point) a check too, as the branch's does; while it is the branch's, it is asked once. `/inbox watch add owner/repo#12` asks once more as it adds it; the pane of `/inbox watch` looks up the current repository once with `gh repo view` and searches once per host, as `/inbox pick` does.
 - Each prompt you send reads the branch with `git` alone (GitHub is not asked). Only when it has changed is the new branch checked at once, so a switch shows by the next prompt rather than the next check.
 - Each registered repository costs one Events API request (and one Actions API request when `ci-failure` is chosen). They are sent with an `ETag`, so an unchanged repository does not count against the rate limit. It is never asked more often than GitHub's `X-Poll-Interval` (usually 60 seconds).
 - Telling Claude about CI asks nothing more: it uses the answer of the usual check.
