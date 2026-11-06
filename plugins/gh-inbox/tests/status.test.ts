@@ -19,7 +19,9 @@ function pullWith(changes: Partial<Pull>): Pull {
     comments: [],
     reviews: [],
     commits: [],
+    head: "",
     checks: [],
+    checksTotal: 0,
     ciState: null,
     mergeable: "UNKNOWN",
     reviewDecision: null,
@@ -28,7 +30,19 @@ function pullWith(changes: Partial<Pull>): Pull {
   }
 }
 
-const check = (id: string, isFailed: boolean, isPending = false) => ({ id, name: id, isFailed, isPending, failedStep: null, url: "" })
+const check = (id: string, isFailed: boolean, isPending = false) => ({
+  id,
+  name: id,
+  isFailed,
+  isPending,
+  failedStep: null,
+  url: "",
+  conclusion: isPending ? "" : isFailed ? "FAILURE" : "SUCCESS",
+  actions: null,
+  summary: "",
+  annotations: [],
+  annotationCount: 0,
+})
 const parts = (pull: Pull, language: "en" | "ja" = "ja") =>
   statusParts(MESSAGES[language], 7, pull.state, pullStatus(pull, { "long-name": "ロン" }, language), () => "3分前")
 

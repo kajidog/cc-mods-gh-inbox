@@ -32,7 +32,26 @@ export type Commit = {
   at: string
   url: string
 }
-export type Check = { id: string; name: string; isFailed: boolean; failedStep: string | null; url: string; isPending: boolean }
+/** Where a check run points in the code, as its annotation says. */
+export type Annotation = { path: string; line: number | null; level: string; title: string; message: string }
+export type Check = {
+  id: string
+  name: string
+  isFailed: boolean
+  failedStep: string | null
+  url: string
+  isPending: boolean
+  /** How it ended, in GitHub's word (`SUCCESS`, `FAILURE`, `SKIPPED`, a status's `ERROR` …); "" while it runs. */
+  conclusion: string
+  /** The GitHub Actions run and job it is, whose log `gh run view` reads; null for another app's check or a status. */
+  actions: { runId: number; jobId: number | null } | null
+  /** What it says of itself: a check run's title, a status's description; "" with none. */
+  summary: string
+  /** Where it points in the code, as far as they were asked for; empty where they were not. */
+  annotations: Annotation[]
+  /** How many annotations it has, those not asked for too. */
+  annotationCount: number
+}
 export type Mergeable = "MERGEABLE" | "CONFLICTING" | "UNKNOWN"
 
 export type Pull = {
@@ -48,8 +67,12 @@ export type Pull = {
   comments: Comment[]
   reviews: Review[]
   commits: Commit[]
+  /** The newest commit, whose checks `checks` are; "" where GitHub gave none. */
+  head: string
   /** The checks of the newest commit. */
   checks: Check[]
+  /** How many checks the newest commit has, those not listed in `checks` too. */
+  checksTotal: number
   /** The newest commit's checks together, as GitHub rolls them up; null with none. */
   ciState: string | null
   /** Whether it merges into its base cleanly; UNKNOWN while GitHub works it out. */
@@ -59,6 +82,22 @@ export type Pull = {
   /** Each reviewer's last approving or change-requesting review, by its state. */
   verdicts: string[]
 }
+
+// Checks listed at most of a commit.
+const CHECKS_LISTED = 100
+
+/**
+ * What a commit's checks are asked for by: how each went, its failed step, and where to read more; with
+ * `annotations`, where each check run points in the code too, that many at most. Its words are its own
+ * (scalars), so they cost nothing; annotations are a connection a check run, which costs.
+ */
+export const checksFields = (annotations: number) => `oid statusCheckRollup { state contexts(first: ${CHECKS_LISTED}) { totalCount nodes { __typename
+  ... on CheckRun { databaseId name status conclusion detailsUrl title
+    checkSuite { workflowRun { databaseId workflow { name } } }
+    steps(first: 100) { nodes { name conclusion } }${
+      annotations > 0 ? `\n    annotations(first: ${annotations}) { totalCount nodes { path annotationLevel title message location { start { line } } } }` : ""
+    } }
+  ... on StatusContext { id context state description targetUrl } } } }`
 
 // One request a check: GraphQL costs one point of the 5000 an hour.
 export const PULL_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
@@ -74,11 +113,7 @@ export const PULL_QUERY = `query($owner: String!, $repo: String!, $number: Int!)
         comments(first: 50) { nodes { id author { login } createdAt path line originalLine diffHunk body url } } } }
       commits(last: 50) { nodes { commit { oid messageHeadline additions deletions committedDate url
         author { name user { login } } } } }
-      latest: commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { nodes { __typename
-        ... on CheckRun { databaseId name status conclusion detailsUrl
-          checkSuite { workflowRun { workflow { name } } }
-          steps(first: 100) { nodes { name conclusion } } }
-        ... on StatusContext { id context state targetUrl } } } } } } }
+      latest: commits(last: 1) { nodes { commit { ${checksFields(0)} } } }
     }
   }
 }`
@@ -128,6 +163,72 @@ export const login = (value: unknown) => {
   return typeof name === "string" ? name : null
 }
 
+// A GitHub Actions job's page, as a check run's details link it: the run and the job, whose logs `gh run view` reads.
+const ACTIONS_JOB = /\/actions\/runs\/(\d+)\/job\/(\d+)/
+
+/** Which run and job of GitHub Actions a check run is; null for another app's. */
+function actionsOf(node: Json): Check["actions"] {
+  const run = object(object(node.checkSuite).workflowRun)
+  const linked = ACTIONS_JOB.exec(text(node.detailsUrl))
+  const runId = linked === null ? Number(run.databaseId) : Number(linked[1])
+  if (!Number.isInteger(runId) || runId <= 0) return null
+  return { runId, jobId: linked === null ? null : Number(linked[2]) }
+}
+
+/** A commit as `checksFields` asks for it: its id, its checks, GitHub's rollup of them, and how many there are, those not listed too. */
+export function parseChecks(value: unknown): { oid: string; state: string | null; checks: Check[]; total: number } {
+  const commit = object(value)
+  const rollup = object(commit.statusCheckRollup)
+  const contexts = object(rollup.contexts)
+  const checks = nodes(contexts).flatMap((node): Check[] => {
+    if (node.__typename === "CheckRun") {
+      const workflow = text(object(object(object(node.checkSuite).workflowRun).workflow).name)
+      const name = text(node.name)
+      const failedStep = nodes(node.steps).find(step => FAILED_RUN.has(text(step.conclusion)))
+      const annotations = nodes(node.annotations).map(one => {
+        const line = object(object(one.location).start).line
+        return { path: text(one.path), line: typeof line === "number" ? line : null, level: text(one.annotationLevel), title: text(one.title), message: text(one.message) }
+      })
+      return [
+        {
+          id: `run:${String(node.databaseId)}`,
+          name: workflow && workflow !== name ? `${workflow} / ${name}` : name,
+          isFailed: FAILED_RUN.has(text(node.conclusion)),
+          failedStep: failedStep === undefined ? null : text(failedStep.name),
+          url: text(node.detailsUrl),
+          isPending: node.status !== undefined && text(node.status) !== "COMPLETED",
+          conclusion: text(node.conclusion),
+          actions: actionsOf(node),
+          summary: text(node.title),
+          annotations,
+          annotationCount: Math.max(annotations.length, Number(object(node.annotations).totalCount) || 0),
+        },
+      ]
+    }
+    if (node.__typename === "StatusContext") {
+      const state = text(node.state)
+      return [
+        {
+          id: `status:${text(node.id)}`,
+          name: text(node.context),
+          isFailed: FAILED_STATUS.has(state),
+          failedStep: null,
+          url: text(node.targetUrl),
+          isPending: PENDING_STATUS.has(state),
+          conclusion: PENDING_STATUS.has(state) ? "" : state,
+          actions: null,
+          summary: text(node.description),
+          annotations: [],
+          annotationCount: 0,
+        },
+      ]
+    }
+    return []
+  })
+
+  return { oid: text(commit.oid), state: text(rollup.state) || null, checks, total: Math.max(checks.length, Number(contexts.totalCount) || 0) }
+}
+
 /** Reads `PULL_QUERY`'s answer; throws with GitHub's own words when it carries errors. */
 export function parsePull(ref: PullRef, answer: string, language: Language = "en"): Pull {
   const t = MESSAGES[language]
@@ -153,37 +254,7 @@ export function parsePull(ref: PullRef, answer: string, language: Language = "en
       url: text(commit.url),
     }
   })
-  const latest = object(nodes(pull.latest)[0]?.commit)
-  const checks = nodes(object(object(latest.statusCheckRollup).contexts)).flatMap((node): Check[] => {
-    if (node.__typename === "CheckRun") {
-      const workflow = text(object(object(object(node.checkSuite).workflowRun).workflow).name)
-      const name = text(node.name)
-      const failedStep = nodes(node.steps).find(step => FAILED_RUN.has(text(step.conclusion)))
-      return [
-        {
-          id: `run:${String(node.databaseId)}`,
-          name: workflow && workflow !== name ? `${workflow} / ${name}` : name,
-          isFailed: FAILED_RUN.has(text(node.conclusion)),
-          failedStep: failedStep === undefined ? null : text(failedStep.name),
-          url: text(node.detailsUrl),
-          isPending: node.status !== undefined && text(node.status) !== "COMPLETED",
-        },
-      ]
-    }
-    if (node.__typename === "StatusContext") {
-      return [
-        {
-          id: `status:${text(node.id)}`,
-          name: text(node.context),
-          isFailed: FAILED_STATUS.has(text(node.state)),
-          failedStep: null,
-          url: text(node.targetUrl),
-          isPending: PENDING_STATUS.has(text(node.state)),
-        },
-      ]
-    }
-    return []
-  })
+  const latest = parseChecks(nodes(pull.latest)[0]?.commit)
 
   return {
     ref,
@@ -220,8 +291,10 @@ export function parsePull(ref: PullRef, answer: string, language: Language = "en
       })),
     })),
     commits,
-    checks,
-    ciState: text(object(latest.statusCheckRollup).state) || null,
+    head: latest.oid,
+    checks: latest.checks,
+    checksTotal: latest.total,
+    ciState: latest.state,
     mergeable: pull.mergeable === "MERGEABLE" || pull.mergeable === "CONFLICTING" ? pull.mergeable : "UNKNOWN",
     reviewDecision: text(pull.reviewDecision) || null,
     verdicts: nodes(pull.latestOpinionatedReviews).map(node => text(node.state)),

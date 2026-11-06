@@ -87,7 +87,7 @@ export type GhPickPull = {
 
 /** One thing of a pull request the person can hand to Claude: a review, a thread of line comments, a comment. */
 export type GhPickItem = {
-  /** GitHub's node id. */
+  /** GitHub's node id; for the head commit's CI, `ci:` and how it stood (its commit, what failed). */
   id: string
   /** The line the pane shows. */
   label: string
@@ -120,6 +120,8 @@ export type GhPick =
       notes: string[]
       /** The ids chosen so far. */
       chosen: string[]
+      /** When the list was asked for, ms since the epoch. */
+      at?: number
     }
 
 /** What one pull request has staged for the next prompt. */
@@ -133,6 +135,8 @@ export type GhStaged = {
   items: GhPickItem[]
   /** The language the items were written in, so what goes with them is in it too: `en` or `ja`. */
   language?: string
+  /** When the items were asked for, ms since the epoch. */
+  at?: number
 }
 
 /** One notice about to be shown, as `$.inbox.notify` takes it. */
@@ -206,6 +210,10 @@ declare module "claude-code" {
       >
       /** The pick pane's items unfolded to say in full what they say, by id. */
       pickUnfolded: string[]
+      /** How CI of the branch's pull request stood when Claude was last told of it in this session (`ciKey`); null before. */
+      ciTold: string | null
+      /** When what Claude was last told of CI was asked of GitHub, ms since the epoch; 0 before. */
+      ciToldAt: number
     }
   }
 }
