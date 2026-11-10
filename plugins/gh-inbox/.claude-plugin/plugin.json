@@ -1,6 +1,6 @@
 {
   "name": "gh-inbox",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Shows GitHub events (comments, reviews, commits, CI failures, merges) for the checked-out branch's pull request, for pull requests you choose to watch and for repositories you register, to read and hand to Claude. Read-only: it never writes to GitHub.",
   "author": {
     "name": "kajidog"
