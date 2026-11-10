@@ -751,6 +751,109 @@ test("/inbox log does not color a nickname in brackets on a notice with no short
   expect((await log.findAll({ type: "Link" })).map(link => link.children.join(""))).toEqual(["commented"])
 })
 
+const ROW = { options: { language: "ja", channel: "row" } }
+/** COMMENT with the URL GitHub gives a comment. */
+const LINKED = { ...COMMENT, payload: { ...COMMENT.payload, comment: { ...COMMENT.payload.comment, html_url: "https://github.com/o/r/pull/3#issuecomment-1" } } }
+/** Six comments, more than are shown one by one at a check. */
+const SIX = Array.from({ length: 6 }, (_, i) => ({
+  ...COMMENT,
+  id: `${i + 1}`,
+  payload: { ...COMMENT.payload, comment: { ...COMMENT.payload.comment, node_id: `IC_${i + 1}`, body: `c${i + 1}` } },
+}))
+
+/** Answers `$.ui.place` as a surface that draws rows does, and keeps the ids placed. */
+function rowsPlaced(on: On) {
+  const ids: string[] = []
+  on("ui.place", async (_$, e) => {
+    ids.push(e.id)
+    return { value: { isPlaced: true as const, requestId: e.id } }
+  })
+  return ids
+}
+
+test("the row channel places each notice in the transcript, drawn as the log draws it, what was done a link to it", ROW, async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const github = fakeGitHub(on, [[], [LINKED]])
+  const ids = rowsPlaced(on)
+  // What is beneath the plugin draws a row it leaves.
+  on("ui.render", { component: "Placed" }, async (_$, e) => {
+    const { Text } = _$.ui.resolve(e)
+    return h(Text, null, "beneath") as RenderElement
+  })
+  const row = (id: string, plugin = "gh-inbox") => $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "Placed", props: { id, plugin } })
+
+  await $.command.run(CHECK)
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(ids).toHaveLength(1)
+  expect(github.toasts).toEqual([])
+  expect(github.logs).toEqual([])
+
+  const [id = ""] = ids
+  const drawn = await row(id)
+  const links = await drawn.findAll({ type: "Link" })
+  expect(links.map(link => [link.props.href, link.children.join("")])).toEqual([["https://github.com/o/r/pull/3#issuecomment-1", "#3 にコメントしました"]])
+  const dim = (await drawn.findAll({ type: "Text" })).filter(text => text.props.dimColor === true)
+  expect(dim.map(text => text.children.join(""))).toEqual(["GitHub: "])
+  expect((await drawn.findAll({ type: "Text" })).filter(text => text.props.color === "suggestion").map(text => text.children.join(""))).toEqual(["[r]"])
+  expect(await drawn.find({ type: "Text", text: "Looks good" })).toBeDefined()
+  // The apps draw it too, the link the same.
+  for (const surface of ["desktop", "mobile"] as const) {
+    const app = await $.ui.mount({ plugin: "gh-inbox", surface, component: "Placed", props: { id, plugin: "gh-inbox" } })
+    expect((await app.findAll({ type: "Link" })).map(link => link.props.href)).toEqual(["https://github.com/o/r/pull/3#issuecomment-1"])
+  }
+
+  // Another plugin's row, and one this plugin keeps nothing for, are left to what is beneath.
+  expect(await (await row(id, "other")).find({ text: "beneath" })).toBeDefined()
+  expect(await (await row("gone")).find({ text: "beneath" })).toBeDefined()
+})
+
+test("the row channel counts what is not shown one by one on a dim row of its own, with no link", ROW, async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  fakeGitHub(on, [[], SIX])
+  const ids = rowsPlaced(on)
+
+  await $.command.run(CHECK)
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(ids).toHaveLength(5)
+  expect(new Set(ids).size).toBe(5)
+
+  const more = await $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "Placed", props: { id: ids.at(-1) ?? "", plugin: "gh-inbox" } })
+  expect(await more.find({ type: "Link" })).toBeUndefined()
+  const dim = (await more.findAll({ type: "Text" })).filter(text => text.props.dimColor === true)
+  expect(dim.map(text => text.children.join(""))).toEqual(["GitHub: ほか2件の更新があります（/inbox log）"])
+})
+
+test("where Claude Code places no rows, the row channel writes the dim lines log does, GitHub: said once", ROW, async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  // No hook answers `ui.place`, as on a Claude Code before rows.
+  const github = fakeGitHub(on, [[], SIX])
+
+  await $.command.run(CHECK)
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual([])
+  expect(github.logs).toHaveLength(5)
+  expect(github.logs.slice(0, 4).every(line => /^GitHub: \[r\] someoneさんが #3 にコメントしました。c\d$/.test(line))).toBe(true)
+  expect(github.logs.at(-1)).toBe("GitHub: ほか2件の更新があります（/inbox log）")
+})
+
+test("the log channel says GitHub: once on the line counting what is not shown one by one", { options: { language: "ja", channel: "log" } }, async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const github = fakeGitHub(on, [[], SIX])
+
+  await $.command.run(CHECK)
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(github.toasts).toEqual([])
+  expect(github.logs.at(-1)).toBe("GitHub: ほか2件の更新があります（/inbox log）")
+})
+
 test("/inbox repo tells when each repository's last event happened", JA, async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } } })
   mock.clock(on, { now: Date.parse(COMMENT.created_at) + 5 * 60_000 })

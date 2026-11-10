@@ -1,7 +1,7 @@
 import { atom, read, update } from "claude-code"
 import type { EngineInterface, Register, Timer } from "claude-code"
 
-import type { GhEvent, GhEventItem, GhPick, GhPicker, GhPickPull, GhStaged, GhWatch, GhWatchPick, Inbox, InboxNotice } from "../types"
+import type { GhEvent, GhEventItem, GhPick, GhPicker, GhPickPull, GhPlaced, GhStaged, GhWatch, GhWatchPick, Inbox, InboxNotice } from "../types"
 
 import { type Ci, CI_ITEM_PREFIX, ciForPrompt, ciKey, isResult } from "./ci"
 import { CLOSED_ID, displayName, MERGED_ID, mergeSeen, newEvents, type Nicknames, plain, pullIds, snippet } from "./events"
@@ -129,6 +129,8 @@ const DETAIL_LEAD = /^\s*(?::|\.|。)?\s*/
 /** How far in `/inbox log` draws what was said, under who did what. */
 const LOG_INDENT = 2
 const TOAST_MS = 8000
+/** The rows the `row` channel keeps what to draw for, the newest: one placed before them draws nothing. */
+const PLACED_KEPT = 200
 // A branch with no open pull request is looked up again this often, not at every check.
 const LOOKUP_MS = 5 * 60 * 1000
 const MIN_INTERVAL_SECONDS = 30
@@ -168,6 +170,8 @@ const watchedSince = atom({ plugin: "gh-inbox", key: "watchedSince" } as const, 
 const ciTold = atom({ plugin: "gh-inbox", key: "ciTold" } as const, null as string | null)
 /** When what Claude was last told of CI was asked of GitHub: an answer asked for before it is older news, not told. */
 const ciToldAt = atom({ plugin: "gh-inbox", key: "ciToldAt" } as const, 0)
+/** The rows the `row` channel placed in the transcript, and what each draws. */
+const placed = atom({ plugin: "gh-inbox", key: "placed" } as const, [] as GhPlaced[])
 
 type Found = {
   branch: string
@@ -317,17 +321,66 @@ async function show($: EngineInterface, ctx: Context, notices: readonly InboxNot
   const shown = list.length > SHOWN_AT_ONCE ? [...list.slice(0, SHOWN_AT_ONCE - 1)] : list
   // A hook may have built the text from what anyone wrote on GitHub: made plain again, as it shows.
   const final = list.map(notice => ({ ...notice, text: plain(notice.text) }))
-  const lines = final.slice(0, shown.length).map(notice => notice.text)
-  if (shown.length < list.length) lines.push(ctx.t.moreUpdates(list.length - shown.length))
-  for (const line of lines) {
-    if (ctx.channel === "log") $.ui.log(`GitHub: ${line}`)
-    else if (ctx.channel === "notify") {
-      const sent = await $.ui.notify(line, { title: "GitHub" }).catch(() => ({ isSent: false }))
-      if (!sent.isSent) $.ui.toast(line, { timeoutMs: TOAST_MS })
-    } else $.ui.toast(line, { timeoutMs: TOAST_MS })
+  const each = final.slice(0, shown.length)
+  // The rest are counted on a line of their own, which says "GitHub:" itself.
+  const more = shown.length < list.length ? ctx.t.moreUpdates(list.length - shown.length) : undefined
+  if (ctx.channel === "row") await placeRows($, each, more)
+  else {
+    for (const notice of each) await tell($, ctx, notice.text, `GitHub: ${notice.text}`)
+    if (more !== undefined) await tell($, ctx, more, more)
   }
   // Told once every hook on `inbox.notify` has answered, so what a hook there does is what shows.
   for (const notice of final) await $.inbox.notified(notice).catch(() => undefined)
+}
+
+/** Shows one line on the channel chosen: `logged` is the line as the transcript's dim line says it. */
+async function tell($: EngineInterface, ctx: Context, line: string, logged: string) {
+  if (ctx.channel === "log") $.ui.log(logged)
+  else if (ctx.channel === "notify") {
+    const sent = await $.ui.notify(line, { title: "GitHub" }).catch(() => ({ isSent: false }))
+    if (!sent.isSent) $.ui.toast(line, { timeoutMs: TOAST_MS })
+  } else $.ui.toast(line, { timeoutMs: TOAST_MS })
+}
+
+/**
+ * Places each notice as a row of its own at the transcript's end, drawn as the log draws it with what was done a
+ * link to it on GitHub, and `more`, the rest counted, as a dim one. A row that cannot stand (a Claude Code with no
+ * rows yet, before 2.1.312) is the dim line the `log` channel writes instead.
+ */
+async function placeRows($: EngineInterface, notices: readonly InboxNotice[], more: string | undefined) {
+  const now = await $.clock.now()
+  const wanted: Array<Omit<GhPlaced, "id">> = [
+    ...notices.map(notice => ({ text: notice.text, url: notice.event.url, made: madeOf(notice.event) })),
+    ...(more === undefined ? [] : [{ text: more, url: "" }]),
+  ]
+  let rows: GhPlaced[] = []
+  // Kept before the rows are placed, so that a row's first drawing finds what it draws.
+  await update($, placed, list => {
+    const taken = new Set(list.map(row => row.id))
+    let n = 0
+    const freeId = () => {
+      for (;;) {
+        const id = `${now.toString(36)}-${n++}`
+        if (!taken.has(id)) return id
+      }
+    }
+    rows = wanted.map(row => ({ id: freeId(), ...row }))
+    return [...list, ...rows].slice(-PLACED_KEPT)
+  })
+  for (const row of rows) {
+    if (!(await isPlaced($, row.id))) $.ui.log(row.made === undefined ? row.text : `GitHub: ${row.text}`)
+  }
+}
+
+/** Places the row `id`: whether it stands, as it does not where this Claude Code places no rows or refused it. */
+async function isPlaced($: EngineInterface, id: string) {
+  try {
+    const result = await $.ui.place({ id })
+    // One not drawn now still stands for a surface yet to attach; one with no id does not stand at all.
+    return result.isPlaced || result.requestId !== undefined
+  } catch {
+    return false
+  }
 }
 
 /** Writes this session's presence: touched now when `isTouch`, alive now either way. */
@@ -1719,6 +1772,8 @@ export const register: Register = (on, options) => {
     made: LogMade | undefined,
     // The log pane's: what unfolds the row, and what it says in full once unfolded.
     fold?: { mark: ReturnType<typeof ui.Button>; full?: readonly LatestItem[] },
+    // What leads its first line, dim: a transcript row's `GitHub: `.
+    lead?: string,
   ) => {
     const { Box, Text, Link } = ui
     // A notice kept with its head says its short name, or that it has none.
@@ -1745,6 +1800,7 @@ export const register: Register = (on, options) => {
     ))
     const head = (
       <Text>
+        {lead === undefined ? null : <Text dimColor>{lead}</Text>}
         {label === "" ? null : <Text color={LABEL_COLOR}>{label}</Text>}
         {who === "" && action === "" ? null : (
           <Text bold color={HEAD_COLOR}>
@@ -1788,6 +1844,15 @@ export const register: Register = (on, options) => {
       (await readHistory($)).map(event => [`${plain(event.text)}\n${plain(event.url)}`, madeOf(event)]),
     )
     return <ui.Box flexDirection="column">{rows.map(row => drawLogRow(ui, row, known.get(`${row.text}\n${row.url}`)))}</ui.Box>
+  })
+
+  // A row the `row` channel placed: its notice as the log draws it, what was done a link to it on GitHub.
+  on("ui.render", { component: "Placed", props: { plugin: "gh-inbox" } }, async ($, e, next) => {
+    const row = (await read($, placed)).find(one => one.id === e.props.id)
+    if (row === undefined) return next(e)
+    const ui = $.ui.resolve(e)
+    if (row.made === undefined) return <ui.Text dimColor>{row.text}</ui.Text>
+    return drawLogRow(ui, { text: row.text, url: row.url, when: "" }, row.made, undefined, "GitHub: ")
   })
 
   // The log pane: every notice kept, newest first, a page at a time.

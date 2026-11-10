@@ -16,11 +16,12 @@
     "channel": {
       "type": "string",
       "title": "GitHub: Where notices show",
-      "description": "toast: a toast over the transcript. log: a dim line in the transcript. notify: a desktop notification through your notification channel.",
+      "description": "toast: a toast over the transcript. log: a dim line in the transcript. row: a row in the transcript, what was done a link that opens it on GitHub (Claude Code 2.1.312 or later; before, a dim line as log). notify: a desktop notification through your notification channel.",
       "default": "toast",
       "options": [
         "toast",
         "log",
+        "row",
         "notify"
       ]
     },

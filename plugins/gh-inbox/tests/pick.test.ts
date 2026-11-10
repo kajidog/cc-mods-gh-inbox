@@ -14,8 +14,7 @@ const PANE = {
   requestId: "gh-inbox-pick",
   props: { title: "", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 20 }, view: {} },
 } as const
-// Kept in a constant, not written in the mount, so that props newer Claude Code requires (isCollapsed)
-// still type-check with the older version CI pins, which does not know them.
+// The band above the prompt, unfolded, as the terminal draws it.
 const BAND = {
   plugin: "gh-inbox",
   surface: "terminal",
