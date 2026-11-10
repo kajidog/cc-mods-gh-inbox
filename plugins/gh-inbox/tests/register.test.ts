@@ -949,10 +949,10 @@ test("the tray tells where the branch's pull request stands, and /inbox tray swi
     return { value: undefined }
   })
 
-  const PULL_LINE = "GitHub: #12 | CI ✗ 1/2 | 承認2 | コンフリクト | aliceさん「Looks good」 5分前"
+  const PULL_LINE = "GitHub: #12  ✗ コンフリクト  ✗ CI 1/2  ✓ 承認2 | aliceさん「Looks good」5分前"
   await $.command.run(CHECK)
   expect(lines.at(-1)).toBe(PULL_LINE)
-  expect(await $.command.run({ ...CHECK, args: "status" })).toMatchObject({ text: expect.stringContaining("\n  CI ✗ 1/2 · 承認2 · コンフリクト · aliceさん「Looks good」 5分前\n") })
+  expect(await $.command.run({ ...CHECK, args: "status" })).toMatchObject({ text: expect.stringContaining("\n  ✗ コンフリクト  ✗ CI 1/2  ✓ 承認2 | aliceさん「Looks good」5分前\n") })
 
   expect(await $.command.run({ ...CHECK, args: "tray" })).toMatchObject({ text: expect.stringContaining("登録したリポジトリの一覧を出します") })
   expect(lines.at(-1)).toBe("GitHub: r 5分前")
@@ -974,7 +974,7 @@ test("with no repository registered, the tray tells of the branch's pull request
   })
 
   await $.command.run(CHECK)
-  expect(lines.at(-1)).toBe("GitHub: #12 | CI ✗ 1/2 | 2 approvals | conflicts | alice: Looks good 2h ago")
+  expect(lines.at(-1)).toBe("GitHub: #12  ✗ conflicts  ✗ CI 1/2  ✓ 2 approvals | alice “Looks good” 2h ago")
 })
 
 test("a branch switched to shows by the next prompt sent, GitHub asked only when it changed", JA, async ($, on) => {
@@ -1186,6 +1186,12 @@ type PullSays = {
   head?: string
   /** The newest commit's checks, failed ones by name. */
   failed?: string[]
+  /** What GitHub says of merging it now (`mergeStateStatus`). */
+  mergeState?: string
+  isDraft?: boolean
+  /** How it merges once it can, where auto-merge is on. */
+  autoMerge?: string
+  reviewDecision?: string
 }
 
 /** `PULL_QUERY`'s answer for o/r#number, as GitHub would give it. */
@@ -1202,7 +1208,10 @@ function pullAnswer(says: PullSays) {
           state: says.state ?? "OPEN",
           closedAt: says.state === undefined || says.state === "OPEN" ? null : "2026-10-16T01:00:00Z",
           mergeable: "MERGEABLE",
-          reviewDecision: null,
+          reviewDecision: says.reviewDecision ?? null,
+          isDraft: says.isDraft === true,
+          mergeStateStatus: says.mergeState ?? "UNKNOWN",
+          autoMergeRequest: says.autoMerge === undefined ? null : { mergeMethod: says.autoMerge },
           mergedBy: says.state === "MERGED" ? { login: "alice" } : null,
           latestOpinionatedReviews: { nodes: [] },
           closed: { nodes: [] },
@@ -1357,7 +1366,7 @@ test("the branch's own pull request, watched too, is asked about once a check, a
   expect(github.asked.filter(argv => argv.includes("graphql"))).toHaveLength(1)
   const listed = await $.command.run({ ...CHECK, args: "watch" })
   expect(listed).toMatchObject({ text: expect.stringContaining("o/r#12 Add things（通知中）（今のブランチの PR として通知中）") })
-  expect(listed).toMatchObject({ text: expect.stringContaining("\n  CI ✗ 1/2 · 承認2 · コンフリクト · aliceさん「Looks good」 5分前\n") })
+  expect(listed).toMatchObject({ text: expect.stringContaining("\n  ✗ コンフリクト  ✗ CI 1/2  ✓ 承認2 | aliceさん「Looks good」5分前\n") })
 })
 
 test("/inbox watch add takes a pull request as GitHub spells it and refuses one watched or merged; remove stops it", JA, async ($, on) => {
@@ -1495,4 +1504,143 @@ test("the branch's own pull request, watched, goes on as a watched one once the 
   await clock.advance(61_000)
   await $.command.run(CHECK)
   expect(github.toasts.at(-1)).toBe("[r#12] aliceさんがコメントしました。Looks good")
+})
+
+const HEAD = "abc1234def5678abc1234def5678abc1234def56"
+/** The merge settings GitHub answers for o/r: squash and merge commits allowed, squash the one used last. */
+const SETTINGS = JSON.stringify({
+  data: { repository: { mergeCommitAllowed: true, squashMergeAllowed: true, rebaseMergeAllowed: false, autoMergeAllowed: true, viewerDefaultMergeMethod: "SQUASH" } },
+})
+const ACT_PANE = { title: "", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 20 }, view: {} } as const
+
+/** `gh` and `git` for a branch whose pull request is o/r#12, as `says` tells it; `acted` answers what changes it. */
+function actingGitHub(on: On, says: () => PullSays, acted: (argv: string[]) => Answer = () => ({ stdout: "" })) {
+  const opened: string[] = []
+  on("ui.open", async (_$, e) => {
+    opened.push(e.id)
+    return { value: { isPlaced: true } }
+  })
+  on("ui.close", async () => ({ value: undefined }))
+  const github = fakeGitHub(on, [[]], argv => {
+    if (argv[0] === "git") return { stdout: "feat\n" }
+    if (argv[1] === "repo" && argv[2] === "view") return { stdout: "https://github.com/o/r\n" }
+    if (argv[1] === "pr" && argv[2] === "view") return { stdout: JSON.stringify({ url: "https://github.com/o/r/pull/12", state: "OPEN" }) }
+    if (argv[1] === "pr") return acted(argv)
+    if (askedPull(argv) === 12) return { stdout: pullAnswer({ head: HEAD, ...says() }) }
+    if (argv.some(word => word.includes("squashMergeAllowed"))) return { stdout: SETTINGS }
+    return undefined
+  })
+  return { ...github, opened }
+}
+
+/** What was sent to change a pull request: `gh pr merge`, `close`, `ready`. */
+const changes = (asked: string[][]) => asked.filter(argv => argv[1] === "pr" && argv[2] !== "view")
+
+test("/inbox merge asks in a pane, and merges at the head commit it showed only once its button is pressed", JA, async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: 1_000_000 })
+  const github = actingGitHub(on, () => ({ mergeState: "CLEAN" }))
+
+  expect(await $.command.run({ ...CHECK, args: "merge" })).toEqual({ text: "ペインで確かめてください。ボタンを押すまでは何もしません。" })
+  expect(changes(github.asked)).toEqual([])
+  const pane = await $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "Pane", requestId: "gh-inbox-act", props: ACT_PANE })
+  expect(await pane.find({ type: "Text", text: "abc1234  ● マージ可" })).toBeDefined()
+  // The method the person used last is offered first; another can be chosen.
+  expect((await pane.find({ key: "act" }))?.props.label).toBe("スカッシュでマージする")
+  await pane.press({ key: "method:MERGE" })
+  expect((await pane.find({ key: "act" }))?.props.label).toBe("マージコミットでマージする")
+  // Sent by the button alone: it has no hotkey.
+  expect((await pane.find({ key: "act" }))?.props.hotkey).toBeUndefined()
+
+  await pane.press({ key: "act" })
+  for (let tries = 0; tries < 100 && !github.toasts.includes("o/r#12 をマージしました。"); tries += 1) await pane.find({ key: "act" })
+  expect(changes(github.asked)).toEqual([["gh", "pr", "merge", "https://github.com/o/r/pull/12", "--merge", "--match-head-commit", HEAD]])
+  expect(github.toasts).toContain("o/r#12 をマージしました。")
+})
+
+test("/inbox merge refuses what cannot be merged now, before any pane", JA, async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: 1_000_000 })
+  let says: PullSays = { isDraft: true, mergeState: "DRAFT" }
+  const github = actingGitHub(on, () => says)
+
+  expect(await $.command.run({ ...CHECK, args: "merge" })).toEqual({ text: "o/r#12: 下書きです。先にレビュー待ちにします（/inbox draft）。" })
+  says = { mergeState: "BEHIND" }
+  expect(await $.command.run({ ...CHECK, args: "merge o/r#12" })).toMatchObject({ text: expect.stringContaining("base が先に進んでいて") })
+  says = { mergeState: "CLEAN" }
+  expect(await $.command.run({ ...CHECK, args: "merge rebase" })).toEqual({ text: "このリポジトリではリベースは使えません。使えるもの: マージコミット、スカッシュ" })
+  says = { state: "MERGED" }
+  expect(await $.command.run({ ...CHECK, args: "merge" })).toEqual({ text: "o/r#12 はもうマージ済みです。" })
+  expect(github.opened).toEqual([])
+  expect(changes(github.asked)).toEqual([])
+})
+
+test("a merge GitHub refuses says why in the pane, which stays to try again or close", JA, async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: 1_000_000 })
+  const github = actingGitHub(on, () => ({ mergeState: "CLEAN" }), () => ({ exitCode: 1, stderr: "X Head branch was modified. Review and try the merge again.\n" }))
+
+  await $.command.run({ ...CHECK, args: "merge" })
+  const pane = await $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "Pane", requestId: "gh-inbox-act", props: ACT_PANE })
+  await pane.press({ key: "act" })
+  const refused = { type: "Text", text: "GitHub に断られました: X Head branch was modified. Review and try the merge again." } as const
+  for (let tries = 0; tries < 100 && (await pane.find(refused)) === undefined; tries += 1) await pane.find({ key: "act" })
+  expect(await pane.find(refused)).toBeDefined()
+  expect((await pane.find({ key: "cancel" }))?.props.label).toBe("閉じる")
+  expect(changes(github.asked)).toHaveLength(1)
+  expect(github.toasts.filter(text => text.includes("マージしました"))).toEqual([])
+})
+
+test("/inbox close and /inbox draft ask in the pane too, and cancelling sends nothing", JA, async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: 1_000_000 })
+  let says: PullSays = { isDraft: true, mergeState: "DRAFT" }
+  const github = actingGitHub(on, () => says)
+
+  // A draft is marked ready for review.
+  await $.command.run({ ...CHECK, args: "draft" })
+  const pane = await $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "Pane", requestId: "gh-inbox-act", props: ACT_PANE })
+  expect((await pane.find({ key: "act" }))?.props.label).toBe("レビュー待ちにする")
+  await pane.press({ key: "cancel" })
+  expect(changes(github.asked)).toEqual([])
+
+  // One ready for review goes back to a draft.
+  // `/inbox` says it is a draft beside what it is watched as.
+  await $.command.run(CHECK)
+  expect(await $.command.run({ ...CHECK, args: "status" })).toMatchObject({ text: expect.stringContaining("o/r#12 Add things（下書き、通知中）") })
+
+  says = { mergeState: "BLOCKED", reviewDecision: "REVIEW_REQUIRED" }
+  await $.command.run({ ...CHECK, args: "draft 12" })
+  expect((await pane.find({ key: "act" }))?.props.label).toBe("下書きに戻す")
+  await pane.press({ key: "act" })
+  for (let tries = 0; tries < 100 && changes(github.asked).length === 0; tries += 1) await pane.find({ key: "act" })
+  expect(changes(github.asked)).toEqual([["gh", "pr", "ready", "https://github.com/o/r/pull/12", "--undo"]])
+
+  await $.command.run({ ...CHECK, args: "close" })
+  expect((await pane.find({ key: "act" }))?.props.label).toBe("マージせずにクローズする")
+  await pane.press({ key: "act" })
+  for (let tries = 0; tries < 100 && changes(github.asked).length < 2; tries += 1) await pane.find({ key: "act" })
+  expect(changes(github.asked).at(-1)).toEqual(["gh", "pr", "close", "https://github.com/o/r/pull/12"])
+})
+
+test("one a required review keeps from merging turns on auto-merge, and one with it on turns it off", async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: 1_000_000 })
+  let says: PullSays = { mergeState: "BLOCKED", reviewDecision: "REVIEW_REQUIRED" }
+  const github = actingGitHub(on, () => says)
+
+  await $.command.run({ ...CHECK, args: "merge" })
+  const pane = await $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "Pane", requestId: "gh-inbox-act", props: ACT_PANE })
+  expect(await pane.find({ type: "Text", text: "It cannot be merged yet (○ awaiting review): auto-merge merges it once it can." })).toBeDefined()
+  expect((await pane.find({ key: "act" }))?.props.label).toBe("Turn on auto-merge (squash)")
+  await pane.press({ key: "act" })
+  for (let tries = 0; tries < 100 && changes(github.asked).length === 0; tries += 1) await pane.find({ key: "act" })
+  expect(changes(github.asked)).toEqual([["gh", "pr", "merge", "https://github.com/o/r/pull/12", "--squash", "--match-head-commit", HEAD, "--auto"]])
+
+  says = { mergeState: "BLOCKED", reviewDecision: "REVIEW_REQUIRED", autoMerge: "SQUASH" }
+  await $.command.run({ ...CHECK, args: "merge" })
+  expect((await pane.find({ key: "act" }))?.props.label).toBe("Turn off auto-merge")
+  await pane.press({ key: "act" })
+  for (let tries = 0; tries < 100 && changes(github.asked).length < 2; tries += 1) await pane.find({ key: "act" })
+  expect(changes(github.asked).at(-1)).toEqual(["gh", "pr", "merge", "https://github.com/o/r/pull/12", "--disable-auto"])
 })

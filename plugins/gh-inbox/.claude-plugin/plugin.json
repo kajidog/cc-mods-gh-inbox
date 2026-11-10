@@ -1,7 +1,7 @@
 {
   "name": "gh-inbox",
   "version": "0.13.0",
-  "description": "Shows GitHub events (comments, reviews, commits, CI failures, merges) for the checked-out branch's pull request, for pull requests you choose to watch and for repositories you register, to read and hand to Claude. Read-only: it never writes to GitHub.",
+  "description": "Shows GitHub events (comments, reviews, commits, CI failures, merges) for the checked-out branch's pull request, for pull requests you choose to watch and for repositories you register, to read and hand to Claude; merges, closes or drafts a pull request once you confirm it in a pane.",
   "author": {
     "name": "kajidog"
   },
@@ -44,7 +44,7 @@
     "tray": {
       "type": "boolean",
       "title": "GitHub: Tray",
-      "description": "Keep a line under the prompt: where the branch's pull request stands (CI, approvals, conflicts, the newest comment), or how long ago each registered repository's last event happened. /inbox tray switches between them.",
+      "description": "Keep a line under the prompt: where the branch's pull request stands, a mark leading each part, the most pressing first (✗ fails, ◐ runs, ○ waits, ● ready to merge, ✓ passed; then the newest comment), or how long ago each registered repository's last event happened. /inbox tray switches between them.",
       "default": true
     },
     "ciToClaude": {

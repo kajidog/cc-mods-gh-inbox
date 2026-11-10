@@ -116,14 +116,14 @@ describe("what Claude reads of CI", () => {
     expect(ciContext(MESSAGES.ja, REF, cut("FAILURE"))).toContain("150件中1件だけを出しています。そのどれも失敗・実行中ではありませんが、GitHub は全体を「失敗」としています。")
     expect(ciContext(MESSAGES.en, REF, cut("SUCCESS"))).toContain("CI passed: none of its 150 checks failed.")
     expect(ciContext(MESSAGES.en, REF, cut("SUCCESS"))).toContain("(149 more checks not listed)")
-    expect(ciItem(MESSAGES.en, REF, cut("PENDING"))?.label).toBe("CI … 1/150 0123456")
+    expect(ciItem(MESSAGES.en, REF, cut("PENDING"))?.label).toBe("◐ CI 1/150 0123456")
   })
 
   test("the pick item tells how CI stands at the head commit, what failed named", () => {
     const item = ciItem(MESSAGES.ja, REF, { ...parseChecks(commit(MIXED)), total: 5 })
-    expect(item?.label).toBe("CI ✗ 2/5 0123456: CI / test、ci/circleci")
+    expect(item?.label).toBe("✗ CI 2/5 0123456: CI / test、ci/circleci")
     expect(item?.id).toBe(`ci:${OID}:failed:run:11,status:SC_1`)
-    expect(ciItem(MESSAGES.en, REF, { ...parseChecks(commit([job(12, "lint", null), job(13, "build", "SUCCESS")])), total: 2 })?.label).toBe("CI … 1/2 0123456")
+    expect(ciItem(MESSAGES.en, REF, { ...parseChecks(commit([job(12, "lint", null), job(13, "build", "SUCCESS")])), total: 2 })?.label).toBe("◐ CI 1/2 0123456")
     expect(ciItem(MESSAGES.en, REF, { ...parseChecks(commit([])), total: 0 })).toBeNull()
   })
 
@@ -265,7 +265,7 @@ describe("CI told with a prompt", () => {
     await $.command.run({ ...CHECK, args: "pick" })
     const pane = await $.ui.mount(PANE)
     const key = `ci:${OID}:failed:run:11`
-    expect((await pane.find({ key }))?.props.label).toBe("[ ] CI ✗ 1/2 0123456: CI / test")
+    expect((await pane.find({ key }))?.props.label).toBe("[ ] ✗ CI 1/2 0123456: CI / test")
     await pane.press({ key })
     await pane.press({ key: "stage" })
     await $.prompt.submit({ ...PROMPT, text: "直して" })

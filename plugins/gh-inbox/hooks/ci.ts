@@ -5,6 +5,7 @@ import type { GhPickItem } from "../types"
 import { fence } from "./events"
 import { type Check, type PullRef, pullName } from "./github"
 import type { Messages } from "./i18n"
+import { ciMark } from "./status"
 
 /** Checks named at most in the line of those that did not fail. */
 const NAMES_LISTED = 30
@@ -117,8 +118,7 @@ export function ciItem(t: Messages, ref: PullRef, ci: Ci): GhPickItem | null {
   const stands = standing(ci)
   if (key === null || stands === null) return null
   const { failed, running } = groups(ci.checks)
-  const status =
-    stands === "failed" ? t.ciFailing(failed.length, ci.total) : stands === "running" ? t.ciRunning(ci.checks.length - running.length, ci.total) : t.ciPassed
+  const status = ciMark(t, stands === "done" ? "passed" : stands, stands === "failed" ? failed.length : ci.checks.length - running.length, ci.total)
 
   return {
     id: `${CI_ITEM_PREFIX}${key}`,

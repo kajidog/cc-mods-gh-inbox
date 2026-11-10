@@ -60,6 +60,15 @@ export type GhPullStatus = {
   reviewDecision: string | null
   /** `CONFLICTING` when it does not merge into its base cleanly; `UNKNOWN` while GitHub works it out. */
   mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN"
+  /**
+   * What GitHub says of merging it now, branch protection and all (`CLEAN`, `HAS_HOOKS`, `UNSTABLE`, `BLOCKED`,
+   * `BEHIND`, `DIRTY`, `DRAFT`, `UNKNOWN`); null or absent where it said nothing.
+   */
+  mergeState?: string | null
+  /** Whether it is a draft; absent before it was asked for. */
+  isDraft?: boolean
+  /** Whether auto-merge is turned on for it; absent before it was asked for. */
+  autoMerge?: boolean
   /** The newest comment, review or line comment with words in it. */
   latest: { author: string | null; name: string; body: string; at: string; url: string } | null
 }
@@ -158,6 +167,31 @@ export type GhStaged = {
   at?: number
 }
 
+/** What `/inbox merge`, `/inbox close` and `/inbox draft` do to a pull request once the person confirms it. */
+export type GhActKind = "merge" | "auto" | "disable-auto" | "close" | "ready" | "draft"
+
+/** What the pane of `/inbox merge`, `/inbox close` and `/inbox draft` shows: what is about to be done, to confirm. */
+export type GhAct = {
+  /** confirm: waiting for the person. running: under way. failed: GitHub refused it, `message` saying why. */
+  stage: "confirm" | "running" | "failed"
+  kind: GhActKind
+  /** `host/owner/repo#number`. */
+  pull: string
+  title: string
+  url: string
+  /** The head commit it was confirmed at, in full: a merge goes only while it is still the head. */
+  head: string
+  /** Where it stands, as the line under the prompt tells it. */
+  status: string
+  /** What to know before going on, a line each. */
+  notes: string[]
+  /** For a merge: the methods the repository allows (`MERGE`, `SQUASH`, `REBASE`) and the one chosen. */
+  methods: string[]
+  method: string | null
+  /** Why GitHub refused it, once it did. */
+  message?: string
+}
+
 /** A row the `row` channel placed in the transcript (`$.ui.place`), and what it draws. */
 export type GhPlaced = {
   /** The row's id, as `$.ui.place` was given it. */
@@ -254,6 +288,8 @@ declare module "claude-code" {
       ciToldAt: number
       /** The rows the `row` channel placed in the transcript, oldest first, the newest kept. */
       placed: GhPlaced[]
+      /** What the pane of `/inbox merge`, `/inbox close` and `/inbox draft` shows. */
+      act: GhAct | null
     }
   }
 }

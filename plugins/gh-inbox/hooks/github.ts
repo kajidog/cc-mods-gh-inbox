@@ -53,6 +53,13 @@ export type Check = {
   annotationCount: number
 }
 export type Mergeable = "MERGEABLE" | "CONFLICTING" | "UNKNOWN"
+/**
+ * What GitHub says of merging it now, branch protection and all: `CLEAN` (mergeable, checks passing), `HAS_HOOKS`
+ * (so, with pre-receive hooks), `UNSTABLE` (mergeable, a check not required failing), `BLOCKED` (a required review or
+ * check missing), `BEHIND` (the base must be merged in first), `DIRTY` (conflicts), `DRAFT`, `UNKNOWN`.
+ */
+export type MergeState = "CLEAN" | "HAS_HOOKS" | "UNSTABLE" | "BLOCKED" | "BEHIND" | "DIRTY" | "DRAFT" | "UNKNOWN"
+const MERGE_STATES: ReadonlySet<string> = new Set(["CLEAN", "HAS_HOOKS", "UNSTABLE", "BLOCKED", "BEHIND", "DIRTY", "DRAFT", "UNKNOWN"])
 
 export type Pull = {
   ref: PullRef
@@ -77,6 +84,12 @@ export type Pull = {
   ciState: string | null
   /** Whether it merges into its base cleanly; UNKNOWN while GitHub works it out. */
   mergeable: Mergeable
+  /** What GitHub says of merging it now; null where it said nothing (an answer kept from before it was asked for). */
+  mergeState: MergeState | null
+  /** Whether it is a draft. */
+  isDraft: boolean
+  /** How it merges once it can, where auto-merge is turned on for it (`MERGE`, `SQUASH`, `REBASE`); null where it is not. */
+  autoMerge: string | null
   /** `APPROVED`, `CHANGES_REQUESTED` or `REVIEW_REQUIRED`; null where the base asks for no review. */
   reviewDecision: string | null
   /** Each reviewer's last approving or change-requesting review, by its state. */
@@ -104,8 +117,9 @@ export const PULL_QUERY = `query($owner: String!, $repo: String!, $number: Int!)
   viewer { login }
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
-      title url state closedAt mergeable reviewDecision
+      title url state closedAt mergeable reviewDecision isDraft mergeStateStatus
       mergedBy { login }
+      autoMergeRequest { mergeMethod }
       latestOpinionatedReviews(first: 50) { nodes { state } }
       closed: timelineItems(itemTypes: [CLOSED_EVENT], last: 1) { nodes { ... on ClosedEvent { actor { login } } } }
       comments(last: 50) { nodes { id author { login } body createdAt url } }
@@ -133,12 +147,20 @@ export function parsePullUrl(url: string): PullRef | null {
 
 export const pullName = (ref: PullRef) => `${ref.owner}/${ref.repo}#${ref.number}`
 
+/**
+ * What `mergeStateStatus` is asked with: GitHub keeps it under the merge info preview, which this media type asks for;
+ * once the preview ends it is let be.
+ */
+export const MERGE_INFO_PREVIEW = "Accept: application/vnd.github.merge-info-preview+json"
+
 /** The argv that fetches a pull request with `PULL_QUERY`. */
 export function pullArgv(ref: PullRef): string[] {
   return [
     "gh",
     "api",
     ...(ref.host === "github.com" ? [] : ["--hostname", ref.host]),
+    "-H",
+    MERGE_INFO_PREVIEW,
     "graphql",
     "-f",
     `owner=${ref.owner}`,
@@ -296,6 +318,9 @@ export function parsePull(ref: PullRef, answer: string, language: Language = "en
     checksTotal: latest.total,
     ciState: latest.state,
     mergeable: pull.mergeable === "MERGEABLE" || pull.mergeable === "CONFLICTING" ? pull.mergeable : "UNKNOWN",
+    mergeState: MERGE_STATES.has(text(pull.mergeStateStatus)) ? (text(pull.mergeStateStatus) as MergeState) : null,
+    isDraft: pull.isDraft === true,
+    autoMerge: text(object(pull.autoMergeRequest).mergeMethod) || null,
     reviewDecision: text(pull.reviewDecision) || null,
     verdicts: nodes(pull.latestOpinionatedReviews).map(node => text(node.state)),
   }
