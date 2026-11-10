@@ -1656,12 +1656,20 @@ async function runAct($: EngineInterface, ctx: Context) {
     }
     await update($, act, () => null)
     await $.ui.close({ id: ACT_PANE }).catch(() => undefined)
-    // A merge of the branch's or a watched pull request is told by its own notice, merges told even when the person's.
-    const isTold = held.kind === "merge" && (isBranchPull(ctx, held.pull) || findWatched(await readWatched($), held.pull) !== undefined)
-    if (!isTold) $.ui.toast(ctx.t.actDone(held.kind, plain(pullLabel(held.pull))), { timeoutMs: TOAST_MS })
-    // What was done shows at once: the answer kept from before is no longer what GitHub says.
+    const name = plain(pullLabel(held.pull))
     const ref = refOfPullKey(held.pull)
+    // What was done shows at once: the answer kept from before is no longer what GitHub says.
     if (ref !== null) await $.store.delete(`${CACHE_PREFIX}${pullKey(ref)}`)
+    if (held.kind === "merge") {
+      // `gh pr merge` succeeds too where a merge queue only took it in: merged is said once GitHub says so. Asked
+      // afresh, the answer kept is the check's to tell.
+      const now = await $.clock.now()
+      const after = ref === null ? undefined : await fetchPull($, ctx, ref, now, true).catch(() => undefined)
+      if (after !== undefined && after.pull.state !== "MERGED") $.ui.toast(ctx.t.actQueued(name), { timeoutMs: TOAST_MS })
+      // A merge of the branch's or a watched pull request is told by its own notice, merges told even when the person's.
+      else if (!isBranchPull(ctx, held.pull) && findWatched(await readWatched($), held.pull) === undefined)
+        $.ui.toast(ctx.t.actDone(held.kind, name), { timeoutMs: TOAST_MS })
+    } else $.ui.toast(ctx.t.actDone(held.kind, name), { timeoutMs: TOAST_MS })
     void check($, ctx, true)
   } finally {
     ctx.isActing = false

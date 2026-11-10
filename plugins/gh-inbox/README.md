@@ -134,7 +134,7 @@ While the branch has an open pull request, each new result of its CI goes to Cla
 - The merge method offered first is the one you used last in the repository (GitHub's own default), among those it allows. The pane switches between them (`1`–`3`), or name one: `merge`, `squash`, `rebase`.
 - Never past branch protection (no `--admin`), and the branch is not deleted: `gh pr merge --delete-branch` would check out another branch under Claude.
 - What GitHub would not merge now is refused before any pane: a draft, a conflict, a base that has moved on (update the branch first), a state GitHub is still working out. One a required review or check still keeps from merging gets auto-merge instead, where the repository allows it: GitHub merges it once it can. With auto-merge on, `/inbox merge` turns it off.
-- A merge of the branch's or a watched pull request is told by its usual notice; anything else says what was done in a toast.
+- A merge of the branch's or a watched pull request is told by its usual notice; anything else says what was done in a toast. A merge a merge queue took in but has not merged yet is said to be so, not merged.
 
 ## The line under the prompt
 

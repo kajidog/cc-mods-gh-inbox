@@ -1539,7 +1539,15 @@ const changes = (asked: string[][]) => asked.filter(argv => argv[1] === "pr" && 
 test("/inbox merge asks in a pane, and merges at the head commit it showed only once its button is pressed", JA, async ($, on) => {
   mock.store(on, {})
   mock.clock(on, { now: 1_000_000 })
-  const github = actingGitHub(on, () => ({ mergeState: "CLEAN" }))
+  let isMerged = false
+  const github = actingGitHub(
+    on,
+    () => (isMerged ? { state: "MERGED" } : { mergeState: "CLEAN" }),
+    () => {
+      isMerged = true
+      return { stdout: "" }
+    },
+  )
 
   expect(await $.command.run({ ...CHECK, args: "merge" })).toEqual({ text: "ペインで確かめてください。ボタンを押すまでは何もしません。" })
   expect(changes(github.asked)).toEqual([])
@@ -1573,6 +1581,21 @@ test("/inbox merge refuses what cannot be merged now, before any pane", JA, asyn
   expect(await $.command.run({ ...CHECK, args: "merge" })).toEqual({ text: "o/r#12 はもうマージ済みです。" })
   expect(github.opened).toEqual([])
   expect(changes(github.asked)).toEqual([])
+})
+
+test("a merge a merge queue only took in is not said to be merged", JA, async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: 1_000_000 })
+  // `gh pr merge` succeeds, the pull request still open: in the queue.
+  const github = actingGitHub(on, () => ({ mergeState: "CLEAN" }))
+
+  await $.command.run({ ...CHECK, args: "merge o/r#12" })
+  const pane = await $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "Pane", requestId: "gh-inbox-act", props: ACT_PANE })
+  await pane.press({ key: "act" })
+  const queued = "o/r#12 を GitHub が受け付けましたが、まだマージされていません。マージキューを通るとマージされます。"
+  for (let tries = 0; tries < 100 && !github.toasts.includes(queued); tries += 1) await pane.find({ key: "act" })
+  expect(github.toasts).toContain(queued)
+  expect(github.toasts.filter(text => text.includes("マージしました"))).toEqual([])
 })
 
 test("a merge GitHub refuses says why in the pane, which stays to try again or close", JA, async ($, on) => {

@@ -307,6 +307,8 @@ const en = {
               ? `${name} is ready for review.`
               : `${name} is a draft now.`,
   actFailed: (message: string) => `GitHub refused it: ${message}`,
+  /** A merge GitHub took in without merging yet: a merge queue's. */
+  actQueued: (name: string) => `GitHub took ${name} in but has not merged it yet: it merges once its merge queue gets to it.`,
 
   // `/inbox nick`
   noNicknames: "No nicknames yet. Add one with /inbox nick <login> <nickname>.",
@@ -629,6 +631,7 @@ const ja: Messages = {
               ? `${name} をレビュー待ちにしました。`
               : `${name} を下書きに戻しました。`,
   actFailed: message => `GitHub に断られました: ${message}`,
+  actQueued: name => `${name} を GitHub が受け付けましたが、まだマージされていません。マージキューを通るとマージされます。`,
 
   noNicknames: "ニックネームはまだありません。/inbox nick <login> <ニックネーム> で登録します。",
   noNickname: login => `${login} のニックネームはありません。`,
