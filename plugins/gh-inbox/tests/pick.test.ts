@@ -14,6 +14,13 @@ const PANE = {
   requestId: "gh-inbox-pick",
   props: { title: "", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 20 }, view: {} },
 } as const
+// The band above the prompt, unfolded, as the terminal draws it.
+const BAND = {
+  plugin: "gh-inbox",
+  surface: "terminal",
+  component: "AbovePrompt",
+  props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+} as const
 
 const LONG_HUNK = ["@@ -0,0 +1,30 @@", ...Array.from({ length: 30 }, (_, index) => `+line ${index + 1}`)].join("\n")
 const ROOT_T1 = {
@@ -232,12 +239,7 @@ test("a review chosen goes with its threads and their replies in the next prompt
   expect((await pane.find({ key: "T2" }))?.props.label).toBe("[x] src/b.ts:3 Rename this（解決済み・古い差分）")
   await pane.press({ key: "stage" })
 
-  const band = await $.ui.mount({
-    plugin: "gh-inbox",
-    surface: "terminal",
-    component: "AbovePrompt",
-    props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
-  })
+  const band = await $.ui.mount(BAND)
   expect(await band.find({ text: "o/r#5 の3件を添付中" })).toBeDefined()
   expect(await band.find({ text: "other band" })).toBeDefined()
 
@@ -460,12 +462,7 @@ test("the pick pane and the band speak English by default", async ($, on) => {
   expect((await pane.find({ key: "stage" }))?.props.label).toBe("Attach (3)")
   await pane.press({ key: "stage" })
 
-  const band = await $.ui.mount({
-    plugin: "gh-inbox",
-    surface: "terminal",
-    component: "AbovePrompt",
-    props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
-  })
+  const band = await $.ui.mount(BAND)
   expect(await band.find({ text: "GitHub: 3 items of o/r#5 attached" })).toBeDefined()
   expect(await $.command.run({ ...PICK, args: "clear" })).toEqual({ text: "Detached 3 items." })
 })

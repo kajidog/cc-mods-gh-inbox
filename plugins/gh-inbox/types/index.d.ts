@@ -158,6 +158,18 @@ export type GhStaged = {
   at?: number
 }
 
+/** A row the `row` channel placed in the transcript (`$.ui.place`), and what it draws. */
+export type GhPlaced = {
+  /** The row's id, as `$.ui.place` was given it. */
+  id: string
+  /** The line, as it showed. */
+  text: string
+  /** Where what was done links to; empty for none. */
+  url: string
+  /** What the notice was made with, as the log draws it by; absent for the line counting notices not shown one by one. */
+  made?: { who?: string; head?: string; label?: string; kind?: string }
+}
+
 /** One notice about to be shown, as `$.inbox.notify` takes it. */
 export type InboxNotice = {
   event: GhEvent
@@ -240,6 +252,8 @@ declare module "claude-code" {
       ciTold: string | null
       /** When what Claude was last told of CI was asked of GitHub, ms since the epoch; 0 before. */
       ciToldAt: number
+      /** The rows the `row` channel placed in the transcript, oldest first, the newest kept. */
+      placed: GhPlaced[]
     }
   }
 }

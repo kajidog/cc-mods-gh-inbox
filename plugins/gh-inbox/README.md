@@ -23,6 +23,7 @@ Posting comments, merging, labelling and the like are out of its scope: it never
 - Notices show only in the window used last among those alive. `/inbox log` lists them in every window.
 - `/inbox log` is shared by every window (session): it lists the notices of other windows, closed ones too.
 - What came while no window was open is listed by the next window that opens, at its first check, with one line saying how many (they are not shown one by one). That covers what GitHub still returns, within 30 days of the last look.
+- To open a notice on GitHub with a click, set **Where notices show** to `row` in `/config`. Each notice then stays in the transcript as a row of its own, drawn as `/inbox log` draws it, and what was done (`commented on #3`) is a link to it. The rows are not sent to Claude, and `--resume` does not bring them back. They need Claude Code 2.1.312 or later; before that, notices are the dim lines of `log`.
 - Notices, commands and panes are in English by default; set **Language** to `ja` in `/config` for Japanese (see [Settings](#settings-config)).
 
 ## Requirements
@@ -165,7 +166,7 @@ on("inbox.notified", async ($, e, next) => {
 | `isSelf` | Whether the account `gh` is logged in as did it |
 | `text` | The line shown, in the language set in `/config` |
 
-- Called only in the window that shows notices (the one used last), whatever the channel (toast, log, notify).
+- Called only in the window that shows notices (the one used last), whatever the channel (toast, log, row, notify).
 - A notice stopped with `{ deny }` does not show and does not reach `inbox.notified`, but `/inbox log` still lists it.
 - When many come at once and are folded into an "N more updates" line, `inbox.notified` is still called once for each.
 - [gh-inbox-tts](../gh-inbox-tts/README.md), which reads notices aloud, is built on this.
@@ -176,7 +177,7 @@ on("inbox.notified", async ($, e, next) => {
 | Setting | Default | What it does |
 | --- | --- | --- |
 | Check interval | 60 | Seconds between checks |
-| Where notices show | toast | `toast`: a toast / `log`: a line in the transcript / `notify`: a desktop notification |
+| Where notices show | toast | `toast`: a toast / `log`: a line in the transcript / `row`: a row in the transcript whose link opens the notice on GitHub (Claude Code 2.1.312 or later) / `notify`: a desktop notification |
 | Repositories checked | 20 | How many repositories can be registered |
 | Language | en | `en`: English / `ja`: Japanese. For notices, commands, panes, and what is handed to Claude |
 | Notify my own activity | false | Also notify your own activity |

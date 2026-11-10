@@ -23,6 +23,7 @@ Claude Code の mod です。
 - 通知は、生きている窓のうち最後に操作した窓にだけ出します。`/inbox log` にはどの窓でも入ります。
 - `/inbox log` は窓（セッション）をまたいで共有します。別の窓の通知も、閉じた窓の通知も見られます。
 - どの窓も開いていなかったあいだの更新は、次に開いた窓が最初の確認で `/inbox log` に入れ、件数だけを知らせます（1件ずつは出しません）。GitHub がまだ返す範囲で、最後に見てから30日以内のものに限ります。
+- 通知をクリックして GitHub で開くには、`/config` の **Where notices show** を `row` にします。通知が1件ずつ行として会話の中に残り（`/inbox log` と同じ2段表示）、「#3 にコメントしました」のような何をしたかの部分が GitHub へのリンクになります。行は Claude には送られず、`--resume` で再開したときは戻りません。Claude Code 2.1.312 以降で使えます（それより前では `log` と同じ薄い行で出します）。
 - 通知・コマンド・ペインは初期設定では英語です。この README の例のように日本語で出すには、`/config` の **Language** を `ja` にします（[設定](#設定config)）。
 
 ## 必要なもの
@@ -164,7 +165,7 @@ on("inbox.notified", async ($, e, next) => {
 | `isSelf` | `gh` でログインしているアカウントの操作か |
 | `text` | 表示する文（`/config` の言語で） |
 
-- 通知を出す窓（最後に操作した窓）でだけ呼ばれます。出し方（toast・log・notify）には関係なく呼ばれます。
+- 通知を出す窓（最後に操作した窓）でだけ呼ばれます。出し方（toast・log・row・notify）には関係なく呼ばれます。
 - `{ deny }` で止めた通知は出さず、`inbox.notified` も呼びませんが、`/inbox log` には入ります。
 - 一度にたくさん届いて「ほか N 件」にまとめた通知も、`inbox.notified` は1件ずつ呼びます。
 - 通知を読み上げる [gh-inbox-tts](../gh-inbox-tts/README.ja.md) は、この仕組みで作っています。
@@ -175,7 +176,7 @@ on("inbox.notified", async ($, e, next) => {
 | 項目 | 初期値 | 内容 |
 | --- | --- | --- |
 | Check interval | 60 | 確認の間隔（秒） |
-| Where notices show | toast | `toast`: トースト / `log`: トランスクリプトの行 / `notify`: デスクトップ通知 |
+| Where notices show | toast | `toast`: トースト / `log`: トランスクリプトの行 / `row`: トランスクリプトに残る行。押すと GitHub で開く（Claude Code 2.1.312 以降） / `notify`: デスクトップ通知 |
 | Repositories checked | 20 | 登録できるリポジトリの数 |
 | Language | en | `en`: 英語 / `ja`: 日本語。通知・コマンド・ペインと、Claude に渡す文の言語 |
 | Notify my own activity | false | 自分の操作も通知する |
