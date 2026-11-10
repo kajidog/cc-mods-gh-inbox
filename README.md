@@ -1,5 +1,8 @@
 # cc-mods-gh-inbox
 
+[![CI](https://github.com/kajidog/cc-mods-gh-inbox/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kajidog/cc-mods-gh-inbox/actions/workflows/ci.yml?query=branch%3Amain)
+[![Latest Claude Code](https://github.com/kajidog/cc-mods-gh-inbox/actions/workflows/latest-claude-code.yml/badge.svg?branch=main)](https://github.com/kajidog/cc-mods-gh-inbox/actions/workflows/latest-claude-code.yml)
+
 English | [日本語](README.ja.md)
 
 Claude Code mods around GitHub notices.
