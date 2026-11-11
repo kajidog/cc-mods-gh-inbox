@@ -1,5 +1,16 @@
 # gh-inbox
 
+## 0.14.0
+
+### Minor Changes
+
+- e2b38e8: `/inbox merge`, `/inbox close` and `/inbox draft` merge a pull request, close it, or switch it between a draft and ready for review. Each reads the pull request afresh and opens a pane that shows the head commit and where it stands; nothing is sent to GitHub until you press the pane's button, which has no hotkey. A merge goes only at the head commit the pane showed (`--match-head-commit`), with the repository's allowed method you used last (`merge`, `squash` or `rebase` to choose another), never past branch protection and without deleting the branch. What GitHub would not merge now (a draft, a conflict, a base moved on) is refused before any pane; one a required review or check still holds back gets auto-merge where the repository allows it.
+  
+  `/inbox merge`・`/inbox close`・`/inbox draft` で、PR のマージ、クローズ、下書きとレビュー待ちの切り替えができるようにしました。どれも PR をその場で取り直し、先頭のコミットと状態をペインに出します。ペインのボタン（ホットキーなし）を押すまでは GitHub に何も送りません。マージは、ペインに出した先頭のコミットのままのときだけ行い（`--match-head-commit`）、方式はリポジトリで使えるもののうち前回使ったものです（`merge`・`squash`・`rebase` で指定もできます）。ブランチ保護は越えず、ブランチも消しません。下書き・コンフリクト・base が先に進んでいるなど今マージできないものはペインを開く前に断り、必須のレビューやチェックが足りないだけなら、リポジトリが許していれば自動マージを設定します。
+- e2b38e8: The line under the prompt leads each part of where the pull request stands with a mark, the most pressing first: `✗` fails or waits on the author (conflicts, failed CI, change requests, a base moved on), `◐` still runs, `○` waits on someone else (a review, auto-merge, a rule), `●` GitHub would merge it now, `✓` passed. A draft says so after its number. The newest comment follows a bar, cut shorter. `/inbox`, `/inbox watch` and the CI item of `/inbox pick` read the same way. GitHub is asked nothing more for it.
+  
+  プロンプトの下の行を見直し、PR の状態の項目ごとに先頭に記号を付けて、急ぐものから並べるようにしました。`✗` は失敗・作者の対応が必要なもの（コンフリクト、CI の失敗、変更依頼、base より古い）、`◐` は実行中、`○` はほかの人や条件待ち（レビュー、自動マージ、ルール）、`●` は今マージできる、`✓` は通ったものです。下書きは番号のあとに出します。最新のコメントは `|` のあとに短くして出します。`/inbox`・`/inbox watch`・`/inbox pick` の CI の項目も同じ書き方です。GitHub への問い合わせは増えません。
+
 ## 0.13.0
 
 ### Minor Changes
