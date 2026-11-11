@@ -1,8 +1,23 @@
 import { atom, read, update } from "claude-code"
 import type { EngineInterface, Register, Timer } from "claude-code"
 
-import type { GhEvent, GhEventItem, GhPick, GhPicker, GhPickPull, GhPlaced, GhStaged, GhWatch, GhWatchPick, Inbox, InboxNotice } from "../types"
+import type {
+  GhAct,
+  GhActKind,
+  GhEvent,
+  GhEventItem,
+  GhPick,
+  GhPicker,
+  GhPickPull,
+  GhPlaced,
+  GhStaged,
+  GhWatch,
+  GhWatchPick,
+  Inbox,
+  InboxNotice,
+} from "../types"
 
+import { actArgv, type MergeSettings, type Method, methodName, parseMergeWords, parseSettings, planMerge, settingsArgv } from "./act"
 import { type Ci, CI_ITEM_PREFIX, ciForPrompt, ciKey, isResult } from "./ci"
 import { CLOSED_ID, displayName, MERGED_ID, mergeSeen, newEvents, type Nicknames, plain, pullIds, snippet } from "./events"
 import { type Pull, type PullRef, type PullState, parsePull, parsePullUrl, pullArgv, pullName } from "./github"
@@ -104,7 +119,7 @@ import {
   toRepos,
   toTitles,
 } from "./repos"
-import { pullStatus, statusParts, TRAY_VIEW_KEY, TRAY_VIEWS, type TrayView, toTrayView } from "./status"
+import { pullStatus, statusMarks, statusParts, statusText, TRAY_VIEW_KEY, TRAY_VIEWS, type TrayView, toTrayView } from "./status"
 import { dropDone, findWatched, toWatched, type Watched, WATCHED_KEY, WATCHED_MAX, type WatchedEntry } from "./watched"
 
 const COMMAND = "inbox"
@@ -146,6 +161,9 @@ const PICKER_PANE = "gh-inbox-kinds"
 const PICK_PANE = "gh-inbox-pick"
 const LOG_PANE = "gh-inbox-log"
 const WATCH_PANE = "gh-inbox-watch"
+const ACT_PANE = "gh-inbox-act"
+/** How long a merge, a close or a draft toggle may take GitHub. */
+const ACT_TIMEOUT_MS = 60 * 1000
 // Titles asked for in one GraphQL request at most.
 const TITLES_AT_ONCE = 50
 // A lookup that fails for now (no network, a rate limit) is tried at this many checks, its notice held meanwhile.
@@ -172,6 +190,8 @@ const ciTold = atom({ plugin: "gh-inbox", key: "ciTold" } as const, null as stri
 const ciToldAt = atom({ plugin: "gh-inbox", key: "ciToldAt" } as const, 0)
 /** The rows the `row` channel placed in the transcript, and what each draws. */
 const placed = atom({ plugin: "gh-inbox", key: "placed" } as const, [] as GhPlaced[])
+/** What the pane of `/inbox merge`, `/inbox close` and `/inbox draft` asks to confirm. */
+const act = atom({ plugin: "gh-inbox", key: "act" } as const, null as GhAct | null)
 
 type Found = {
   branch: string
@@ -232,6 +252,8 @@ type Context = {
   logOpenings: number
   /** The open pull request of the branch and its newest commit's CI, as the last check that read it found them. */
   ci: { branch: string; ref: PullRef; title: string; url: string; ci: Ci; at: number } | undefined
+  /** Whether what the action pane confirmed is under way: a second press does not send it again. */
+  isActing: boolean
 }
 
 const pullKey = (ref: PullRef) => `${ref.host}/${pullName(ref)}`
@@ -543,11 +565,11 @@ async function cachedPull($: EngineInterface, ctx: Context, ref: PullRef): Promi
 /**
  * The pull request as GitHub answers `PULL_QUERY`, and when it was asked: another
  * session's answer when it is younger than one interval, so sessions watching the
- * same pull request ask GitHub once between them.
+ * same pull request ask GitHub once between them; asked afresh whatever its age when `isFresh`.
  */
-async function fetchPull($: EngineInterface, ctx: Context, ref: PullRef, now: number) {
+async function fetchPull($: EngineInterface, ctx: Context, ref: PullRef, now: number, isFresh = false) {
   const cached = await cachedPull($, ctx, ref)
-  if (cached !== undefined && now - cached.at < ctx.intervalSeconds * 1000) return cached
+  if (!isFresh && cached !== undefined && now - cached.at < ctx.intervalSeconds * 1000) return cached
   const fetched = await $.process.run(pullArgv(ref))
   if (fetched.exitCode !== 0) throw new Error(firstLine(fetched.stderr) || ctx.t.exitedWith("gh api", fetched.exitCode))
   const pull = parsePull(ref, fetched.stdout, ctx.language)
@@ -1049,7 +1071,7 @@ async function runCheck($: EngineInterface, ctx: Context, isForced: boolean) {
 /** What the tray says of a time `ms` ago: to the minute, as it is drawn again once a check. */
 const trayAgo = (t: Messages, ms: number) => (ms < 60_000 ? t.justNow : ago(t, ms))
 
-/** The parts of the line telling where the branch's pull request stands; undefined while it has none. */
+/** Where the branch's pull request stands, as the line under the prompt tells it, in parts; undefined while it has none. */
 async function pullItems($: EngineInterface, ctx: Context, now: number, sinceAt: (ms: number) => string) {
   const { value: held } = await $.state.get({ plugin: "gh-inbox", key: "watch" })
   const number = Number(/#(\d+)$/.exec(held?.pull ?? "")?.[1])
@@ -1082,7 +1104,7 @@ async function drawTray($: EngineInterface, ctx: Context) {
       const at = cache === undefined ? undefined : newestEventAt(cache)
       items.push(t.trayItem(repoLabel(key, entry), at === undefined ? t.trayNoEvent : trayAgo(t, now - at)))
     }
-  } else items = pull
+  } else items = pull === undefined ? undefined : [statusText(pull)]
   // The session may have ended while the store was read: its line is not drawn again.
   if (!ctx.isEnded) $.ui.status(items === undefined ? undefined : plain(t.tray(items)))
 }
@@ -1099,6 +1121,9 @@ async function trayCommand($: EngineInterface, ctx: Context, words: readonly str
   return ctx.tray ? t.trayShows(view) : t.trayOff
 }
 
+/** What `/inbox` and `/inbox watch` say after a pull request's title: watched, merged or closed, and whether it is a draft. */
+const stateOf = (t: Messages, state: string | null, isDraft: boolean) => t.paren([...(isDraft ? [t.draft] : []), t.pullState(state)].join(t.listSeparator))
+
 async function status($: EngineInterface, ctx: Context) {
   const { value: held } = await $.state.get({ plugin: "gh-inbox", key: "watch" })
   const now = await $.clock.now()
@@ -1107,10 +1132,11 @@ async function status($: EngineInterface, ctx: Context) {
   if (held === undefined || held === null || held.branch === null) lines.push(t.noBranch)
   else if (held.pull === null) lines.push(t.noPull(held.branch))
   else {
-    lines.push(`${held.pull} ${held.title ?? ""}${t.paren(t.pullState(held.state))}`)
+    lines.push(`${held.pull} ${held.title ?? ""}${stateOf(t, held.state, held.status?.isDraft === true)}`)
     // Where it stands, as the line under the prompt tells it, the number left off.
-    const parts = held.state === "OPEN" ? ((await pullItems($, ctx, now, ms => ago(t, ms))) ?? []).slice(1) : []
-    if (parts.length > 0) lines.push(`  ${parts.join(" · ")}`)
+    const parts = held.state === "OPEN" ? await pullItems($, ctx, now, ms => ago(t, ms)) : undefined
+    const stands = parts === undefined ? "" : statusText(parts, false)
+    if (stands !== "") lines.push(`  ${stands}`)
   }
   if (held?.checkedAt != null) lines.push(t.lastChecked(ago(t, now - held.checkedAt), ctx.intervalSeconds))
   if (held?.error != null) lines.push(t.error(held.error))
@@ -1453,15 +1479,15 @@ async function watchList($: EngineInterface, ctx: Context): Promise<string | und
     if (ref === null) continue
     const cached = await cachedPull($, ctx, ref)
     const state = cached?.pull.state ?? entry.done?.state ?? "OPEN"
-    lines.push(`${pullLabel(key)} ${cached?.pull.title ?? entry.title}${t.paren(t.pullState(state))}${isBranchPull(ctx, key) ? t.watchIsBranch : ""}`)
+    lines.push(`${pullLabel(key)} ${cached?.pull.title ?? entry.title}${stateOf(t, state, state === "OPEN" && cached?.pull.isDraft === true)}${isBranchPull(ctx, key) ? t.watchIsBranch : ""}`)
     if (cached !== undefined) {
       // Where it stands, as the line under the prompt tells the branch's, the number left off.
       const since = (at: string) => {
         const ms = Date.parse(at)
         return Number.isNaN(ms) ? undefined : ago(t, now - ms)
       }
-      const parts = state === "OPEN" ? statusParts(t, ref.number, state, pullStatus(cached.pull, nicknames, ctx.language), since).slice(1) : []
-      if (parts.length > 0) lines.push(`  ${parts.join(" · ")}`)
+      const stands = state === "OPEN" ? statusText(statusParts(t, ref.number, state, pullStatus(cached.pull, nicknames, ctx.language), since), false) : ""
+      if (stands !== "") lines.push(`  ${stands}`)
       lines.push(`  ${t.lastCheckedRepo(ago(t, now - cached.at))}`)
     }
     const error = ctx.watchErrors.get(key)
@@ -1537,6 +1563,119 @@ async function openWatch($: EngineInterface, ctx: Context) {
   return true
 }
 
+/**
+ * The pull request a command names (`12`, `owner/repo#12`, its URL), or else the branch's; a string says why there
+ * is none.
+ */
+async function namedPull($: EngineInterface, ctx: Context, arg: string, command: string): Promise<PullRef | string> {
+  const { t } = ctx
+  if (arg !== "") {
+    const isBare = /^#?\d+$/.test(arg)
+    const ref = parsePullArg(arg, isBare ? await hereRepo($) : null)
+    return ref ?? (isBare ? t.actNoHereRepo(command) : t.pullFormat)
+  }
+  const branch = await currentBranch($)
+  if (branch === null) return t.noBranch
+  try {
+    const found = ctx.found?.branch === branch ? ctx.found : await lookUp($, ctx, branch, await $.clock.now())
+    return found.ref ?? t.noBranchPull(branch, command)
+  } catch (error) {
+    return t.branchPullFailed(branch, message(error))
+  }
+}
+
+/**
+ * `/inbox merge`, `/inbox close` and `/inbox draft`: reads the pull request afresh and opens the pane that says what
+ * would be done, refusing at once what cannot be. Nothing is sent to GitHub before the person presses the pane's button.
+ */
+async function actCommand($: EngineInterface, ctx: Context, command: "merge" | "close" | "draft", words: readonly string[]): Promise<string> {
+  const { t } = ctx
+  const { method: named, rest } = command === "merge" ? parseMergeWords(words) : { method: undefined, rest: words }
+  const ref = await namedPull($, ctx, rest.join(" "), command)
+  if (typeof ref === "string") return ref
+  let pull: Pull
+  try {
+    pull = (await fetchPull($, ctx, ref, await $.clock.now(), true)).pull
+  } catch (error) {
+    return t.cannotRead(pullLabel(pullKey(ref)), message(error))
+  }
+  const key = pullKeyOfUrl(pull.url, ref)
+  const name = pullLabel(key)
+  if (pull.state !== "OPEN") return t.actNotOpen(name, t.pullState(pull.state))
+  const status = pullStatus(pull, toNicknames(await $.store.get(NICKNAMES_KEY)), ctx.language)
+
+  let kind: GhActKind = command === "close" ? "close" : pull.isDraft ? "ready" : "draft"
+  let notes: string[] = []
+  let methods: Method[] = []
+  let method: Method | null = null
+  if (command === "merge") {
+    let settings: MergeSettings
+    try {
+      const run = await $.process.run(settingsArgv(ref))
+      if (run.exitCode !== 0) throw new Error(firstLine(run.stderr) || t.exitedWith("gh api", run.exitCode))
+      settings = parseSettings(run.stdout)
+    } catch (error) {
+      return t.cannotRead(name, message(error))
+    }
+    const plan = planMerge(t, pull, status, settings)
+    if ("refusal" in plan) return `${name}: ${plan.refusal}`
+    if (named !== undefined && plan.kind !== "disable-auto" && !settings.methods.includes(named))
+      return t.methodNotAllowed(methodName(t, named), settings.methods.map(one => methodName(t, one)).join(t.listSeparator))
+    kind = plan.kind
+    notes = plan.notes
+    methods = plan.kind === "disable-auto" ? [] : settings.methods
+    method = plan.kind === "disable-auto" ? null : (named ?? settings.preferred)
+  }
+
+  const stands = statusText({ head: pull.head.slice(0, 7), marks: statusMarks(t, status), latest: undefined })
+  await update($, act, (): GhAct => ({ stage: "confirm", kind, pull: key, title: pull.title, url: pull.url, head: pull.head, status: stands, notes, methods, method }))
+  if (!(await $.ui.open({ id: ACT_PANE, title: t.actTitle(kind), focus: true })).isPlaced) {
+    await $.ui.close({ id: ACT_PANE }).catch(() => undefined)
+    await update($, act, () => null)
+    return t.paneNotOpened
+  }
+
+  return t.actPaneOpened
+}
+
+/** Sends to GitHub what the action pane confirmed: once, however often its button is pressed; the pane says why it failed. */
+async function runAct($: EngineInterface, ctx: Context) {
+  if (ctx.isActing) return
+  ctx.isActing = true
+  try {
+    const held = await read($, act)
+    if (held === null || held.stage === "running") return
+    await update($, act, (one): GhAct | null => one && { ...one, stage: "running" })
+    const run = await $.process
+      .run(actArgv(held.kind, held.url, held.head, held.method), { timeoutMs: ACT_TIMEOUT_MS })
+      .catch(error => ({ exitCode: -1, stdout: "", stderr: message(error) }))
+    if (run.exitCode !== 0) {
+      const why = firstLine(run.stderr) || ctx.t.exitedWith("gh", run.exitCode)
+      await update($, act, (one): GhAct | null => one && { ...one, stage: "failed", message: why })
+      return
+    }
+    await update($, act, () => null)
+    await $.ui.close({ id: ACT_PANE }).catch(() => undefined)
+    const name = plain(pullLabel(held.pull))
+    const ref = refOfPullKey(held.pull)
+    // What was done shows at once: the answer kept from before is no longer what GitHub says.
+    if (ref !== null) await $.store.delete(`${CACHE_PREFIX}${pullKey(ref)}`)
+    if (held.kind === "merge") {
+      // `gh pr merge` succeeds too where a merge queue only took it in: merged is said once GitHub says so. Asked
+      // afresh, the answer kept is the check's to tell.
+      const now = await $.clock.now()
+      const after = ref === null ? undefined : await fetchPull($, ctx, ref, now, true).catch(() => undefined)
+      if (after !== undefined && after.pull.state !== "MERGED") $.ui.toast(ctx.t.actQueued(name), { timeoutMs: TOAST_MS })
+      // A merge of the branch's or a watched pull request is told by its own notice, merges told even when the person's.
+      else if (!isBranchPull(ctx, held.pull) && findWatched(await readWatched($), held.pull) === undefined)
+        $.ui.toast(ctx.t.actDone(held.kind, name), { timeoutMs: TOAST_MS })
+    } else $.ui.toast(ctx.t.actDone(held.kind, name), { timeoutMs: TOAST_MS })
+    void check($, ctx, true)
+  } finally {
+    ctx.isActing = false
+  }
+}
+
 /** Starts or stops watching one pull request of the pane, saved at once. */
 async function toggleWatched($: EngineInterface, ctx: Context, pull: GhPickPull) {
   const held = await read($, watchPick)
@@ -1585,6 +1724,7 @@ export const register: Register = (on, options) => {
     askedLatest: new Set(),
     logOpenings: 0,
     ci: undefined,
+    isActing: false,
   }
   let timer: Timer | undefined
 
@@ -1734,6 +1874,10 @@ export const register: Register = (on, options) => {
         return { text: await watchCommand($, ctx, rest) }
       case "tray":
         return { text: await trayCommand($, ctx, rest) }
+      case "merge":
+      case "close":
+      case "draft":
+        return { text: await actCommand($, ctx, action, rest) }
       case "clear": {
         const count = stagedCount(await read($, staged))
         await update($, staged, () => [])
@@ -1978,6 +2122,63 @@ export const register: Register = (on, options) => {
           />
         ))}
         {close}
+      </Box>
+    )
+  })
+
+  // What `/inbox merge`, `/inbox close` and `/inbox draft` would do, done only by its button: no hotkey, nothing focused
+  // at first, so neither a key typed for the prompt nor an Enter sends it.
+  on("ui.render", { component: "Pane", requestId: ACT_PANE }, async ($, e) => {
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const held = await read($, act)
+    const cancel = async () => {
+      await update($, act, () => null)
+      await $.ui.close({ id: ACT_PANE }).catch(() => undefined)
+    }
+    const close = <Button key="cancel" hotkey="q" label={held?.stage === "failed" ? t.close : t.cancel} onPress={() => void cancel()} />
+    if (held === null) return close
+    const isRunning = held.stage === "running"
+    const choose = (method: string) => update($, act, (one): GhAct | null => (one === null || one.stage === "running" ? one : { ...one, method, stage: "confirm" }))
+
+    return (
+      <Box flexDirection="column">
+        <Text bold>
+          {plain(pullLabel(held.pull))} {plain(held.title)}
+        </Text>
+        <Text>{held.status}</Text>
+        {held.notes.map(note => (
+          <Text key={note} color="warning">
+            {note}
+          </Text>
+        ))}
+        {held.methods.length > 1 && !isRunning && (
+          <Box>
+            <Text>{t.methodHint} </Text>
+            {held.methods.map((method, index) => (
+              <Button
+                key={`method:${method}`}
+                hotkey={String(index + 1)}
+                plain
+                dimColor={method !== held.method}
+                label={method === held.method ? `[${methodName(t, method)}]` : ` ${methodName(t, method)} `}
+                onPress={() => void choose(method)}
+              />
+            ))}
+          </Box>
+        )}
+        {isRunning ? (
+          <Text dimColor>{t.actRunning}</Text>
+        ) : held.stage === "failed" ? (
+          <Text color="error">{t.actFailed(plain(held.message ?? ""))}</Text>
+        ) : (
+          <Text dimColor>{t.actHint}</Text>
+        )}
+        {!isRunning && (
+          <Box>
+            {close}
+            <Button key="act" variant="primary" label={t.actConfirm(held.kind, held.method === null ? "" : methodName(t, held.method))} onPress={() => void runAct($, ctx)} />
+          </Box>
+        )}
       </Box>
     )
   })
