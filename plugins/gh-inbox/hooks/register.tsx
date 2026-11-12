@@ -17,7 +17,19 @@ import type {
   InboxNotice,
 } from "../types"
 
-import { actArgv, type MergeSettings, type Method, methodName, parseMergeWords, parseSettings, planMerge, planReview, settingsArgv } from "./act"
+import {
+  actArgv,
+  type MergeSettings,
+  type Method,
+  methodName,
+  parseMergeWords,
+  parseSettings,
+  parseViewerApproval,
+  planMerge,
+  planReview,
+  settingsArgv,
+  viewerReviewArgv,
+} from "./act"
 import { type Ci, CI_ITEM_PREFIX, ciForPrompt, ciKey, isResult } from "./ci"
 import { CLOSED_ID, displayName, MERGED_ID, mergeSeen, newEvents, type Nicknames, plain, pullIds, snippet } from "./events"
 import { type Pull, type PullRef, type PullState, parsePull, parsePullUrl, pullArgv, pullName } from "./github"
@@ -1667,11 +1679,21 @@ async function actCommand($: EngineInterface, ctx: Context, command: ActCommand,
   let method: Method | null = null
   let review: string | undefined
   if (command === "approve" || command === "unapprove") {
-    const plan = planReview(t, pull, command)
+    if (pull.viewer === "") return t.cannotRead(name, t.viewerUnknown)
+    // Whether the person's approval stands is asked of their own reviews alone, however many others reviewed.
+    let approval: string | null
+    try {
+      const run = await $.process.run(viewerReviewArgv(ref, pull.viewer))
+      if (run.exitCode !== 0) throw new Error(firstLine(run.stderr) || t.exitedWith("gh api", run.exitCode))
+      approval = parseViewerApproval(run.stdout)
+    } catch (error) {
+      return t.cannotRead(name, message(error))
+    }
+    const plan = planReview(t, pull, command, approval)
     if ("refusal" in plan) return `${name}: ${plan.refusal}`
     kind = plan.kind
     notes = plan.notes
-    review = plan.kind === "unapprove" ? (pull.viewerApproval ?? undefined) : undefined
+    review = plan.kind === "unapprove" ? (approval ?? undefined) : undefined
   }
   if (command === "merge") {
     let settings: MergeSettings
@@ -1934,6 +1956,7 @@ export const register: Register = (on, options) => {
         ctx.askedLatest.clear()
         ctx.askedTitles.clear()
         await update($, logLatest, () => ({}))
+        await update($, logTitles, () => ({}))
         if (!asText && (await $.ui.open({ id: LOG_PANE, title: t.logTitle, focus: true })).isPlaced)
           return { text: t.logOpened(all.length) }
         const list = latest(all, LOG_SHOWN)
@@ -2105,7 +2128,7 @@ export const register: Register = (on, options) => {
     const unfolded = await read($, logUnfolded)
     const latestOf = await read($, logLatest)
     void lookUpLatest($, ctx, shown)
-    const groups = isByPull ? pullGroups(shown) : []
+    const groups = isByPull ? pullGroups(shown, all) : []
     const titles = await knownTitles($, groups)
     void lookUpTitles($, ctx, groups.filter(group => group.key !== undefined && !titles.has(group.key)))
     const turn = (to: number) => () => void update($, logPage, () => to)

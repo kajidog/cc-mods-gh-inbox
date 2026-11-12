@@ -95,19 +95,63 @@ export function planMerge(t: Messages, pull: Pull, status: GhPullStatus, setting
   }
 }
 
+/**
+ * The person's last review that says yes or no (approving, asking for changes, or one of those dismissed since):
+ * whether their approval stands, however many others reviewed. Asked for only as an approval or its withdrawal is
+ * about to be confirmed.
+ */
+const VIEWER_REVIEW_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $login: String!) {
+  repository(owner: $owner, name: $repo) { pullRequest(number: $number) {
+    reviews(author: $login, states: [APPROVED, CHANGES_REQUESTED, DISMISSED], last: 1) { nodes { id state } }
+  } }
+}`
+
+/** The argv that asks for `login`'s last review of the pull request `ref` that says yes or no. */
+export function viewerReviewArgv(ref: PullRef, login: string): string[] {
+  return [
+    "gh",
+    "api",
+    ...(ref.host === "github.com" ? [] : ["--hostname", ref.host]),
+    "graphql",
+    "-f",
+    `owner=${ref.owner}`,
+    "-f",
+    `repo=${ref.repo}`,
+    "-F",
+    `number=${ref.number}`,
+    "-f",
+    `login=${login}`,
+    "-f",
+    `query=${VIEWER_REVIEW_QUERY}`,
+  ]
+}
+
+/**
+ * Reads `VIEWER_REVIEW_QUERY`'s answer: the node id of the person's approval where their last say approves, null where
+ * it does not (none, changes asked for, an approval dismissed); throws with GitHub's own words when it carries errors.
+ */
+export function parseViewerApproval(answer: string): string | null {
+  const json = object(JSON.parse(answer))
+  if (Array.isArray(json.errors) && json.errors.length > 0) throw new Error(text(object(json.errors[0]).message) || "GitHub answered with an error")
+  const reviews = object(object(object(object(json.data).repository).pullRequest).reviews).nodes
+  const last = object(Array.isArray(reviews) ? reviews.at(-1) : undefined)
+  return text(last.state) === "APPROVED" ? text(last.id) || null : null
+}
+
 /** What an approval or its withdrawal asked for comes to, or refused with why. */
 export type ReviewPlan = { kind: Extract<GhActKind, "approve" | "unapprove">; notes: string[] } | { refusal: string }
 
 /**
- * Whether the person can approve the pull request now, or withdraw their approval: approved once, at the head commit
- * the pane shows; withdrawn by dismissing the approving review, which GitHub keeps on the pull request with why.
+ * Whether the person can approve the pull request now, or withdraw their approval (`approval`, the node id of theirs
+ * that stands, or null): approved once, at the head commit the pane shows; withdrawn by dismissing the approving
+ * review, which GitHub keeps on the pull request with why.
  */
-export function planReview(t: Messages, pull: Pull, command: "approve" | "unapprove"): ReviewPlan {
+export function planReview(t: Messages, pull: Pull, command: "approve" | "unapprove", approval: string | null): ReviewPlan {
   if (command === "unapprove") {
-    if (pull.viewerApproval === null) return { refusal: t.notApproved }
+    if (approval === null) return { refusal: t.notApproved }
     return { kind: "unapprove", notes: [t.unapproveNote(t.dismissMessage)] }
   }
-  if (pull.viewerApproval !== null) return { refusal: t.alreadyApproved }
+  if (approval !== null) return { refusal: t.alreadyApproved }
   if (pull.viewer !== "" && pull.author === pull.viewer) return { refusal: t.ownCannotApprove }
   if (pull.head === "") return { refusal: t.headUnknown }
   return { kind: "approve", notes: [] }

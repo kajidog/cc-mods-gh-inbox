@@ -35,6 +35,22 @@ describe("pullGroups", () => {
     expect(group?.key).toBe("ghe.example/o/r#7")
     expect(group?.url).toBe("https://ghe.example/o/r/pull/7")
   })
+
+  test("an outside CI's details link is no host of the repository's: the rest of the log's is taken, else github.com", () => {
+    const ci = { ...event("status:1", "o/r#7", "https://circleci.com/gh/o/r/123"), kind: "ci" } as const
+    const [alone] = pullGroups([ci])
+    expect(alone?.key).toBe("github.com/o/r#7")
+    expect(alone?.url).toBe("https://github.com/o/r/pull/7")
+    // Another of the repository's notices on the log, not on the page, tells its host.
+    const [around] = pullGroups([ci], [ci, event("c", "o/r#3", "https://ghe.example/o/r/pull/3#issuecomment-1"), event("x", "o/other#1", "https://elsewhere.example/o/other/pull/1")])
+    expect(around?.key).toBe("ghe.example/o/r#7")
+    expect(around?.url).toBe("https://ghe.example/o/r/pull/7")
+    // One shaped as the repository's own page is taken after any other notice's.
+    const lookalike = { ...ci, url: "https://ci.example/o/r/pull/7" }
+    const [after] = pullGroups([lookalike, event("c", "o/r#7", "https://ghe.example/o/r/issues/7#issuecomment-2")])
+    expect(after?.key).toBe("ghe.example/o/r#7")
+    expect(after?.url).toBe("https://ghe.example/o/r/issues/7")
+  })
 })
 
 test("titlesWanted asks each repository for the numbers not known yet, once each", () => {

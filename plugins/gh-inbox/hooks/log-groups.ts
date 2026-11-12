@@ -3,13 +3,27 @@
 import type { GhEvent } from "../types"
 
 import { object, text } from "./github"
+import { repoOfEvent } from "./history"
 
 /** Titles asked for in one GraphQL request at most. */
 const TITLES_AT_ONCE = 50
 
-const hostOf = (url: string) => /^https?:\/\/([^/]+)\//.exec(url)?.[1] ?? ""
-// The page of a pull request or issue that a notice's URL points into: a comment, a review, a commit of it.
-const PAGE = /^(https?:\/\/[^/]+\/[^/]+\/[^/]+\/(?:pull|issues)\/\d+)(?:[/?#]|$)/
+// A URL on a repository's own pages: its host, `owner/repo`, and the pull request's or issue's page it points into, if
+// it does (a comment, a review, a commit of it).
+const ON_REPO = /^https?:\/\/([^/]+)\/([^/]+\/[^/]+)(?:\/(pull|issues)\/(\d+))?(?:[/?#]|$)/
+
+/** The host of `repo`'s own pages that `url` is on; undefined for a URL anywhere else (an outside CI's details). */
+function hostOn(url: string, repo: string): string | undefined {
+  const match = ON_REPO.exec(url)
+  return match !== null && match[2]?.toLowerCase() === repo.toLowerCase() ? match[1] : undefined
+}
+
+/** The page of pull request or issue `number` of `repo` that `url` points into; undefined for any other URL. */
+function pageOn(url: string, repo: string, number: number): string | undefined {
+  const [, host, named, kind, at] = ON_REPO.exec(url) ?? []
+  if (named?.toLowerCase() !== repo.toLowerCase() || kind === undefined || Number(at) !== number) return undefined
+  return `https://${host}/${named}/${kind}/${at}`
+}
 
 /** The number of the pull request or issue a notice is on; undefined for one on the repository alone (a push, a branch). */
 export function numberOf(event: Pick<GhEvent, "pull">): number | undefined {
@@ -41,8 +55,13 @@ export type PullGroup = {
   events: GhEvent[]
 }
 
-/** `shown`, a page in the order `byPull` put them, as the headings it shows: one a run of notices on the same pull request. */
-export function pullGroups(shown: readonly GhEvent[]): PullGroup[] {
+/**
+ * `shown`, a page in the order `byPull` put them, as the headings it shows: one a run of notices on the same pull
+ * request. The host is that of the repository's own pages its notices link to, else those `around` it (the rest of
+ * the log); a CI notice, which links to its check's details (an outside CI's, maybe), is taken last. github.com where
+ * none links to one.
+ */
+export function pullGroups(shown: readonly GhEvent[], around: readonly GhEvent[] = shown): PullGroup[] {
   const groups: PullGroup[] = []
   for (const event of shown) {
     const last = groups.at(-1)
@@ -51,12 +70,20 @@ export function pullGroups(shown: readonly GhEvent[]): PullGroup[] {
   }
 
   return groups.map(group => {
-    if (group.number === undefined) return group
-    // A notice that links into the page of its pull request or issue gives the heading its link; else the pull request's page.
-    const page = group.events.map(event => PAGE.exec(event.url)?.[1]).find(url => url !== undefined)
-    const host = group.events.map(event => hostOf(event.url)).find(one => one !== "") ?? "github.com"
-    const repo = group.pull.replace(/#\d+$/, "")
-    return { ...group, key: `${host}/${group.pull}`, url: page ?? `https://${host}/${repo}/pull/${group.number}` }
+    const { number } = group
+    if (number === undefined) return group
+    const repo = repoOfEvent(group)
+    const ciLast = (events: readonly GhEvent[]) => [...events.filter(event => event.kind !== "ci"), ...events.filter(event => event.kind === "ci")]
+    const host =
+      ciLast([...group.events, ...around].filter(event => repoOfEvent(event) === repo))
+        .map(event => hostOn(event.url, repo))
+        .find(one => one !== undefined) ?? "github.com"
+    // A notice that links into the page of its pull request or issue on that host gives the heading its link; else the
+    // pull request's page.
+    const page = ciLast(group.events)
+      .map(event => pageOn(event.url, repo, number))
+      .find(url => url?.startsWith(`https://${host}/`))
+    return { ...group, key: `${host}/${group.pull}`, url: page ?? `https://${host}/${repo}/pull/${number}` }
   })
 }
 

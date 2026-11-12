@@ -252,7 +252,7 @@ on("inbox.notified", async ($, e, next) => {
 - プロンプトを送るたびに、今のブランチを `git` だけで調べます（GitHub には問い合わせません）。ブランチが変わっていたときだけ、その場で新しいブランチを確認するので、切り替えは次の確認を待たずに、次のプロンプトを送った時点で反映されます。
 - 登録したリポジトリは、1件につき Events API を1回（`ci-failure` を選んでいれば Actions API も1回）問い合わせます。`ETag` を付けるので、変わっていなければ回数制限を使いません。GitHub が返す `X-Poll-Interval`（ふつう60秒）より短い間隔では問い合わせません。
 - CI の結果を Claude に渡すのに、追加の問い合わせはしません（いつもの確認の答えを使います）。プロンプトの下の行も同じで、マージできるか・下書きかは、いつもの確認でまとめて取ります。
-- `/inbox merge` は、PR をその場で取り直す GraphQL 1回と、リポジトリのマージの設定を調べる1回を問い合わせます。`/inbox close`・`/inbox draft`・`/inbox approve`・`/inbox unapprove` は PR を取り直す1回だけです。ペインのボタンを押すと、`gh pr merge`・`gh pr close`・`gh pr ready`、承認は REST API（`POST /repos/{owner}/{repo}/pulls/{number}/reviews`）、取り消しは GraphQL（`dismissPullRequestReview`）でもう1回送ります。
+- `/inbox merge` は、PR をその場で取り直す GraphQL 1回と、リポジトリのマージの設定を調べる1回を問い合わせます。`/inbox close` と `/inbox draft` は PR を取り直す1回だけです。`/inbox approve` と `/inbox unapprove` は、PR を取り直す1回と、自分の最後のレビュー（承認・変更依頼・却下済み）を調べる1回です。ペインのボタンを押すと、`gh pr merge`・`gh pr close`・`gh pr ready`、承認は REST API（`POST /repos/{owner}/{repo}/pulls/{number}/reviews`）、取り消しは GraphQL（`dismissPullRequestReview`）でもう1回送ります。
 - `/inbox pick` は、開いたときに GraphQL を1回問い合わせます（先頭コミットの CI とアノテーションも含めて）。PR を選ぶ画面と `/inbox pick 12` では、今のリポジトリを `gh repo view` で1回調べ、PR を選ぶ画面ではホストごとに検索も1回します。
 - `/inbox log` は、表示したページのコメント・レビュー・行コメントの今の状態を GraphQL で1回（1ポイント）問い合わせます。同じページはログを開くたびに1回だけです。Events API は編集・削除を伝えないので、それ以外のときには問い合わせません。編集・削除はログにだけ出て、通知はしません。
 - 1つのリポジトリに絞り込んだ `/inbox log` は、見出しのタイトルが分からない PR がページにあれば、GraphQL をもう1回（1ポイント）問い合わせます。同じ PR はログを開くたびに1回だけです。登録したリポジトリの通知のために取ってあるタイトルと、通知している PR のタイトルは問い合わせません。

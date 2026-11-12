@@ -687,6 +687,11 @@ test("narrowed to one repository, the log pane puts its notices together by pull
   const labels = async () => (await pane.findAll({ type: "Text" })).filter(one => one.props.color === "suggestion" && one.children.join("") === "[rr]")
   expect(await labels()).toEqual([])
 
+  // Opened again, a title asked for is asked for afresh: one renamed since shows its new title.
+  await $.command.run({ ...CHECK, args: "log rr" })
+  for (let tries = 0; tries < 100 && github.asked.filter(argv => argv.some(word => word.includes("issueOrPullRequest"))).length < 2; tries += 1) await pane.find({ key: "close" })
+  expect(github.asked.filter(argv => argv.some(word => word.includes("issueOrPullRequest")))).toHaveLength(2)
+
   // All of them again: newest first, each with its short name, no heading.
   await pane.press({ key: "repo:" })
   expect(await pane.find({ type: "Text", text: "5件中 1〜5件目（新しい順）" })).toBeDefined()
@@ -1295,9 +1300,7 @@ function pullAnswer(says: PullSays) {
           autoMergeRequest: says.autoMerge === undefined ? null : { mergeMethod: says.autoMerge },
           author: { login: says.author ?? "alice" },
           mergedBy: says.state === "MERGED" ? { login: "alice" } : null,
-          latestOpinionatedReviews: {
-            nodes: says.approvedBy === undefined ? [] : [{ id: `PRR_${says.approvedBy}`, state: "APPROVED", author: { login: says.approvedBy } }],
-          },
+          latestOpinionatedReviews: { nodes: says.approvedBy === undefined ? [] : [{ state: "APPROVED" }] },
           closed: { nodes: [] },
           comments: { nodes: (says.comments ?? []).map(one => ({ id: one.id, author: { login: one.author }, body: one.body, createdAt: one.at, url: `https://github.com/o/r/pull/${number}#${one.id}` })) },
           reviews: { nodes: [] },
@@ -1612,6 +1615,12 @@ function actingGitHub(on: On, says: () => PullSays, acted: (argv: string[]) => A
     if (argv[1] === "pr" || isReviewSent(argv)) return acted(argv)
     if (askedPull(argv) === 12) return { stdout: pullAnswer({ head: HEAD, ...says() }) }
     if (argv.some(word => word.includes("squashMergeAllowed"))) return { stdout: SETTINGS }
+    // The person's own last review that says yes or no: their approval where `approvedBy` is them.
+    if (argv.some(word => word.includes("reviews(author: $login"))) {
+      const by = says().approvedBy
+      const nodes = by !== undefined && argv.includes(`login=${by}`) ? [{ id: `PRR_${by}`, state: "APPROVED" }] : []
+      return { stdout: JSON.stringify({ data: { repository: { pullRequest: { reviews: { nodes } } } } }) }
+    }
     return undefined
   })
   return { ...github, opened }

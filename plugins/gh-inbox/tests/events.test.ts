@@ -29,7 +29,6 @@ function pullWith(changes: Partial<Pull>): Pull {
     autoMerge: null,
     reviewDecision: null,
     verdicts: [],
-    viewerApproval: null,
     ...changes,
   }
 }
@@ -218,34 +217,13 @@ test("parsePull reads checks of the newest commit", async () => {
   const pull = parsePull(ref, JSON.stringify(answer))
   expect(pull.commits[0]?.author).toBe("N")
   expect(pull.author).toBeNull()
-  expect(pull.viewerApproval).toBeNull()
   expect(pull.checks).toEqual([{ ...run("run:5", "CI / test", "Run tests"), actions: null }])
   expect(() => parsePull(ref, JSON.stringify({ errors: [{ message: "Bad credentials" }] }))).toThrow("Bad credentials")
 })
 
-test("parsePull reads who opened it, and the viewer's own approval where their last say approves", async () => {
-  const answer = (verdicts: Array<{ id: string; state: string; author: string }>) =>
-    JSON.stringify({
-      data: {
-        viewer: { login: "me" },
-        repository: {
-          pullRequest: {
-            title: "T",
-            url: "u",
-            state: "OPEN",
-            author: { login: "alice" },
-            latestOpinionatedReviews: { nodes: verdicts.map(one => ({ id: one.id, state: one.state, author: { login: one.author } })) },
-          },
-        },
-      },
-    })
-  const approved = parsePull(ref, answer([{ id: "PRR_1", state: "APPROVED", author: "bob" }, { id: "PRR_2", state: "APPROVED", author: "me" }]))
-  expect(approved.author).toBe("alice")
-  expect(approved.viewerApproval).toBe("PRR_2")
-  expect(approved.verdicts).toEqual(["APPROVED", "APPROVED"])
-  // Changes asked for, or another's approval alone: none of the viewer's own.
-  expect(parsePull(ref, answer([{ id: "PRR_3", state: "CHANGES_REQUESTED", author: "me" }])).viewerApproval).toBeNull()
-  expect(parsePull(ref, answer([{ id: "PRR_1", state: "APPROVED", author: "bob" }])).viewerApproval).toBeNull()
+test("parsePull reads who opened it", async () => {
+  const answer = { data: { viewer: { login: "me" }, repository: { pullRequest: { title: "T", url: "u", state: "OPEN", author: { login: "alice" } } } } }
+  expect(parsePull(ref, JSON.stringify(answer)).author).toBe("alice")
 })
 
 describe("newEvents in English, the default", () => {
