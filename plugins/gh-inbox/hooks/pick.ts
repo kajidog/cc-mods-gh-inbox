@@ -1,4 +1,4 @@
-// What `/inbox pick` asks GitHub and hands to Claude: the open pull requests to choose
+// What `/inbox pr` asks GitHub and hands to Claude: the open pull requests to choose
 // from, and what a pull request holds now (its description, reviews with their threads, comments).
 
 import type { GhPickItem, GhPickPull, GhStaged } from "../types"
@@ -40,7 +40,7 @@ export const PICK_QUERY = `query($owner: String!, $repo: String!, $number: Int!)
 
 const ghGraphql = (host: string) => ["gh", "api", ...(host === "github.com" ? [] : ["--hostname", host]), "graphql"]
 
-/** The argv that fetches what `/inbox pick` lists of a pull request. */
+/** The argv that fetches what `/inbox pr <PR>` lists of a pull request to hand to Claude. */
 export const pickArgv = (ref: PullRef) => [
   ...ghGraphql(ref.host),
   "-f",

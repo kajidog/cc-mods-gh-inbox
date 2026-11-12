@@ -1,4 +1,4 @@
-// The pull requests `/inbox watch` chose, checked as the branch's is: one GraphQL request each at every check,
+// The pull requests `/inbox pr` watches, checked as the branch's is: one GraphQL request each at every check,
 // not the Events API. Every session reads the same list.
 
 import type { PullState } from "./github"

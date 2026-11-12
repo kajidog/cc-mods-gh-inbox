@@ -123,13 +123,16 @@ export const checksFields = (annotations: number) => `oid statusCheckRollup { st
     } }
   ... on StatusContext { id context state description targetUrl } } } }`
 
+/** Reviewers whose last say `reviewersFields` asks for at most: as many as that may leave some out. */
+export const VERDICTS_ASKED = 50
+
 /**
  * Who a pull request's reviews are from and asked of: each reviewer's last say, and those asked who have not answered.
  * With `teams`, a team asked is named by `org/team`. Reading it takes the organization's teams (the `read:org` scope,
  * which `gh auth login` asks for): a token that may not makes GitHub refuse the whole request, so it is asked again
  * without them, a team asked then left out.
  */
-export const reviewersFields = (teams = true) => `latestOpinionatedReviews(first: 50) { nodes { state author { login } } }
+export const reviewersFields = (teams = true) => `latestOpinionatedReviews(first: ${VERDICTS_ASKED}) { nodes { state author { login } } }
       reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login }${teams ? " ... on Team { combinedSlug }" : ""} } } }`
 
 /**

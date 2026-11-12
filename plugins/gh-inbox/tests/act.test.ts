@@ -1,6 +1,6 @@
 import { describe, expect, test } from "claude-code/testing"
 
-import { actArgv, type MergeSettings, parseMergeWords, parseSettings, parseViewerApproval, planMerge, planReview, viewerReviewArgv } from "../hooks/act"
+import { actArgv, type MergeSettings, parseSettings, parseViewerApproval, planMerge, planReview, viewerReviewArgv } from "../hooks/act"
 import type { Pull } from "../hooks/github"
 import { MESSAGES } from "../hooks/i18n"
 import { pullStatus } from "../hooks/status"
@@ -81,7 +81,7 @@ describe("planMerge", () => {
   })
 
   test("a draft, a conflict, a base moved on, an unknown head or state are refused, never forced", () => {
-    expect(plan({ isDraft: true, mergeState: "DRAFT" })).toEqual({ refusal: t.draftCannotMerge })
+    expect(plan({ isDraft: true, mergeState: "DRAFT" })).toEqual({ refusal: "下書きです。先にレビュー待ちにします。" })
     expect(plan({ mergeable: "CONFLICTING", mergeState: "DIRTY" })).toEqual({ refusal: t.conflictsCannotMerge })
     expect(plan({ mergeState: "BEHIND" })).toEqual({ refusal: t.behindCannotMerge })
     expect(plan({ head: "" })).toEqual({ refusal: t.headUnknown })
@@ -108,13 +108,20 @@ test("actArgv: a merge goes only at the head commit confirmed, never past branch
   }
 })
 
+test("a refusal asked by a command points to the command for that pull request, whatever the branch; asked from its pane, to none", () => {
+  const draft = pullWith({ isDraft: true, mergeState: "DRAFT" })
+  expect(planMerge(t, draft, pullStatus(draft, {}, "ja"), SETTINGS, "o/r#12")).toEqual({ refusal: "下書きです。先にレビュー待ちにします（/inbox pr o/r#12 draft）。" })
+  expect(planReview(t, pullWith({}), "approve", "PRR_1", "o/r#12")).toEqual({ refusal: "もう承認しています。取り消すには /inbox pr o/r#12 unapprove を使います。" })
+  expect(planReview(MESSAGES.en, pullWith({}), "approve", "PRR_1", "o/r#12")).toEqual({ refusal: "You have approved it already. Withdraw it with /inbox pr o/r#12 unapprove." })
+})
+
 describe("planReview", () => {
   test("approved where the person has not approved it yet, at its head commit", () => {
     expect(planReview(t, pullWith({}), "approve", null)).toEqual({ kind: "approve", notes: [] })
   })
 
   test("an approval that stands is not given again, one's own pull request not at all, nor one whose head is not known", () => {
-    expect(planReview(t, pullWith({}), "approve", "PRR_1")).toEqual({ refusal: t.alreadyApproved })
+    expect(planReview(t, pullWith({}), "approve", "PRR_1")).toEqual({ refusal: "もう承認しています。" })
     expect(planReview(t, pullWith({ author: "me" }), "approve", null)).toEqual({ refusal: t.ownCannotApprove })
     expect(planReview(t, pullWith({ head: "" }), "approve", null)).toEqual({ refusal: t.headUnknown })
   })
@@ -157,9 +164,4 @@ test("actArgv: an approval approves the head commit confirmed; a withdrawal dism
   // Another host is asked as itself.
   expect(actArgv("approve", "https://ghe.example/o/r/pull/7", "abc", null).slice(0, 4)).toEqual(["gh", "api", "--hostname", "ghe.example"])
   expect(actArgv("unapprove", "https://ghe.example/o/r/pull/7", "abc", null, { id: "PRR_1", message: "m" }).slice(0, 4)).toEqual(["gh", "api", "--hostname", "ghe.example"])
-})
-
-test("parseMergeWords takes a method out of the words, whatever its case", () => {
-  expect(parseMergeWords(["Squash", "o/r#7"])).toEqual({ method: "SQUASH", rest: ["o/r#7"] })
-  expect(parseMergeWords(["12"])).toEqual({ method: undefined, rest: ["12"] })
 })

@@ -19,7 +19,7 @@
     "repos": {
       "type": "string",
       "title": "GitHub TTS: Repositories read",
-      "description": "Comma-separated repositories to read, each as owner/repo, host/owner/repo or its /inbox repo alias (the pull requests /inbox watch chose there included; alias#12 names one alone). Empty: every repository, the branch's pull request included.",
+      "description": "Comma-separated repositories to read, each as owner/repo, host/owner/repo or its /inbox repo alias (the pull requests /inbox pr watches there included; alias#12 names one alone). Empty: every repository, the branch's pull request included.",
       "default": ""
     },
     "readSelf": {

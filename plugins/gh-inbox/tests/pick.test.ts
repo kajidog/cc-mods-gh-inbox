@@ -6,12 +6,12 @@ import { parsePicked, parsePullArg, parsePulls, pullsArgv, shownContext, stagedC
 // Most tests read the Japanese lines; those in English, the default, are at the end.
 const JA = { options: { language: "ja" } }
 const REF = { host: "github.com", owner: "o", repo: "r", number: 5 }
-const PICK = { command: "inbox", args: "pick 5", origin: { kind: "composer" }, presentation: { isFullscreen: false, columns: 120 } } as const
+const PICK = { command: "inbox", args: "pr 5", origin: { kind: "composer" }, presentation: { isFullscreen: false, columns: 120 } } as const
 const PANE = {
   plugin: "gh-inbox",
   surface: "terminal",
   component: "Pane",
-  requestId: "gh-inbox-pick",
+  requestId: "gh-inbox-pr",
   props: { title: "", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 20 }, view: {} },
 } as const
 // The band above the prompt, unfolded, as the terminal draws it.
@@ -128,6 +128,9 @@ function fakeGh(on: On, branch: string) {
       if (argv.includes("repo") && argv.includes("view")) return { stdout: "https://github.com/o/r\n" }
       const query = argv.find(word => word.startsWith("query=")) ?? ""
       if (query.includes("reviewThreads")) return { stdout: PULL_ANSWER }
+      // Where it stands, as the pane of `/inbox pr` heads what it holds with.
+      if (query.includes("latestOpinionatedReviews") && query.includes("$number"))
+        return { stdout: JSON.stringify({ data: { viewer: { login: "me" }, repository: { pullRequest: { title: "Add pick", url: "https://github.com/o/r/pull/5", state: "OPEN", author: { login: "me" } } } } }) }
       if (query.includes("search("))
         return { stdout: JSON.stringify({ data: { here: { nodes: [{ number: 5, title: "Add pick", url: "https://github.com/o/r/pull/5", author: { login: "me" } }] } } }) }
       return { exitCode: 1 }
@@ -281,7 +284,7 @@ test("shownContext drops the fences and the context's heading marks, and keeps w
   ])
 })
 
-test("an item of the pick pane unfolds to all it says, without the fences around it, and folds back", JA, async ($, on) => {
+test("an item of the pane of /inbox pr unfolds to all it says, without the fences around it, and folds back", JA, async ($, on) => {
   mock.store(on, {})
   mock.clock(on, { now: 1_000_000 })
   fakeGh(on, "feat/x")
@@ -324,26 +327,28 @@ test("one thread can be chosen alone, its review shown as partly chosen", JA, as
   expect(contexts[0]?.[0]).not.toContain("Rename this")
 })
 
-test("on a branch with no pull request the pane lists pull requests to choose from", JA, async ($, on) => {
+test("on a branch with no pull request, /inbox pr show says so, and the list has this repository's to choose from", JA, async ($, on) => {
   mock.store(on, {})
   mock.clock(on, { now: 1_000_000 })
   fakeGh(on, "main")
 
-  await $.command.run({ ...PICK, args: "pick" })
+  const none = { text: "main の PR はありません。/inbox pr 12 のように 12・owner/repo#12・PR の URL で指定するか、/inbox pr の一覧から選べます。" }
+  expect(await $.command.run({ ...PICK, args: "pr show" })).toEqual(none)
+  // `pick`, as `/inbox pick` was, is another word for it.
+  expect(await $.command.run({ ...PICK, args: "pr pick" })).toEqual(none)
+  await $.command.run({ ...PICK, args: "pr" })
   const pane = await $.ui.mount(PANE)
-  await pane.press({ key: "github.com/o/r#5" })
+  await pane.press({ key: "pr:github.com/o/r#5" })
+  for (let tries = 0; tries < 100 && (await pane.find({ key: "C1" })) === undefined; tries += 1) await pane.find({ key: "close" })
   expect((await pane.find({ key: "C1" }))?.props.label).toBe("[ ] bot のコメント: Coverage dropped")
 })
 
-test("a branch whose pull request could not be looked up says why above the list", JA, async ($, on) => {
+test("a branch whose pull request could not be looked up says why", JA, async ($, on) => {
   mock.store(on, {})
   mock.clock(on, { now: 1_000_000 })
   fakeGh(on, "broken")
 
-  await $.command.run({ ...PICK, args: "pick" })
-  const pane = await $.ui.mount(PANE)
-  expect((await pane.findAll({ type: "Text" })).map(one => one.text)).toContain("探せなかったもの: broken の PR: HTTP 401: Bad credentials")
-  expect(await pane.find({ key: "github.com/o/r#5" })).toBeDefined()
+  expect(await $.command.run({ ...PICK, args: "pr pick" })).toEqual({ text: "broken の PR: HTTP 401: Bad credentials" })
 })
 
 test("a search that found more than it lists says so", () => {
@@ -394,7 +399,7 @@ test("a pull request typed in another case is staged once, as GitHub spells it",
   fakeGh(on, "feat/x")
   const contexts = sentContexts(on)
 
-  await $.command.run({ ...PICK, args: "pick O/R#5" })
+  await $.command.run({ ...PICK, args: "pr O/R#5" })
   const pane = await $.ui.mount(PANE)
   await pane.press({ key: "C1" })
   await pane.press({ key: "stage" })
@@ -443,7 +448,7 @@ test("without a repository here a bare number says so", JA, async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
   on("process.run", async () => ({ value: { exitCode: 1, stdout: "", stderr: "not a git repository", isStdoutTruncated: false, isStderrTruncated: false } }))
 
-  expect(await $.command.run(PICK)).toEqual({ text: "このディレクトリのリポジトリが分かりません。/inbox pick owner/repo#12 で指定します。" })
+  expect(await $.command.run(PICK)).toEqual({ text: "このディレクトリのリポジトリが分かりません。/inbox pr owner/repo#12 で指定します。" })
 })
 
 test("parsePicked reads in English by default, for the pane and for the model", () => {
@@ -463,7 +468,7 @@ test("parsePicked reads in English by default, for the pane and for the model", 
   expect(picked.notes).toEqual(["Comments: only the newest 30 are shown (of 31)."])
 })
 
-test("the pick pane and the band speak English by default", async ($, on) => {
+test("the pane of /inbox pr and the band speak English by default", async ($, on) => {
   mock.store(on, {})
   mock.clock(on, { now: 1_000_000 })
   fakeGh(on, "feat/x")

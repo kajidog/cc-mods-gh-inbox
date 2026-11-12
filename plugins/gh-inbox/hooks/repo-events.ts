@@ -404,7 +404,7 @@ export type RepoInput = {
   viewer: string
   /**
    * The newest commits of the pull requests this session checked as pull requests (the branch's, those
-   * `/inbox watch` chose): their failed runs are notified there, while those of an older commit are not and come here.
+   * `/inbox pr` watches): their failed runs are notified there, while those of an older commit are not and come here.
    */
   watchedHeads: ReadonlySet<string>
 }
