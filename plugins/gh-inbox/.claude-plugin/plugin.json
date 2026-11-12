@@ -1,6 +1,6 @@
 {
   "name": "gh-inbox",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "description": "Shows GitHub events (comments, reviews, commits, CI failures, merges) for the checked-out branch's pull request, for pull requests you choose to watch and for repositories you register, to read and hand to Claude; shows above the prompt where the pull requests you opened, and those you are asked to review, stand; merges, closes, drafts or approves a pull request once you confirm it in a pane.",
   "author": {
     "name": "kajidog"
