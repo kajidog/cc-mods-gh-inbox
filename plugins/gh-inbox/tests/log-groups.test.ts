@@ -1,7 +1,7 @@
 import type { GhEvent } from "../types"
 import { describe, expect, test } from "claude-code/testing"
 
-import { byPull, logTitlesArgv, numberOf, parseLogTitles, pullGroups, titlesWanted } from "../hooks/log-groups"
+import { byPull, headingsWanted, logHeadingsArgv, numberOf, parseLogHeadings, pullGroups } from "../hooks/log-groups"
 
 const event = (id: string, pull: string, url = ""): GhEvent => ({ id, kind: "comment", pull, author: "a", at: "", text: id, url, items: [] })
 
@@ -53,30 +53,48 @@ describe("pullGroups", () => {
   })
 })
 
-test("titlesWanted asks each repository for the numbers not known yet, once each", () => {
+test("headingsWanted asks each repository for the numbers not known yet, once each", () => {
   const groups = pullGroups([event("a", "o/r#3", "https://github.com/o/r/pull/3"), event("b", "o/r#5", "https://github.com/o/r/pull/5"), event("c", "o/r")])
-  expect(titlesWanted(groups, new Set(["github.com/o/r#5"]))).toEqual(new Map([["github.com/o/r", [3]]]))
-  expect(titlesWanted(groups, new Set(["github.com/o/r#3", "github.com/o/r#5"]))).toEqual(new Map())
+  expect(headingsWanted(groups, new Set(["github.com/o/r#5"]))).toEqual(new Map([["github.com/o/r", [3]]]))
+  expect(headingsWanted(groups, new Set(["github.com/o/r#3", "github.com/o/r#5"]))).toEqual(new Map())
 })
 
-test("logTitlesArgv asks pull requests and issues alike, another host as itself", () => {
-  const argv = logTitlesArgv("ghe.example/o/r", [3, 5])
+test("logHeadingsArgv asks a pull request's title and where it stands, an issue's title, another host as itself", () => {
+  const argv = logHeadingsArgv("ghe.example/o/r", [3, 5])
   expect(argv.slice(0, 4)).toEqual(["gh", "api", "--hostname", "ghe.example"])
   expect(argv).toContain("owner=o")
   expect(argv).toContain("repo=r")
   const query = argv.find(word => word.startsWith("query=")) ?? ""
-  expect(query).toContain("n3: issueOrPullRequest(number: 3) { ... on PullRequest { title } ... on Issue { title } }")
+  expect(query).toContain("n3: issueOrPullRequest(number: 3) { __typename ... on PullRequest { title state isDraft mergeable reviewDecision mergeStateStatus")
+  expect(query).toContain("reviewRequests(first: 20)")
+  expect(query).toContain("... on Issue { title } }")
   expect(query).toContain("n5: issueOrPullRequest(number: 5)")
-  expect(logTitlesArgv("github.com/o/r", [3]).slice(0, 3)).toEqual(["gh", "api", "graphql"])
+  expect(logHeadingsArgv("github.com/o/r", [3]).slice(0, 2)).toEqual(["gh", "api"])
+  expect(logHeadingsArgv("github.com/o/r", [3])).not.toContain("--hostname")
 })
 
-test("parseLogTitles reads each title, a number GitHub knows nothing of as none, a repository it did not answer for as nothing", () => {
-  const answer = { data: { repository: { n3: { title: "Add things" }, n9: null } }, errors: [{ type: "NOT_FOUND", path: ["repository", "n9"] }] }
-  expect(parseLogTitles(JSON.stringify(answer))).toEqual(
-    new Map([
-      [3, "Add things"],
-      [9, ""],
-    ]),
-  )
-  expect(parseLogTitles(JSON.stringify({ data: { repository: null } }))).toEqual(new Map())
+test("parseLogHeadings reads each title and where a pull request stands, a number GitHub knows nothing of as none, a repository it did not answer for as nothing", () => {
+  const answer = {
+    data: {
+      repository: {
+        n3: {
+          __typename: "PullRequest",
+          title: "Add things",
+          state: "MERGED",
+          isDraft: false,
+          mergeable: "UNKNOWN",
+          latestOpinionatedReviews: { nodes: [{ state: "APPROVED", author: { login: "bob" } }] },
+        },
+        n4: { __typename: "Issue", title: "A bug" },
+        n9: null,
+      },
+    },
+    errors: [{ type: "NOT_FOUND", path: ["repository", "n9"] }],
+  }
+  const headings = parseLogHeadings(JSON.stringify(answer))
+  expect([...headings.keys()]).toEqual([3, 4, 9])
+  expect(headings.get(3)).toMatchObject({ title: "Add things", pull: { state: "MERGED", verdicts: [{ state: "APPROVED", author: "bob" }], requested: [] } })
+  expect(headings.get(4)).toEqual({ title: "A bug" })
+  expect(headings.get(9)).toEqual({ title: "" })
+  expect(parseLogHeadings(JSON.stringify({ data: { repository: null } }))).toEqual(new Map())
 })

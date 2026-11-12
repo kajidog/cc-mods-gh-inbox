@@ -30,6 +30,7 @@ function pullWith(changes: Partial<Pull>): Pull {
     autoMerge: null,
     reviewDecision: null,
     verdicts: [],
+    requested: [],
     ...changes,
   }
 }
@@ -47,6 +48,7 @@ const check = (id: string, isFailed: boolean, isPending = false) => ({
   annotations: [],
   annotationCount: 0,
 })
+const approved = (author: string) => ({ state: "APPROVED", author })
 const line = (pull: Pull, language: "en" | "ja" = "ja") =>
   statusText(statusParts(MESSAGES[language], 7, pull.state, pullStatus(pull, { "long-name": "ロン" }, language), () => "3分前"))
 const marks = (pull: Pull, language: "en" | "ja" = "ja") => statusMarks(MESSAGES[language], pullStatus(pull, {}, language))
@@ -56,7 +58,7 @@ describe("pullStatus, statusMarks and statusText", () => {
     const pull = pullWith({
       checks: [check("a", false), check("b", false)],
       ciState: "SUCCESS",
-      verdicts: ["APPROVED", "APPROVED", "CHANGES_REQUESTED"],
+      verdicts: [approved("a"), approved("b"), { state: "CHANGES_REQUESTED", author: "c" }],
       mergeable: "CONFLICTING",
       comments: [
         { id: "c1", author: "a", body: "old", at: "2026-01-01T00:00:00Z", url: "" },
@@ -91,12 +93,12 @@ describe("pullStatus, statusMarks and statusText", () => {
       "✗ CI 1/2",
       "○ awaiting review",
     ])
-    expect(marks(pullWith({ checks: [check("a", false, true), check("b", false)], ciState: "PENDING", verdicts: ["APPROVED"] }), "en")).toEqual([
+    expect(marks(pullWith({ checks: [check("a", false, true), check("b", false)], ciState: "PENDING", verdicts: [approved("a")] }), "en")).toEqual([
       "◐ CI 1/2",
       "✓ 1 approval",
     ])
     // Approved by one where the base asks for two: still waiting, the approval kept.
-    expect(marks(pullWith({ checks: [check("a", false)], ciState: "SUCCESS", verdicts: ["APPROVED"], reviewDecision: "REVIEW_REQUIRED" }))).toEqual([
+    expect(marks(pullWith({ checks: [check("a", false)], ciState: "SUCCESS", verdicts: [approved("a")], reviewDecision: "REVIEW_REQUIRED" }))).toEqual([
       "○ レビュー待ち",
       "✓ CI",
       "✓ 承認1",
@@ -104,7 +106,7 @@ describe("pullStatus, statusMarks and statusText", () => {
   })
 
   test("one GitHub would merge now says so, CI's own mark left out", async () => {
-    const ready = pullWith({ checks: [check("a", false)], ciState: "SUCCESS", verdicts: ["APPROVED"], mergeState: "CLEAN", mergeable: "MERGEABLE" })
+    const ready = pullWith({ checks: [check("a", false)], ciState: "SUCCESS", verdicts: [approved("a")], mergeState: "CLEAN", mergeable: "MERGEABLE" })
     expect(marks(ready)).toEqual(["● マージ可", "✓ 承認1"])
     expect(marks(ready, "en")).toEqual(["● ready to merge", "✓ 1 approval"])
     // A check not required failing: mergeable, but not marked ready.
@@ -115,6 +117,42 @@ describe("pullStatus, statusMarks and statusText", () => {
     expect(marks(pullWith({ mergeState: "BEHIND" }))).toEqual(["✗ base より古い"])
     expect(marks(pullWith({ mergeState: "BLOCKED" }))).toEqual(["○ ルールでブロック中"])
     expect(marks(pullWith({ mergeState: "BLOCKED", reviewDecision: "REVIEW_REQUIRED", autoMerge: "SQUASH" }))).toEqual(["○ レビュー待ち", "○ 自動マージ待ち"])
+  })
+
+  test("named, the reviews say who gave them and who is still asked; the line under the prompt counts them", async () => {
+    const pull = pullWith({
+      verdicts: [approved("a"), approved("long-name"), { state: "CHANGES_REQUESTED", author: "c" }],
+      requested: [
+        { login: "d", isTeam: false },
+        { login: "o/core", isTeam: true },
+      ],
+      reviewDecision: "CHANGES_REQUESTED",
+    })
+    const status = pullStatus(pull, { "long-name": "ロン" }, "ja")
+    expect(statusMarks(MESSAGES.ja, status, true)).toEqual(["✗ 変更依頼（cさん）", "○ レビュー待ち（dさん、@o/core）", "✓ 承認（aさん、ロンさん）"])
+    expect(statusMarks(MESSAGES.ja, status)).toEqual(["✗ 変更依頼1", "○ レビュー待ち", "✓ 承認2"])
+    expect(statusMarks(MESSAGES.en, pullStatus(pull, {}, "en"), true)).toEqual([
+      "✗ changes requested by c",
+      "○ awaiting review from d, @o/core",
+      "✓ approved by a, long-name",
+    ])
+    expect(statusText(statusParts(MESSAGES.ja, 7, "OPEN", status, () => undefined, true))).toBe(
+      "#7  ✗ 変更依頼（cさん）  ○ レビュー待ち（dさん、@o/core）  ✓ 承認（aさん、ロンさん）",
+    )
+    // Past three, the last named gives way to how many more.
+    const many = pullStatus(pullWith({ verdicts: ["a", "b", "c", "d"].map(approved) }), {}, "ja")
+    expect(statusMarks(MESSAGES.ja, many, true)).toEqual(["✓ 承認（aさん、bさん ほか2人）"])
+    // A status kept from before the reviewers were asked for counts them.
+    const { approvedBy: _, ...kept } = many
+    expect(statusMarks(MESSAGES.ja, kept, true)).toEqual(["✓ 承認4"])
+  })
+
+  test("a review asked of someone the base does not require still waits, and leaves a block it does not explain said", async () => {
+    const asked = [{ login: "d", isTeam: false }]
+    expect(marks(pullWith({ requested: asked, mergeState: "BLOCKED" }))).toEqual(["○ レビュー待ち", "○ ルールでブロック中"])
+    expect(
+      marks(pullWith({ requested: asked, verdicts: [approved("a")], reviewDecision: "APPROVED", mergeState: "CLEAN", mergeable: "MERGEABLE" })),
+    ).toEqual(["○ レビュー待ち", "● マージ可", "✓ 承認1"])
   })
 
   test("a draft says so after its number, and is not marked ready", async () => {

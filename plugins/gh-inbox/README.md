@@ -3,7 +3,7 @@
 English | [日本語](README.ja.md)
 
 A Claude Code mod.
-It shows GitHub events on the checked-out branch's pull request, on pull requests you choose to watch and on repositories you register inside Claude Code, and lets you hand the ones you pick to Claude.
+It shows GitHub events on the checked-out branch's pull request, on pull requests you choose to watch and on repositories you register inside Claude Code, and lets you hand the ones you pick to Claude. Above the prompt, it shows where the pull requests you opened stand.
 
 It writes to GitHub only to merge, close or draft a pull request, or to approve one or withdraw your approval, and only once you confirm it in a pane ([Merging, closing and drafts](#merging-closing-and-drafts), [Approving](#approving)). Posting comments, labelling and the like are out of its scope.
 
@@ -85,7 +85,7 @@ Pull requests other than the branch's can be notified the same way as the branch
 
 ## Handing reviews to Claude
 
-`/inbox pick` lists the pull request's reviews and comments in a pane. Press an item's `▸` to unfold all it says. Choose some and press "Attach": they go to Claude with the next prompt you send. Write your request in the prompt as usual.
+`/inbox pick` lists the pull request's description, reviews and comments in a pane. Press an item's `▸` to unfold all it says. Choose some and press "Attach": they go to Claude with the next prompt you send. Write your request in the prompt as usual.
 
 ```
 /inbox pick               # the branch's pull request (with none, a list of pull requests to choose from)
@@ -103,6 +103,7 @@ Pull requests other than the branch's can be notified the same way as the branch
 - A line comment's diff is cut to the last 15 lines up to the line commented on. HTML comments, which GitHub does not show, are left out. Diffs and reviews name the commit they are about, and the preamble names the pull request's head commit now.
 - Up to the newest 100 threads and reviews and the newest 30 conversation comments are listed. When there are more, the pane says so.
 - The list starts with the CI of the pull request's head commit (`✗ CI 1/3 abc1234: CI / test`). Chosen, it hands Claude the commit, each failed workflow, job and step with its link, the command that reads its failed steps' log (`gh run view --job 123 --log-failed -R owner/repo`), what the check reported (up to 10 annotations), and the names of the other checks.
+- After the CI comes the pull request's description, what its author wrote of it. One that shows nothing on GitHub (a template's HTML comments alone) is not listed.
 - What Claude reads with the prompt is in the language set in `/config`.
 
 ## Telling Claude about CI
@@ -129,7 +130,7 @@ While the branch has an open pull request, each new result of its CI goes to Cla
 /inbox draft                # mark a draft ready for review, or convert it back to a draft
 ```
 
-- The pane shows the head commit and where the pull request stands, as the line under the prompt does, and what to know before going on. Its button has no hotkey and nothing is focused as the pane opens, so neither a key typed for the prompt nor Enter sends it: move to it with Tab and press Enter, or click it. `q` cancels.
+- The pane shows the head commit and where the pull request stands, as the line under the prompt does with the reviewers named, and what to know before going on. Its button has no hotkey and nothing is focused as the pane opens, so neither a key typed for the prompt nor Enter sends it: move to it with Tab and press Enter, or click it. `q` cancels.
 - A merge goes only while the head is still the commit the pane showed (`gh pr merge --match-head-commit`): pushed to meanwhile, GitHub refuses it and the pane says why.
 - The merge method offered first is the one you used last in the repository (GitHub's own default), among those it allows. The pane switches between them (`1`–`3`), or name one: `merge`, `squash`, `rebase`.
 - Never past branch protection (no `--admin`), and the branch is not deleted: `gh pr merge --delete-branch` would check out another branch under Claude.
@@ -163,25 +164,44 @@ GitHub: #12  ✗ CI 1/3  ○ awaiting review  ✓ 1 approval | alice “Looks go
 | --- | --- | --- |
 | `✗` | Fails, or waits on the author | conflicts, CI failed (failed/all), change requests, behind its base |
 | `◐` | Still runs | CI (done/all) |
-| `○` | Waits on someone else | awaiting review, auto-merge on, blocked by a rule no other part tells |
+| `○` | Waits on someone else | awaiting review (one the base requires, or one asked of someone who has not answered), auto-merge on, blocked by a rule no other part tells |
 | `●` | GitHub would merge it now | ready to merge |
 | `✓` | Passed | CI, approvals |
 
 - A draft says so after its number (`#12 (draft)`); a merged or closed one says so alone (`#12 (merged)`).
+- `/inbox`, `/inbox watch`, the panes of `/inbox merge` and `/inbox approve`, and the headings of `/inbox log` narrowed to one repository say the same with the reviewers named: `✗ changes requested by bob  ○ awaiting review from carol, @org/core  ✓ approved by alice`. People go by their nicknames (`/inbox nick`), teams after `@`; past three, the rest are counted. A team is named only where the token may read the organization's teams (the `read:org` scope, which `gh auth login` asks for); where GitHub refuses that, it is asked again without them, and teams asked are left out.
 - After the bar: the newest comment, review or line comment, cut to 30 characters, and how long ago.
 - With no pull request, or after `/inbox tray repos`, how long ago each registered repository's last event happened (`GitHub: r 5m ago | other 2h ago`).
+
+## Your pull requests above the prompt
+
+Above the prompt, the band lists the open pull requests you opened, wherever they are, each with where it stands as the line under the prompt tells it:
+
+```
+GitHub: your pull requests
+  r#3  ✗ CI 1/2  ✓ 1 approval  Fix the build
+  tts#7  ● ready to merge  Read only the summary of long answers
+  tts#9  ○ awaiting review  Split the settings
+  r#4 (draft)  ◐ CI 0/1  Try another layout
+```
+
+- The most pressing first: what fails, then what can be merged now, what runs, what waits, what passed; drafts last. Alike, the one updated last first. Up to 5 show; the heading says how many there are in all.
+- Each starts with its repository's short name (a registered repository's alias, else its name) and its number, a link to it on GitHub.
+- They are searched for at every check (`is:pr is:open author:@me`, archived repositories left out), on github.com and on the hosts of the registered repositories, the watched pull requests and the branch's. A host that cannot be searched for now keeps what it showed.
+- The branch's pull request is listed too, though the line under the prompt tells it.
+- Collapse the band with its `[-]`; to turn it off, set **My pull requests above the prompt** to `false` in `/config`.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `/inbox` | The pull request watched, where it stands (CI, reviews, whether it can be merged, the newest comment) and when it was last checked |
+| `/inbox` | The pull request watched, where it stands (CI, reviews with who gave or owes them, whether it can be merged, the newest comment) and when it was last checked |
 | `/inbox check` | Check now |
-| `/inbox log [repository]` | Opens a pane of the notices of every window kept, newest first, 10 a page (`n` older, `p` newer, `q` close). Each shows on its first line the repository's short name in color, who did what in bold and color (a link to it on GitHub) and when; what was said goes under it, indented. A notice that says more than fits gets a `▸`: press it (or the digit of its place on the page, `1`–`9`, `0`) to unfold all of it, line comments with their file and line (kept up to 2,000 characters a notice). With notices of more than one repository, buttons above the list narrow it to one (`r` goes to the next); `/inbox log <repository>` opens it narrowed, by the short name, the name or `owner/repo`. Narrowed to one repository, the notices go together by pull request (or issue), each under a heading with its number (a link to it on GitHub) and title: the one with the newest notice first, each one's newest first; what is on none (pushes, branches, CI) goes under a heading of its own. While narrowed, the rows leave out the repository's short name. A comment, review or line comment edited or deleted on GitHub since it was told is marked `(…, edited 5m ago)` or `(…, deleted)`, and an edited one unfolds to what it says now (see below). Nothing is added to the transcript |
+| `/inbox log [repository]` | Opens a pane of the notices of every window kept, newest first, 10 a page (`n` older, `p` newer, `q` close). Each shows on its first line the repository's short name in color, who did what in bold and color (a link to it on GitHub) and when; what was said goes under it, indented. A notice that says more than fits gets a `▸`: press it (or the digit of its place on the page, `1`–`9`, `0`) to unfold all of it, line comments with their file and line (kept up to 2,000 characters a notice). With notices of more than one repository, buttons above the list narrow it to one (`r` goes to the next); `/inbox log <repository>` opens it narrowed, by the short name, the name or `owner/repo`. Narrowed to one repository, the notices go together by pull request (or issue), each under a heading with its number (a link to it on GitHub), its title, and where a pull request stands now (`(merged)`, or its marks with the reviewers named): the one with the newest notice first, each one's newest first; what is on none (pushes, branches, CI) goes under a heading of its own. While narrowed, the rows leave out the repository's short name. A comment, review or line comment edited or deleted on GitHub since it was told is marked `(…, edited 5m ago)` or `(…, deleted)`, and an edited one unfolds to what it says now (see below). Nothing is added to the transcript |
 | `/inbox log text` | Lists the newest 20 in the transcript instead, for Claude to read |
-| `/inbox pick [PR]` | Choose threads, reviews and comments to hand to Claude |
+| `/inbox pick [PR]` | Choose the description, threads, reviews and comments to hand to Claude |
 | `/inbox clear` | Detach what is attached |
-| `/inbox watch` | The pull requests watched, where each stands (CI, reviews, whether it can be merged, the newest comment) and when it was last checked |
+| `/inbox watch` | The pull requests watched, where each stands (CI, reviews with who gave or owes them, whether it can be merged, the newest comment) and when it was last checked |
 | `/inbox watch add [PR]` | Watch a pull request: `12`, `owner/repo#12` or its URL (without one, opens a pane to choose) |
 | `/inbox watch remove PR` | Stop watching it |
 | `/inbox merge [PR] [merge\|squash\|rebase]` | Merge a pull request once you confirm it in a pane; auto-merge while a required review or check is missing ([Merging, closing and drafts](#merging-closing-and-drafts)) |
@@ -241,6 +261,7 @@ on("inbox.notified", async ($, e, next) => {
 | Language | en | `en`: English / `ja`: Japanese. For notices, commands, panes, and what is handed to Claude |
 | Notify my own activity | false | Also notify your own activity |
 | Tell Claude about CI | true | Tell Claude each new result of the branch's pull request's CI with the next prompt you send ([Telling Claude about CI](#telling-claude-about-ci)) |
+| My pull requests above the prompt | true | Above the prompt, the open pull requests you opened and where each stands, the most pressing first ([Your pull requests above the prompt](#your-pull-requests-above-the-prompt)) |
 | Tray | true | A line under the prompt, kept up each check. While the branch has a pull request, where it stands (`GitHub: #12  ✗ CI 1/3  ✓ 2 approvals \| alice “Looks good” 5m ago`); otherwise, or after `/inbox tray repos`, how long ago each registered repository's last event happened (`GitHub: r 5m ago \| other 2h ago`). See [The line under the prompt](#the-line-under-the-prompt) |
 
 <details>
@@ -256,7 +277,9 @@ on("inbox.notified", async ($, e, next) => {
 - `/inbox merge` asks for the pull request afresh (one GraphQL request) and for the repository's merge settings (one more); `/inbox close` and `/inbox draft` ask for the pull request alone; `/inbox approve` and `/inbox unapprove` for the pull request and for your own last review that approves, asks for changes or was dismissed (one more). Pressing the pane's button sends one more, through `gh pr merge`, `gh pr close` or `gh pr ready`; an approval through the REST API (`POST /repos/{owner}/{repo}/pulls/{number}/reviews`), its withdrawal through GraphQL (`dismissPullRequestReview`).
 - `/inbox pick` sends one GraphQL request as it opens, the head commit's CI and its annotations included. The list of pull requests and `/inbox pick 12` look up the current repository once with `gh repo view`; the list also searches once per host.
 - `/inbox log` asks what the comments, reviews and line comments on the page it shows say now, as the page shows: one GraphQL request (one point) a page, each page once each time the log opens. The Events API tells no edit or deletion, so nothing is asked between: edits and deletions show only in the log, never as notices.
-- Narrowed to one repository, `/inbox log` asks once more (one GraphQL request, one point) where a pull request on the page has a heading whose title is not known: each pull request once each time the log opens. Titles kept for a registered repository's notices and those of watched pull requests are not asked for.
+- Narrowed to one repository, `/inbox log` asks once more (one GraphQL request, one point) for the headings of the page's pull requests: each one's title and where it stands now, each pull request once each time the log opens. A title kept for a registered repository's notices or a watched pull request's shows before the answer comes.
+- The band above the prompt searches each host once a check for the open pull requests you opened (one GraphQL request, one point however many it finds: their checks are asked only how each went). The answer is shared between windows: within one interval, a window uses another's.
+- A host that refuses a request naming the teams asked to review is asked again without them, once; from then on that window asks it without them.
 - Answers are shared between windows. The commits of a new push (up to 5 per check), pull request titles and failed steps are asked for only when needed.
 
 </details>

@@ -42,6 +42,9 @@ export type GhPicker = {
   kinds: string[]
 }
 
+/** Someone whose review a pull request has or waits for: a person by the name the mod shows, a team by `org/team`. */
+export type GhReviewer = { name: string; isTeam: boolean }
+
 /** Where the watched pull request stands, as the line under the prompt tells it. */
 export type GhPullStatus = {
   /** The newest commit's checks; null with none. */
@@ -56,6 +59,12 @@ export type GhPullStatus = {
   approvals: number
   /** Reviewers whose last say asks for changes. */
   changesRequested: number
+  /** Who approves, by their last say; absent before it was asked for. */
+  approvedBy?: GhReviewer[]
+  /** Who asks for changes, by their last say; absent before it was asked for. */
+  changesRequestedBy?: GhReviewer[]
+  /** Those whose review is asked for and not given yet, people and teams; absent before it was asked for. */
+  awaiting?: GhReviewer[]
   /** `APPROVED`, `CHANGES_REQUESTED` or `REVIEW_REQUIRED`; null where the base asks for no review. */
   reviewDecision: string | null
   /** `CONFLICTING` when it does not merge into its base cleanly; `UNKNOWN` while GitHub works it out. */
@@ -87,6 +96,28 @@ export type GhWatch = {
   error: string | null
   /** Where the pull request stood at the last check that read it; null or absent with none. */
   status?: GhPullStatus | null
+}
+
+/** One of the open pull requests the person opened, as the band above the prompt shows it. */
+export type GhMinePull = {
+  /** `host/owner/repo#number`. */
+  key: string
+  /** Its repository's short name (a registered one's alias, else its name) and its number: `tts#20`. */
+  label: string
+  title: string
+  url: string
+  /** When it was updated last, ISO. */
+  updatedAt: string
+  status: GhPullStatus
+}
+
+/** The open pull requests the person opened, as the last check found them, the most pressing first. */
+export type GhMine = {
+  pulls: GhMinePull[]
+  /** How many more are open than were found. */
+  more: number
+  /** When the last check that searched finished, ms since the epoch. */
+  checkedAt: number
 }
 
 /** What the pane of `/inbox watch` shows: pull requests to start or stop watching. */
@@ -289,10 +320,17 @@ declare module "claude-code" {
        * `host/owner/repo#number`; "" for a number GitHub knows nothing of.
        */
       logTitles: Record<string, string>
+      /**
+       * Where each pull request the log pane narrowed to one repository heads its notices with stands now, as its heading
+       * says it after the title, by `host/owner/repo#number`.
+       */
+      logStands: Record<string, string>
       /** The pick pane's items unfolded to say in full what they say, by id. */
       pickUnfolded: string[]
       /** What the pane of `/inbox watch` shows. */
       watchPick: GhWatchPick | null
+      /** The open pull requests the person opened, as the band above the prompt shows them; null while none were searched for. */
+      mine: GhMine | null
       /** When each watched pull request (`host/owner/repo#number`) was added, as this session last checked it. */
       watchedSince: Record<string, number>
       /** How CI of the branch's pull request stood when Claude was last told of it in this session (`ciKey`); null before. */
