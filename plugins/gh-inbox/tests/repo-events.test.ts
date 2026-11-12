@@ -136,6 +136,7 @@ describe("one notice for what the pull request and the repository both see", () 
   const pull: Pull = {
     ref: { ...ref, number: 18 },
     viewer: "me",
+    author: "someone",
     title: "T",
     url: "",
     state: "MERGED",
@@ -151,6 +152,7 @@ describe("one notice for what the pull request and the repository both see", () 
     autoMerge: null,
     reviewDecision: null,
     verdicts: [],
+    viewerApproval: null,
     comments: [{ id: "IC_kwDOVDRCgM8AAAABcdCdCg", author: "bot", body: "hi", at: "2026-10-15T23:31:53Z", url: "" }],
     reviews: [
       { id: "PRR_approve", author: "long-reviewer-name", state: "APPROVED", body: "", at: "", url: "", comments: [] },

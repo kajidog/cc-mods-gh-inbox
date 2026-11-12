@@ -165,9 +165,9 @@ const en = {
 
   // `/inbox`
   commandDescription:
-    "GitHub notices for this branch's pull request, pull requests you watch and registered repositories: status, check now, recent notices, pick review comments to hand to Claude, pull requests to watch, merge, close or draft a pull request, repositories, nicknames, what the line under the prompt shows",
+    "GitHub notices for this branch's pull request, pull requests you watch and registered repositories: status, check now, recent notices, pick review comments to hand to Claude, pull requests to watch, merge, close, draft or approve a pull request, repositories, nicknames, what the line under the prompt shows",
   commandHint:
-    "[status|check|log [repo] [text]|pick [pr]|clear|watch [add|remove [pr]]|merge [pr] [merge|squash|rebase]|close [pr]|draft [pr]|repo [add|set|remove|alias ...]|nick [login [nickname]]|tray [pull|repos]]",
+    "[status|check|log [repo] [text]|pick [pr]|clear|watch [add|remove [pr]]|merge [pr] [merge|squash|rebase]|close [pr]|draft [pr]|approve [pr]|unapprove [pr]|repo [add|set|remove|alias ...]|nick [login [nickname]]|tray [pull|repos]]",
   noBranch: "The branch is not known (outside a git repository, or a detached HEAD).",
   noPull: (branch: string) => `${branch} has no pull request.`,
   pullState: (state: string | null): string => (state === "OPEN" ? "watching" : state === "MERGED" ? "merged" : "closed"),
@@ -181,6 +181,10 @@ const en = {
   logTitle: "GitHub notices",
   logOpened: (n: number) => `Opened the log in a pane (${count(n, "notice")}).`,
   logRange: (from: number, to: number, total: number) => `${from}–${to} of ${total}, newest first`,
+  /** The range of a log pane narrowed to one repository, its notices together by pull request. */
+  logRangeByPull: (from: number, to: number, total: number) => `${from}–${to} of ${total}, by pull request, newest first`,
+  /** The heading of a narrowed log's notices on no pull request or issue. */
+  logNoPull: "Not on a pull request (pushes, branches, CI)",
   older: "Older",
   logAll: "All",
   logNoRepo: (name: string, names: readonly string[]) =>
@@ -195,7 +199,7 @@ const en = {
   /** An unfolded part of a log row changed since it was told. */
   logItemNote: (note: "edited" | "deleted"): string => (note === "edited" ? "edited" : "deleted"),
   usage:
-    "Usage: /inbox [status|check|log [repo] [text]|pick [PR]|clear|watch|merge [PR] [merge|squash|rebase]|close [PR]|draft [PR]|repo|nick [login [nickname]]|tray [pull|repos]]",
+    "Usage: /inbox [status|check|log [repo] [text]|pick [PR]|clear|watch|merge [PR] [merge|squash|rebase]|close [PR]|draft [PR]|approve [PR]|unapprove [PR]|repo|nick [login [nickname]]|tray [pull|repos]]",
   trayShows: (view: string): string =>
     view === "pull"
       ? "The line under the prompt now shows this branch's pull request (all registered repositories while it has none). /inbox tray switches back."
@@ -259,9 +263,17 @@ const en = {
   watchHint: "Press a pull request to start or stop watching it; it is saved at once. Each is checked as the branch's pull request is.",
   noCandidates: "No open pull requests were found. Name one with /inbox watch add owner/repo#12.",
 
-  // `/inbox merge`, `/inbox close` and `/inbox draft`
+  // `/inbox merge`, `/inbox close`, `/inbox draft`, `/inbox approve` and `/inbox unapprove`
   actTitle: (kind: string): string =>
-    kind === "close" ? "Close a pull request" : kind === "ready" || kind === "draft" ? "Draft or ready for review" : "Merge a pull request",
+    kind === "close"
+      ? "Close a pull request"
+      : kind === "ready" || kind === "draft"
+        ? "Draft or ready for review"
+        : kind === "approve"
+          ? "Approve a pull request"
+          : kind === "unapprove"
+            ? "Withdraw your approval"
+            : "Merge a pull request",
   actNoHereRepo: (command: string) => `The repository of this directory is not known. Name it with /inbox ${command} owner/repo#12.`,
   noBranchPull: (branch: string, command: string) => `${branch} has no pull request. Name one with /inbox ${command} 12, owner/repo#12 or its URL.`,
   actNotOpen: (name: string, state: string) => `${name} is ${state} already.`,
@@ -279,6 +291,12 @@ const en = {
   autoMergeIsOn: (method: string) => `Auto-merge is on (${method}): it merges once it can.`,
   methods: { MERGE: "merge commit", SQUASH: "squash", REBASE: "rebase" } as Record<string, string>,
   methodHint: "Method:",
+  notApproved: "You have not approved it.",
+  alreadyApproved: "You have approved it already. Withdraw it with /inbox unapprove.",
+  ownCannotApprove: "It is your own pull request: GitHub does not let its author approve it.",
+  unapproveNote: (message: string) => `GitHub keeps this on the pull request as your review dismissed, with “${message}”.`,
+  /** Why the approval was dismissed, as GitHub shows it on the pull request. */
+  dismissMessage: "Approval withdrawn",
   actConfirm: (kind: string, method: string): string =>
     kind === "merge"
       ? `Merge (${method})`
@@ -290,7 +308,11 @@ const en = {
             ? "Close without merging"
             : kind === "ready"
               ? "Mark ready for review"
-              : "Convert to draft",
+              : kind === "approve"
+                ? "Approve"
+                : kind === "unapprove"
+                  ? "Withdraw approval"
+                  : "Convert to draft",
   actHint: "Move to the button with Tab and press Enter, or click it. q cancels.",
   cancel: "Cancel",
   actRunning: "Asking GitHub…",
@@ -305,7 +327,11 @@ const en = {
             ? `Closed ${name}.`
             : kind === "ready"
               ? `${name} is ready for review.`
-              : `${name} is a draft now.`,
+              : kind === "approve"
+                ? `Approved ${name}.`
+                : kind === "unapprove"
+                  ? `Withdrew your approval of ${name}.`
+                  : `${name} is a draft now.`,
   actFailed: (message: string) => `GitHub refused it: ${message}`,
   /** A merge GitHub took in without merging yet: a merge queue's. */
   actQueued: (name: string) => `GitHub took ${name} in but has not merged it yet: it merges once its merge queue gets to it.`,
@@ -499,9 +525,9 @@ const ja: Messages = {
   noKinds: "なし",
 
   commandDescription:
-    "このブランチの PR、選んだ PR、登録したリポジトリの GitHub 通知: 状態、すぐに確認、最近の通知、Claude に渡すレビューを選ぶ、通知する PR、PR のマージ・クローズ・下書きの切り替え、リポジトリ、ニックネーム、プロンプトの下の表示",
+    "このブランチの PR、選んだ PR、登録したリポジトリの GitHub 通知: 状態、すぐに確認、最近の通知、Claude に渡すレビューを選ぶ、通知する PR、PR のマージ・クローズ・下書きの切り替え・承認、リポジトリ、ニックネーム、プロンプトの下の表示",
   commandHint:
-    "[status|check|log [リポジトリ] [text]|pick [PR]|clear|watch [add|remove [PR]]|merge [PR] [merge|squash|rebase]|close [PR]|draft [PR]|repo [add|set|remove|alias ...]|nick [login [ニックネーム]]|tray [pull|repos]]",
+    "[status|check|log [リポジトリ] [text]|pick [PR]|clear|watch [add|remove [PR]]|merge [PR] [merge|squash|rebase]|close [PR]|draft [PR]|approve [PR]|unapprove [PR]|repo [add|set|remove|alias ...]|nick [login [ニックネーム]]|tray [pull|repos]]",
   noBranch: "ブランチが分かりません（git リポジトリの外か、detached HEAD です）。",
   noPull: branch => `${branch} の PR はありません。`,
   pullState: state => (state === "OPEN" ? "通知中" : state === "MERGED" ? "マージ済み" : "クローズ済み"),
@@ -515,6 +541,8 @@ const ja: Messages = {
   logTitle: "GitHub の通知",
   logOpened: n => `ログをペインで開きました（${n}件）。`,
   logRange: (from, to, total) => `${total}件中 ${from}〜${to}件目（新しい順）`,
+  logRangeByPull: (from, to, total) => `${total}件中 ${from}〜${to}件目（PR ごと、新しい順）`,
+  logNoPull: "PR に付かないもの（push・ブランチ・CI）",
   older: "古い方へ",
   logAll: "すべて",
   logNoRepo: (name, names) => `${name} というリポジトリの通知は保存されていません。${names.length === 0 ? "" : `保存されているもの: ${names.join("、")}`}`,
@@ -524,7 +552,7 @@ const ja: Messages = {
   logPartDeleted: "一部削除済み",
   logItemNote: note => (note === "edited" ? "編集済み" : "削除済み"),
   usage:
-    "使い方: /inbox [status|check|log [リポジトリ] [text]|pick [PR]|clear|watch|merge [PR] [merge|squash|rebase]|close [PR]|draft [PR]|repo|nick [login [ニックネーム]]|tray [pull|repos]]",
+    "使い方: /inbox [status|check|log [リポジトリ] [text]|pick [PR]|clear|watch|merge [PR] [merge|squash|rebase]|close [PR]|draft [PR]|approve [PR]|unapprove [PR]|repo|nick [login [ニックネーム]]|tray [pull|repos]]",
   trayShows: view =>
     view === "pull"
       ? "プロンプトの下に、このブランチの PR の状態を出します（PR がないあいだは、登録したリポジトリの一覧）。/inbox tray で戻せます。"
@@ -585,7 +613,16 @@ const ja: Messages = {
   watchHint: "押すと通知のオン・オフが切り替わり、すぐに保存します。どれも今のブランチの PR と同じように確認します。",
   noCandidates: "開いている PR が見つかりません。/inbox watch add owner/repo#12 で指定できます。",
 
-  actTitle: kind => (kind === "close" ? "PR をクローズする" : kind === "ready" || kind === "draft" ? "下書き・レビュー待ちの切り替え" : "PR をマージする"),
+  actTitle: kind =>
+    kind === "close"
+      ? "PR をクローズする"
+      : kind === "ready" || kind === "draft"
+        ? "下書き・レビュー待ちの切り替え"
+        : kind === "approve"
+          ? "PR を承認する"
+          : kind === "unapprove"
+            ? "PR の承認を取り消す"
+            : "PR をマージする",
   actNoHereRepo: command => `このディレクトリのリポジトリが分かりません。/inbox ${command} owner/repo#12 で指定します。`,
   noBranchPull: (branch, command) => `${branch} の PR はありません。/inbox ${command} 12・owner/repo#12・PR の URL で指定できます。`,
   actNotOpen: (name, state) => `${name} はもう${state}です。`,
@@ -603,6 +640,11 @@ const ja: Messages = {
   autoMergeIsOn: method => `自動マージが設定されています（${method}）。条件がそろうとマージされます。`,
   methods: { MERGE: "マージコミット", SQUASH: "スカッシュ", REBASE: "リベース" },
   methodHint: "方式:",
+  notApproved: "この PR は承認していません。",
+  alreadyApproved: "もう承認しています。取り消すには /inbox unapprove を使います。",
+  ownCannotApprove: "自分の PR です。GitHub では作者は承認できません。",
+  unapproveNote: message => `GitHub では、自分のレビューの却下（dismiss）として「${message}」と PR に残ります。`,
+  dismissMessage: "承認を取り消しました",
   actConfirm: (kind, method) =>
     kind === "merge"
       ? `${method}でマージする`
@@ -614,7 +656,11 @@ const ja: Messages = {
             ? "マージせずにクローズする"
             : kind === "ready"
               ? "レビュー待ちにする"
-              : "下書きに戻す",
+              : kind === "approve"
+                ? "承認する"
+                : kind === "unapprove"
+                  ? "承認を取り消す"
+                  : "下書きに戻す",
   actHint: "Tab でボタンに移って Enter を押すか、ボタンをクリックすると実行します。q でやめます。",
   cancel: "やめる",
   actRunning: "GitHub に送っています…",
@@ -629,7 +675,11 @@ const ja: Messages = {
             ? `${name} をクローズしました。`
             : kind === "ready"
               ? `${name} をレビュー待ちにしました。`
-              : `${name} を下書きに戻しました。`,
+              : kind === "approve"
+                ? `${name} を承認しました。`
+                : kind === "unapprove"
+                  ? `${name} の承認を取り消しました。`
+                  : `${name} を下書きに戻しました。`,
   actFailed: message => `GitHub に断られました: ${message}`,
   actQueued: name => `${name} を GitHub が受け付けましたが、まだマージされていません。マージキューを通るとマージされます。`,
 

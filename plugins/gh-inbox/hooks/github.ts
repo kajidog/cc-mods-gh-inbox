@@ -64,6 +64,8 @@ const MERGE_STATES: ReadonlySet<string> = new Set(["CLEAN", "HAS_HOOKS", "UNSTAB
 export type Pull = {
   ref: PullRef
   viewer: string
+  /** Who opened it; null where GitHub names no one (a deleted account). */
+  author: string | null
   title: string
   url: string
   state: PullState
@@ -94,6 +96,8 @@ export type Pull = {
   reviewDecision: string | null
   /** Each reviewer's last approving or change-requesting review, by its state. */
   verdicts: string[]
+  /** The node id of the viewer's own approval, where their last say approves; null where it does not. */
+  viewerApproval: string | null
 }
 
 // Checks listed at most of a commit.
@@ -118,9 +122,10 @@ export const PULL_QUERY = `query($owner: String!, $repo: String!, $number: Int!)
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
       title url state closedAt mergeable reviewDecision isDraft mergeStateStatus
+      author { login }
       mergedBy { login }
       autoMergeRequest { mergeMethod }
-      latestOpinionatedReviews(first: 50) { nodes { state } }
+      latestOpinionatedReviews(first: 50) { nodes { id state author { login } } }
       closed: timelineItems(itemTypes: [CLOSED_EVENT], last: 1) { nodes { ... on ClosedEvent { actor { login } } } }
       comments(last: 50) { nodes { id author { login } body createdAt url } }
       reviews(last: 50) { nodes { id author { login } state body submittedAt url
@@ -277,10 +282,14 @@ export function parsePull(ref: PullRef, answer: string, language: Language = "en
     }
   })
   const latest = parseChecks(nodes(pull.latest)[0]?.commit)
+  const viewer = login(data.viewer) ?? ""
+  const verdicts = nodes(pull.latestOpinionatedReviews)
+  const approval = verdicts.find(node => viewer !== "" && login(node.author) === viewer && text(node.state) === "APPROVED")
 
   return {
     ref,
-    viewer: login(data.viewer) ?? "",
+    viewer,
+    author: login(pull.author),
     title: text(pull.title),
     url: text(pull.url),
     state: state === "MERGED" || state === "CLOSED" ? state : "OPEN",
@@ -322,6 +331,7 @@ export function parsePull(ref: PullRef, answer: string, language: Language = "en
     isDraft: pull.isDraft === true,
     autoMerge: text(object(pull.autoMergeRequest).mergeMethod) || null,
     reviewDecision: text(pull.reviewDecision) || null,
-    verdicts: nodes(pull.latestOpinionatedReviews).map(node => text(node.state)),
+    verdicts: verdicts.map(node => text(node.state)),
+    viewerApproval: approval === undefined ? null : text(approval.id) || null,
   }
 }

@@ -9,7 +9,7 @@ GitHub の通知まわりの Claude Code の mod です。
 
 | mod | 内容 |
 | --- | --- |
-| [gh-inbox](plugins/gh-inbox/README.ja.md) | 今のブランチの PR、選んだ PR、登録したリポジトリに届いた GitHub のイベントを通知し、選んだものを Claude に渡す。確かめてから PR をマージ・クローズ・下書きにもできる |
+| [gh-inbox](plugins/gh-inbox/README.ja.md) | 今のブランチの PR、選んだ PR、登録したリポジトリに届いた GitHub のイベントを通知し、選んだものを Claude に渡す。確かめてから PR をマージ・クローズ・下書き・承認にもできる |
 | [gh-inbox-tts](plugins/gh-inbox-tts/README.ja.md) | gh-inbox の通知を [tts](https://github.com/kajidog/cc-mods-tts) で読み上げる |
 
 通知・コマンド・ペインは初期設定では英語です。日本語にするには `/config` の **GitHub: Language** を `ja` にします。

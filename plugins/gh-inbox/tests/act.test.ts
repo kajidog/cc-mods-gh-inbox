@@ -1,6 +1,6 @@
 import { describe, expect, test } from "claude-code/testing"
 
-import { actArgv, type MergeSettings, parseMergeWords, parseSettings, planMerge } from "../hooks/act"
+import { actArgv, type MergeSettings, parseMergeWords, parseSettings, planMerge, planReview } from "../hooks/act"
 import type { Pull } from "../hooks/github"
 import { MESSAGES } from "../hooks/i18n"
 import { pullStatus } from "../hooks/status"
@@ -12,6 +12,7 @@ function pullWith(changes: Partial<Pull>): Pull {
   return {
     ref: { host: "github.com", owner: "o", repo: "r", number: 7 },
     viewer: "me",
+    author: "someone",
     title: "T",
     url: URL,
     state: "OPEN",
@@ -31,6 +32,7 @@ function pullWith(changes: Partial<Pull>): Pull {
     autoMerge: null,
     reviewDecision: null,
     verdicts: [],
+    viewerApproval: null,
     ...changes,
   }
 }
@@ -104,6 +106,37 @@ test("actArgv: a merge goes only at the head commit confirmed, never past branch
     const argv = actArgv(kind, URL, "abc", "MERGE")
     expect(argv.some(word => word === "--admin" || word === "--delete-branch" || word === "-d")).toBe(false)
   }
+})
+
+describe("planReview", () => {
+  test("approved where the person has not approved it yet, at its head commit", () => {
+    expect(planReview(t, pullWith({}), "approve")).toEqual({ kind: "approve", notes: [] })
+  })
+
+  test("an approval that stands is not given again, one's own pull request not at all, nor one whose head is not known", () => {
+    expect(planReview(t, pullWith({ viewerApproval: "PRR_1" }), "approve")).toEqual({ refusal: t.alreadyApproved })
+    expect(planReview(t, pullWith({ author: "me" }), "approve")).toEqual({ refusal: t.ownCannotApprove })
+    expect(planReview(t, pullWith({ head: "" }), "approve")).toEqual({ refusal: t.headUnknown })
+  })
+
+  test("an approval that stands is withdrawn as GitHub keeps it, a dismissal saying why; none is refused", () => {
+    expect(planReview(t, pullWith({ viewerApproval: "PRR_1" }), "unapprove")).toEqual({
+      kind: "unapprove",
+      notes: ["GitHub では、自分のレビューの却下（dismiss）として「承認を取り消しました」と PR に残ります。"],
+    })
+    expect(planReview(t, pullWith({}), "unapprove")).toEqual({ refusal: t.notApproved })
+  })
+})
+
+test("actArgv: an approval approves the head commit confirmed; a withdrawal dismisses the person's approving review", () => {
+  expect(actArgv("approve", URL, "abc", null)).toEqual(["gh", "api", "--silent", "-X", "POST", "repos/o/r/pulls/7/reviews", "-f", "commit_id=abc", "-f", "event=APPROVE"])
+  const dismissal = actArgv("unapprove", URL, "abc", null, { id: "PRR_1", message: "Approval withdrawn" })
+  expect(dismissal.slice(0, 4)).toEqual(["gh", "api", "graphql", "--silent"])
+  expect(dismissal.find(word => word.startsWith("query="))).toContain("dismissPullRequestReview")
+  expect(dismissal.slice(-4)).toEqual(["-f", "id=PRR_1", "-f", "message=Approval withdrawn"])
+  // Another host is asked as itself.
+  expect(actArgv("approve", "https://ghe.example/o/r/pull/7", "abc", null).slice(0, 4)).toEqual(["gh", "api", "--hostname", "ghe.example"])
+  expect(actArgv("unapprove", "https://ghe.example/o/r/pull/7", "abc", null, { id: "PRR_1", message: "m" }).slice(0, 4)).toEqual(["gh", "api", "--hostname", "ghe.example"])
 })
 
 test("parseMergeWords takes a method out of the words, whatever its case", () => {
