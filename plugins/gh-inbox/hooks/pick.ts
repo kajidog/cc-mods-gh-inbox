@@ -1,5 +1,5 @@
 // What `/inbox pick` asks GitHub and hands to Claude: the open pull requests to choose
-// from, and what a pull request holds now (reviews with their threads, comments).
+// from, and what a pull request holds now (its description, reviews with their threads, comments).
 
 import type { GhPickItem, GhPickPull, GhStaged } from "../types"
 
@@ -27,7 +27,7 @@ export const CONTEXT_LIMIT = 200_000
 export const PICK_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
-      title url headRefOid
+      id title url headRefOid body createdAt author { login }
       reviewThreads(last: ${THREADS_LISTED}) { totalCount nodes { id isResolved isOutdated path line originalLine resolvedBy { login }
         root: comments(first: 1) { nodes { id author { login } body url state diffHunk originalCommit { abbreviatedOid } pullRequestReview { id } } }
         replies: comments(last: ${REPLIES_LISTED}) { totalCount nodes { id author { login } body state } } } }
@@ -193,9 +193,21 @@ function when(at: string) {
 const total = (value: unknown) => Number(object(value).totalCount) || 0
 const oid = (value: unknown) => text(object(value).abbreviatedOid)
 
+/** The pull request's description as an item: what its author wrote of it; null where it shows nothing (a template's comments alone). */
+function descriptionItem(t: Messages, pull: Json, who: (value: unknown) => string): GhPickItem | null {
+  const body = text(pull.body)
+  if (shownText(body).trim() === "") return null
+  const name = t.descriptionName(who(pull.author))
+  return {
+    id: text(pull.id) || `description:${text(pull.url)}`,
+    label: `${name}: ${label(body)}`,
+    context: [`## ${name}${source(t, text(pull.createdAt), text(pull.url))}`, quoted(body)].join("\n"),
+  }
+}
+
 /**
- * Reads `pickArgv`'s answer: the head commit's CI first, then each review, its
- * threads under it, and the conversation's comments, newest first. Resolved
+ * Reads `pickArgv`'s answer: the head commit's CI first, then the description,
+ * each review, its threads under it, and the conversation's comments, newest first. Resolved
  * threads are listed too, so what was done about them can be read; a thread
  * goes under the review its first comment came with, its replies inside it. A
  * pending review, which no one else sees yet, is left out with its threads.
@@ -305,12 +317,13 @@ export function parsePicked(ref: PullRef, answer: string, nicknames: Nicknames, 
 
   // Named as GitHub spells it, whatever case was typed.
   const ci = ciItem(t, parsePullUrl(text(pull.url)) ?? ref, parseChecks(nodes(pull.head)[0]?.commit))
+  const description = descriptionItem(t, pull, who)
 
   return {
     title: text(pull.title),
     url: text(pull.url),
     head: text(pull.headRefOid).slice(0, 7),
-    items: [...(ci === null ? [] : [ci]), ...entries.flatMap(entry => entry.items), ...orphans],
+    items: [...(ci === null ? [] : [ci]), ...(description === null ? [] : [description]), ...entries.flatMap(entry => entry.items), ...orphans],
     notes,
   }
 }

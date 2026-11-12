@@ -29,6 +29,7 @@ function pullWith(changes: Partial<Pull>): Pull {
     autoMerge: null,
     reviewDecision: null,
     verdicts: [],
+    requested: [],
     ...changes,
   }
 }
@@ -219,6 +220,32 @@ test("parsePull reads checks of the newest commit", async () => {
   expect(pull.author).toBeNull()
   expect(pull.checks).toEqual([{ ...run("run:5", "CI / test", "Run tests"), actions: null }])
   expect(() => parsePull(ref, JSON.stringify({ errors: [{ message: "Bad credentials" }] }))).toThrow("Bad credentials")
+})
+
+test("parsePull reads who reviewed and who is asked to, a team by org/team; an answer from before leaves them unknown", async () => {
+  const pullRequest = {
+    latestOpinionatedReviews: { nodes: [{ state: "APPROVED", author: { login: "bob" } }, { state: "CHANGES_REQUESTED", author: null }] },
+    reviewRequests: {
+      nodes: [
+        { requestedReviewer: { __typename: "User", login: "carol" } },
+        { requestedReviewer: { __typename: "Team", combinedSlug: "o/core" } },
+        // One GitHub hides (a team the token cannot read) is left out.
+        { requestedReviewer: null },
+      ],
+    },
+  }
+  const pull = parsePull(ref, JSON.stringify({ data: { repository: { pullRequest } } }))
+  expect(pull.verdicts).toEqual([
+    { state: "APPROVED", author: "bob" },
+    { state: "CHANGES_REQUESTED", author: null },
+  ])
+  expect(pull.requested).toEqual([
+    { login: "carol", isTeam: false },
+    { login: "o/core", isTeam: true },
+  ])
+  const kept = parsePull(ref, JSON.stringify({ data: { repository: { pullRequest: { latestOpinionatedReviews: { nodes: [{ state: "APPROVED" }] } } } } }))
+  expect(kept.verdicts).toEqual([{ state: "APPROVED", author: null }])
+  expect(kept.requested).toEqual([])
 })
 
 test("parsePull reads who opened it", async () => {

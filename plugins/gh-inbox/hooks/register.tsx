@@ -6,6 +6,8 @@ import type {
   GhActKind,
   GhEvent,
   GhEventItem,
+  GhMine,
+  GhMinePull,
   GhPick,
   GhPicker,
   GhPickPull,
@@ -32,7 +34,7 @@ import {
 } from "./act"
 import { type Ci, CI_ITEM_PREFIX, ciForPrompt, ciKey, isResult } from "./ci"
 import { CLOSED_ID, displayName, MERGED_ID, mergeSeen, newEvents, type Nicknames, plain, pullIds, snippet } from "./events"
-import { type Pull, type PullRef, type PullState, parsePull, parsePullUrl, pullArgv, pullName } from "./github"
+import { isRefused, type Pull, type PullRef, type PullState, parsePull, parsePullUrl, pullArgv, pullName } from "./github"
 import {
   addSharedSeen,
   HISTORIES_KEPT,
@@ -59,7 +61,8 @@ import {
 } from "./history"
 import { type Language, MESSAGES, type Messages, splitNotice, toLanguage } from "./i18n"
 import { changeOf, type Latest, type LatestItem, latestArgv, latestKey, latestWanted, parseLatest } from "./latest"
-import { byPull, logTitlesArgv, type PullGroup, parseLogTitles, pullGroups, titlesWanted } from "./log-groups"
+import { byPull, cells, headingsWanted, type LogHeading, logHeadingsArgv, type PullGroup, parseLogHeadings, pullGroups } from "./log-groups"
+import { type MineGroup, mineArgv, parseMine } from "./mine"
 import {
   CONTEXT_LIMIT,
   idsOf,
@@ -132,7 +135,18 @@ import {
   toRepos,
   toTitles,
 } from "./repos"
-import { pullStatus, statusMarks, statusParts, statusText, TRAY_VIEW_KEY, TRAY_VIEWS, type TrayView, toTrayView } from "./status"
+import {
+  byPressing,
+  pullStatus,
+  standingStatus,
+  statusMarks,
+  statusParts,
+  statusText,
+  TRAY_VIEW_KEY,
+  TRAY_VIEWS,
+  type TrayView,
+  toTrayView,
+} from "./status"
 import { dropDone, findWatched, toWatched, type Watched, WATCHED_KEY, WATCHED_MAX, type WatchedEntry } from "./watched"
 
 const COMMAND = "inbox"
@@ -167,6 +181,12 @@ const STALE_INTERVALS = 3
 // Typing marks the session touched at most this often.
 const TOUCH_MS = 10 * 1000
 const CACHE_PREFIX = "cache:"
+/** Where every session keeps a host's answer to the search for the person's open pull requests, under `CACHE_PREFIX` so it is tidied alike. */
+const MINE_CACHE_PREFIX = `${CACHE_PREFIX}mine:`
+/** The pull requests the band above the prompt shows at most in each of its groups. */
+const MINE_SHOWN = 5
+/** The band's groups, in the order it shows them: those the person opened, then those asked of them to review. */
+const MINE_GROUPS: readonly MineGroup[] = ["opened", "requested"]
 // Left behind by a session that never ended cleanly.
 const PRESENCE_KEPT_MS = 24 * 60 * 60 * 1000
 const CACHE_KEPT_MS = 60 * 60 * 1000
@@ -195,6 +215,8 @@ const logRepo = atom({ plugin: "gh-inbox", key: "logRepo" } as const, null as st
 const logLatest = atom({ plugin: "gh-inbox", key: "logLatest" } as const, {} as Record<string, Latest>)
 /** The titles of the pull requests the narrowed log pane heads its notices with, by `host/owner/repo#number`; "" for none. */
 const logTitles = atom({ plugin: "gh-inbox", key: "logTitles" } as const, {} as Record<string, string>)
+/** Where each pull request the narrowed log pane heads its notices with stands now, as its heading says it after the title, by `host/owner/repo#number`. */
+const logStands = atom({ plugin: "gh-inbox", key: "logStands" } as const, {} as Record<string, string>)
 const pickUnfolded = atom({ plugin: "gh-inbox", key: "pickUnfolded" } as const, [] as string[])
 const watchPick = atom({ plugin: "gh-inbox", key: "watchPick" } as const, null as GhWatchPick | null)
 /** When each watched pull request was added, as this session last checked it: added again since, it starts over from a first look. */
@@ -207,6 +229,8 @@ const ciToldAt = atom({ plugin: "gh-inbox", key: "ciToldAt" } as const, 0)
 const placed = atom({ plugin: "gh-inbox", key: "placed" } as const, [] as GhPlaced[])
 /** What the pane of `/inbox merge`, `/inbox close`, `/inbox draft`, `/inbox approve` and `/inbox unapprove` asks to confirm. */
 const act = atom({ plugin: "gh-inbox", key: "act" } as const, null as GhAct | null)
+/** The open pull requests the person opened, as the band above the prompt shows them. */
+const mine = atom({ plugin: "gh-inbox", key: "mine" } as const, null as GhMine | null)
 
 type Found = {
   branch: string
@@ -229,6 +253,8 @@ type Context = {
   tray: boolean
   /** Whether a prompt the person sends tells Claude of a result of the branch's pull request's CI it was not told of. */
   ciToClaude: boolean
+  /** Whether the band above the prompt shows where the person's open pull requests stand. */
+  mine: boolean
   language: Language
   /** What the mod says, in `language`. */
   t: Messages
@@ -265,12 +291,14 @@ type Context = {
   askedLatest: Set<string>
   /** How many times the log has opened: an answer asked for at an opening that is no longer the last is not shown. */
   logOpenings: number
-  /** The `host/owner/repo#number`s whose titles the log pane has asked for since it opened, answered or not. */
+  /** The `host/owner/repo#number`s whose headings (title, where it stands) the log pane has asked for since it opened, answered or not. */
   askedTitles: Set<string>
   /** The open pull request of the branch and its newest commit's CI, as the last check that read it found them. */
   ci: { branch: string; ref: PullRef; title: string; url: string; ci: Ci; at: number } | undefined
   /** Whether what the action pane confirmed is under way: a second press does not send it again. */
   isActing: boolean
+  /** The hosts that refused a request naming the teams asked to review (a token that may not read them): asked without them since. */
+  teamless: Set<string>
 }
 
 const pullKey = (ref: PullRef) => `${ref.host}/${pullName(ref)}`
@@ -422,6 +450,22 @@ async function isPlaced($: EngineInterface, id: string) {
   }
 }
 
+/**
+ * Runs the GraphQL request `argv` makes for `host`, naming the teams asked to review where the host has not refused
+ * that: GitHub refusing it, it is asked again without them, and so from then on where that is answered.
+ */
+async function runNamingTeams($: EngineInterface, ctx: Context, host: string, argv: (teams: boolean) => string[]) {
+  const key = host.toLowerCase()
+  const teams = !ctx.teamless.has(key)
+  const run = await $.process.run(argv(teams))
+  if (run.exitCode === 0 || !teams || !isRefused(run.stdout)) return run
+  const without = await $.process.run(argv(false))
+  if (without.exitCode !== 0) return run
+  ctx.teamless.add(key)
+  $.ui.log(`gh-inbox: ${host} refused naming the teams asked to review (${firstLine(run.stderr)}); asked without them now`, { to: "debug" })
+  return without
+}
+
 /** Writes this session's presence: touched now when `isTouch`, alive now either way. */
 async function touch($: EngineInterface, ctx: Context, isTouch: boolean) {
   if (ctx.sessionId === "" || ctx.isEnded) return
@@ -524,24 +568,46 @@ async function lookUpLatest($: EngineInterface, ctx: Context, events: readonly G
 }
 
 /**
- * Asks the titles of the pull requests `groups` head the narrowed log pane's page with, those not asked for since the
- * pane opened, one request a repository. A failed request is let be: the heading shows the number alone.
+ * What a narrowed log's heading says after the title of pull request `number`: merged or closed, else whether it is a
+ * draft and where it stands, the reviewers named; "" for an issue, or an open one with nothing to tell.
  */
-async function lookUpTitles($: EngineInterface, ctx: Context, groups: readonly PullGroup[]) {
+function headingStands(t: Messages, number: number, heading: LogHeading, nicknames: Nicknames, language: Language) {
+  if (heading.pull === undefined) return ""
+  const parts = statusParts(t, number, heading.pull.state, standingStatus(heading.pull, nicknames, language), () => undefined, true)
+  const marks = statusText({ head: "", marks: parts.marks, latest: undefined }, false)
+  return `${parts.head.slice(`#${number}`.length)}${marks === "" ? "" : `  ${marks}`}`
+}
+
+/**
+ * Asks the headings of the pull requests `groups` head the narrowed log pane's page with, those not asked for since
+ * the pane opened, one request a repository: each one's title and where it stands now. A failed request is let be: the
+ * heading shows the number, and the title known without asking if there is one.
+ */
+async function lookUpHeadings($: EngineInterface, ctx: Context, groups: readonly PullGroup[]) {
   const opening = ctx.logOpenings
-  for (const [repo, numbers] of titlesWanted(groups, ctx.askedTitles)) {
+  const wanted = headingsWanted(groups, ctx.askedTitles)
+  if (wanted.size === 0) return
+  const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
+  for (const [repo, numbers] of wanted) {
     for (const number of numbers) ctx.askedTitles.add(`${repo}#${number}`)
     // A number GitHub does not know fails the request, but the answer still holds the others.
-    const run = await $.process.run(logTitlesArgv(repo, numbers)).catch(() => undefined)
-    let titles: Map<number, string>
+    const host = repo.slice(0, repo.indexOf("/"))
+    const run = await runNamingTeams($, ctx, host, teams => logHeadingsArgv(repo, numbers, teams)).catch(() => undefined)
+    let headings: Map<number, LogHeading>
     try {
-      titles = parseLogTitles(run?.stdout ?? "")
+      headings = parseLogHeadings(run?.stdout ?? "")
     } catch {
-      $.ui.log(`gh-inbox: titles of ${repo}: ${firstLine(run?.stderr ?? "")}`, { to: "debug" })
+      $.ui.log(`gh-inbox: headings of ${repo}: ${firstLine(run?.stderr ?? "")}`, { to: "debug" })
       continue
     }
     if (opening !== ctx.logOpenings) return
-    if (titles.size > 0) await update($, logTitles, held => ({ ...held, ...Object.fromEntries([...titles].map(([number, title]) => [`${repo}#${number}`, title])) }))
+    if (headings.size === 0) continue
+    const keyed = [...headings].map(([number, heading]) => [`${repo}#${number}`, number, heading] as const)
+    await update($, logTitles, held => ({ ...held, ...Object.fromEntries(keyed.map(([key, , heading]) => [key, heading.title])) }))
+    await update($, logStands, held => ({
+      ...held,
+      ...Object.fromEntries(keyed.map(([key, number, heading]) => [key, headingStands(ctx.t, number, heading, nicknames, ctx.language)])),
+    }))
   }
 }
 
@@ -614,7 +680,7 @@ async function shareSeen($: EngineInterface, key: string, ids: readonly string[]
   await $.store.set(`${SHARED_SEEN_PREFIX}${key}`, addSharedSeen(held && { ...held, ids: held.ids.filter(keep) }, ids, now))
 }
 
-/** The answer to `PULL_QUERY` the store holds for the pull request, and when it was asked, whatever its age; undefined with none. */
+/** The answer to `pullQuery` the store holds for the pull request, and when it was asked, whatever its age; undefined with none. */
 async function cachedPull($: EngineInterface, ctx: Context, ref: PullRef): Promise<{ pull: Pull; at: number } | undefined> {
   const cached = await $.store.get(`${CACHE_PREFIX}${pullKey(ref)}`)
   if (typeof cached !== "object" || cached === null) return undefined
@@ -628,14 +694,14 @@ async function cachedPull($: EngineInterface, ctx: Context, ref: PullRef): Promi
 }
 
 /**
- * The pull request as GitHub answers `PULL_QUERY`, and when it was asked: another
+ * The pull request as GitHub answers `pullQuery`, and when it was asked: another
  * session's answer when it is younger than one interval, so sessions watching the
  * same pull request ask GitHub once between them; asked afresh whatever its age when `isFresh`.
  */
 async function fetchPull($: EngineInterface, ctx: Context, ref: PullRef, now: number, isFresh = false) {
   const cached = await cachedPull($, ctx, ref)
   if (!isFresh && cached !== undefined && now - cached.at < ctx.intervalSeconds * 1000) return cached
-  const fetched = await $.process.run(pullArgv(ref))
+  const fetched = await runNamingTeams($, ctx, ref.host, teams => pullArgv(ref, teams))
   if (fetched.exitCode !== 0) throw new Error(firstLine(fetched.stderr) || ctx.t.exitedWith("gh api", fetched.exitCode))
   const pull = parsePull(ref, fetched.stdout, ctx.language)
   await $.store.set(`${CACHE_PREFIX}${pullKey(ref)}`, { at: now, text: fetched.stdout })
@@ -832,6 +898,92 @@ async function checkWatched($: EngineInterface, ctx: Context, checked: Checked) 
       $.ui.log(`gh-inbox: ${pullName(ref)}: ${message}`, { to: "debug" })
     }
   }
+}
+
+/**
+ * The hosts searched for the person's open pull requests: github.com, and those of the registered repositories, the
+ * watched pull requests and the branch's.
+ */
+async function mineHosts($: EngineInterface, ctx: Context): Promise<string[]> {
+  const hosts = new Set(["github.com"])
+  for (const key of Object.keys(await readRepos($))) hosts.add(refOfKey(key).host.toLowerCase())
+  for (const key of Object.keys(await readWatched($))) {
+    const ref = refOfPullKey(key)
+    if (ref !== null) hosts.add(ref.host.toLowerCase())
+  }
+  if (ctx.found?.ref != null) hosts.add(ctx.found.ref.host.toLowerCase())
+
+  return [...hosts]
+}
+
+/**
+ * A host's open pull requests the person opened: another session's answer while it is younger than one interval, so
+ * the sessions search once between them; else searched again.
+ */
+async function fetchMine($: EngineInterface, ctx: Context, host: string, now: number) {
+  const key = `${MINE_CACHE_PREFIX}${host}`
+  const cached = await $.store.get(key)
+  const { at, text } = (typeof cached === "object" && cached !== null ? cached : {}) as { at?: unknown; text?: unknown }
+  if (typeof at === "number" && typeof text === "string" && now - at < ctx.intervalSeconds * 1000) {
+    try {
+      return parseMine(text, ctx.language)
+    } catch {
+      // Asked again below.
+    }
+  }
+  const run = await runNamingTeams($, ctx, host, teams => mineArgv(host, teams))
+  if (run.exitCode !== 0) throw new Error(firstLine(run.stderr) || ctx.t.exitedWith("gh api", run.exitCode))
+  const found = parseMine(run.stdout, ctx.language)
+  await $.store.set(key, { at: now, text: run.stdout })
+
+  return found
+}
+
+/**
+ * Searches each host for the open pull requests the person opened and those asked of them to review, for the band
+ * above the prompt; a host that cannot be searched for now keeps what it showed. Turned off, the band shows none.
+ */
+async function checkMine($: EngineInterface, ctx: Context) {
+  if (!ctx.mine) {
+    if ((await read($, mine)) !== null) await update($, mine, () => null)
+    return
+  }
+  const now = await $.clock.now()
+  const held = await read($, mine)
+  const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
+  const repos = await readRepos($)
+  const groups: Record<MineGroup, { pulls: GhMinePull[]; more: number }> = { opened: { pulls: [], more: 0 }, requested: { pulls: [], more: 0 } }
+  for (const host of await mineHosts($, ctx)) {
+    try {
+      const found = await fetchMine($, ctx, host, now)
+      for (const group of MINE_GROUPS) {
+        for (const pull of found[group].pulls) {
+          const author = pull.author === null ? undefined : displayName(pull.author, nicknames, ctx.language)
+          groups[group].pulls.push({
+            key: pullKey(pull.ref),
+            label: watchLabel(repos, pull.ref),
+            title: pull.title,
+            url: pull.url,
+            updatedAt: pull.updatedAt,
+            ...(author === undefined ? {} : { author }),
+            status: standingStatus(pull, nicknames, ctx.language),
+          })
+        }
+        groups[group].more += found[group].total - found[group].pulls.length
+      }
+    } catch (error) {
+      for (const group of MINE_GROUPS)
+        groups[group].pulls.push(...(held?.[group]?.pulls ?? []).filter(pull => pull.key.toLowerCase().startsWith(`${host}/`)))
+      $.ui.log(`gh-inbox: pull requests on ${host}: ${message(error)}`, { to: "debug" })
+    }
+  }
+  // Those the person opened, the most pressing first; those asked of them, as GitHub found them, updated last first.
+  const byUpdate = [...groups.requested.pulls].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  await update($, mine, (): GhMine => ({
+    opened: { pulls: byPressing(ctx.t, groups.opened.pulls), more: groups.opened.more },
+    requested: { pulls: byUpdate, more: groups.requested.more },
+    checkedAt: now,
+  }))
 }
 
 /** Runs a conditional `gh api -i`; a `304` answers with nothing changed. */
@@ -1127,6 +1279,8 @@ async function runCheck($: EngineInterface, ctx: Context, isForced: boolean) {
   } catch (error) {
     $.ui.log(`gh-inbox: ${error instanceof Error ? error.message : String(error)}`, { to: "debug" })
   } finally {
+    // After the notices, so the search does not hold them back.
+    await checkMine($, ctx).catch(error => $.ui.log(`gh-inbox: ${message(error)}`, { to: "debug" }))
     // Drawn again each check, so how long ago keeps up; also where nothing was shown.
     await drawTray($, ctx).catch(() => undefined)
     ctx.running = undefined
@@ -1136,15 +1290,25 @@ async function runCheck($: EngineInterface, ctx: Context, isForced: boolean) {
 /** What the tray says of a time `ms` ago: to the minute, as it is drawn again once a check. */
 const trayAgo = (t: Messages, ms: number) => (ms < 60_000 ? t.justNow : ago(t, ms))
 
-/** Where the branch's pull request stands, as the line under the prompt tells it, in parts; undefined while it has none. */
-async function pullItems($: EngineInterface, ctx: Context, now: number, sinceAt: (ms: number) => string) {
+/**
+ * Where the branch's pull request stands, as the line under the prompt tells it, in parts, `withNames` naming the
+ * reviewers; undefined while it has none.
+ */
+async function pullItems($: EngineInterface, ctx: Context, now: number, sinceAt: (ms: number) => string, withNames = false) {
   const { value: held } = await $.state.get({ plugin: "gh-inbox", key: "watch" })
   const number = Number(/#(\d+)$/.exec(held?.pull ?? "")?.[1])
   if (held === undefined || held === null || !(number > 0)) return undefined
-  return statusParts(ctx.t, number, held.state, held.status, at => {
-    const ms = Date.parse(at)
-    return Number.isNaN(ms) ? undefined : sinceAt(now - ms)
-  })
+  return statusParts(
+    ctx.t,
+    number,
+    held.state,
+    held.status,
+    at => {
+      const ms = Date.parse(at)
+      return Number.isNaN(ms) ? undefined : sinceAt(now - ms)
+    },
+    withNames,
+  )
 }
 
 /**
@@ -1198,8 +1362,8 @@ async function status($: EngineInterface, ctx: Context) {
   else if (held.pull === null) lines.push(t.noPull(held.branch))
   else {
     lines.push(`${held.pull} ${held.title ?? ""}${stateOf(t, held.state, held.status?.isDraft === true)}`)
-    // Where it stands, as the line under the prompt tells it, the number left off.
-    const parts = held.state === "OPEN" ? await pullItems($, ctx, now, ms => ago(t, ms)) : undefined
+    // Where it stands, as the line under the prompt tells it with the reviewers named, the number left off.
+    const parts = held.state === "OPEN" ? await pullItems($, ctx, now, ms => ago(t, ms), true) : undefined
     const stands = parts === undefined ? "" : statusText(parts, false)
     if (stands !== "") lines.push(`  ${stands}`)
   }
@@ -1209,6 +1373,9 @@ async function status($: EngineInterface, ctx: Context) {
   if (watched > 0) lines.push(t.watchedCount(watched))
   const repos = Object.keys(toRepos(await $.store.get(REPOS_KEY))).length
   if (repos > 0) lines.push(t.registeredCount(repos))
+  const found = ctx.mine ? await read($, mine) : null
+  const count = (group: MineGroup) => (found?.[group] === undefined ? 0 : found[group].pulls.length + found[group].more)
+  if (count("opened") + count("requested") > 0) lines.push(t.mineCount(count("opened"), count("requested")))
   lines.push((await isShowing($, ctx, now)) ? t.showsHere : t.showsElsewhere)
 
   return lines.map(plain).join("\n")
@@ -1546,12 +1713,12 @@ async function watchList($: EngineInterface, ctx: Context): Promise<string | und
     const state = cached?.pull.state ?? entry.done?.state ?? "OPEN"
     lines.push(`${pullLabel(key)} ${cached?.pull.title ?? entry.title}${stateOf(t, state, state === "OPEN" && cached?.pull.isDraft === true)}${isBranchPull(ctx, key) ? t.watchIsBranch : ""}`)
     if (cached !== undefined) {
-      // Where it stands, as the line under the prompt tells the branch's, the number left off.
+      // Where it stands, as the line under the prompt tells the branch's with the reviewers named, the number left off.
       const since = (at: string) => {
         const ms = Date.parse(at)
         return Number.isNaN(ms) ? undefined : ago(t, now - ms)
       }
-      const stands = state === "OPEN" ? statusText(statusParts(t, ref.number, state, pullStatus(cached.pull, nicknames, ctx.language), since), false) : ""
+      const stands = state === "OPEN" ? statusText(statusParts(t, ref.number, state, pullStatus(cached.pull, nicknames, ctx.language), since, true), false) : ""
       if (stands !== "") lines.push(`  ${stands}`)
       lines.push(`  ${t.lastCheckedRepo(ago(t, now - cached.at))}`)
     }
@@ -1714,7 +1881,7 @@ async function actCommand($: EngineInterface, ctx: Context, command: ActCommand,
     method = plan.kind === "disable-auto" ? null : (named ?? settings.preferred)
   }
 
-  const stands = statusText({ head: pull.head.slice(0, 7), marks: statusMarks(t, status), latest: undefined })
+  const stands = statusText({ head: pull.head.slice(0, 7), marks: statusMarks(t, status, { withNames: true }), latest: undefined })
   await update($, act, (): GhAct => ({
     stage: "confirm",
     kind,
@@ -1805,6 +1972,7 @@ export const register: Register = (on, options) => {
     notifySelf: options.notifySelf === true,
     tray: options.tray !== false,
     ciToClaude: options.ciToClaude !== false,
+    mine: options.myPulls !== false,
     language,
     t,
     found: undefined,
@@ -1827,6 +1995,7 @@ export const register: Register = (on, options) => {
     askedTitles: new Set(),
     ci: undefined,
     isActing: false,
+    teamless: new Set(),
   }
   let timer: Timer | undefined
 
@@ -1957,6 +2126,7 @@ export const register: Register = (on, options) => {
         ctx.askedTitles.clear()
         await update($, logLatest, () => ({}))
         await update($, logTitles, () => ({}))
+        await update($, logStands, () => ({}))
         if (!asText && (await $.ui.open({ id: LOG_PANE, title: t.logTitle, focus: true })).isPlaced)
           return { text: t.logOpened(all.length) }
         const list = latest(all, LOG_SHOWN)
@@ -2129,8 +2299,10 @@ export const register: Register = (on, options) => {
     const latestOf = await read($, logLatest)
     void lookUpLatest($, ctx, shown)
     const groups = isByPull ? pullGroups(shown, all) : []
+    // A title known without asking shows at once; where each stands now is asked for, the title with it.
     const titles = await knownTitles($, groups)
-    void lookUpTitles($, ctx, groups.filter(group => group.key !== undefined && !titles.has(group.key)))
+    const stands = await read($, logStands)
+    void lookUpHeadings($, ctx, groups)
     const turn = (to: number) => () => void update($, logPage, () => to)
     const narrow = (to: string | null) => async () => {
       await update($, logRepo, () => to)
@@ -2198,18 +2370,41 @@ export const register: Register = (on, options) => {
         {isByPull
           ? groups.map((group, index) => {
               const title = group.key === undefined ? "" : (titles.get(group.key) ?? "")
+              const standing = group.key === undefined ? "" : plain(stands[group.key] ?? "")
+              // Where it stands goes on the heading's row where the row holds it all; else a button unfolds it under the heading.
+              const isInline = cells(`#${group.number ?? ""} ${plain(title)}${standing}`) <= e.props.bodyColumns
+              const standsKey = `stands|${group.key ?? group.pull}`
+              const isStandsOpen = unfolded.includes(standsKey)
               return (
                 <Box key={`group:${group.pull}`} flexDirection="column" marginTop={index === 0 ? 0 : 1}>
-                  <Text bold>
-                    {group.number === undefined ? (
-                      <Text color={LABEL_COLOR}>{t.logNoPull}</Text>
-                    ) : (
-                      <Text color={LABEL_COLOR}>
-                        <Link href={plain(group.url)}>{`#${group.number}`}</Link>
+                  <Box>
+                    <Text>
+                      <Text bold>
+                        {group.number === undefined ? (
+                          <Text color={LABEL_COLOR}>{t.logNoPull}</Text>
+                        ) : (
+                          <Text color={LABEL_COLOR}>
+                            <Link href={plain(group.url)}>{`#${group.number}`}</Link>
+                          </Text>
+                        )}
+                        {title === "" ? null : <Text>{` ${plain(title)}`}</Text>}
                       </Text>
+                      {standing === "" || !isInline ? null : <Text>{standing}</Text>}
+                    </Text>
+                    {standing !== "" && !isInline && (
+                      <Button
+                        key={`stands:${group.key ?? group.pull}`}
+                        plain
+                        label={t.logStandsButton(isStandsOpen)}
+                        onPress={() => void update($, logUnfolded, list => (list.includes(standsKey) ? list.filter(one => one !== standsKey) : [...list, standsKey]))}
+                      />
                     )}
-                    {title === "" ? null : <Text>{` ${plain(title)}`}</Text>}
-                  </Text>
+                  </Box>
+                  {standing !== "" && !isInline && isStandsOpen && (
+                    <Box paddingLeft={LOG_INDENT}>
+                      <Text>{standing.trim()}</Text>
+                    </Box>
+                  )}
                   <Box flexDirection="column" paddingLeft={LOG_INDENT}>
                     {group.events.map(event => drawPaneRow(event, shown.indexOf(event)))}
                   </Box>
@@ -2462,23 +2657,58 @@ export const register: Register = (on, options) => {
     )
   })
 
+  // The band above the prompt: what is attached for the next prompt, then the open pull requests the person opened and
+  // those asked of them to review, each group under its heading, each pull request a row its number links from.
   on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
     const held = await read($, staged)
-    if (e.props.hasSurvey || held.length === 0) return next(e)
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const found = ctx.mine ? await read($, mine) : null
+    // A group kept from before the band had groups is none.
+    const groups = MINE_GROUPS.map(group => ({ group, pulls: found?.[group]?.pulls ?? [], more: found?.[group]?.more ?? 0 })).filter(one => one.pulls.length > 0)
+    if (e.props.hasSurvey || (held.length === 0 && groups.length === 0)) return next(e)
+    const { Box, Text, Button, Link } = $.ui.resolve(e)
     const what = held.map(one => t.stagedOf(plain(pullLabel(one.pull)), one.items.length)).join(t.listSeparator)
     const size = stagedSize(held, ctx.language)
     // What the other mods draw stays, under this.
     const below = await next(e)
+    /** One pull request's row: its number, who opened one asked of the person, where it stands, its title. */
+    const row = (group: MineGroup, pull: GhMinePull) => {
+      // That one asked of the person awaits their review goes without saying.
+      const marks = statusText({ head: "", marks: statusMarks(t, pull.status, { awaiting: group === "requested" ? "none" : "any" }), latest: undefined }, false)
+      const author = group === "requested" && pull.author !== undefined ? `  ${t.who(plain(pull.author))}` : ""
+      return (
+        <Text key={`${group}:${pull.key}`} wrap="truncate-end">
+          {"  "}
+          <Link href={plain(pull.url)}>{plain(pull.label)}</Link>
+          {pull.status.isDraft === true ? t.paren(t.draft) : ""}
+          {author}
+          {marks === "" ? "" : `  ${marks}`}
+          <Text dimColor>{`  ${plain(pull.title)}`}</Text>
+        </Text>
+      )
+    }
 
     return (
       <Box flexDirection="column">
-        <Text>{t.staged(what)}</Text>
-        {size > CONTEXT_LIMIT && <Text color="warning">{t.oversize(Math.round(size / 1000), CONTEXT_LIMIT / 1000)}</Text>}
-        <Box>
-          <Button key="gh-inbox-repick" label={t.repick} onPress={() => void openPick($, ctx, refOfPullKey(held[0]?.pull ?? ""))} />
-          <Button key="gh-inbox-clear" label={t.detach} onPress={() => void update($, staged, () => [])} />
-        </Box>
+        {held.length > 0 && (
+          <Box flexDirection="column">
+            <Text>{t.staged(what)}</Text>
+            {size > CONTEXT_LIMIT && <Text color="warning">{t.oversize(Math.round(size / 1000), CONTEXT_LIMIT / 1000)}</Text>}
+            <Box>
+              <Button key="gh-inbox-repick" label={t.repick} onPress={() => void openPick($, ctx, refOfPullKey(held[0]?.pull ?? ""))} />
+              <Button key="gh-inbox-clear" label={t.detach} onPress={() => void update($, staged, () => [])} />
+            </Box>
+          </Box>
+        )}
+        {groups.map(({ group, pulls, more }, index) => {
+          const shown = pulls.slice(0, MINE_SHOWN)
+          return (
+            <Box key={`gh-inbox-${group}`} flexDirection="column">
+              {/* The first heading says whose band it is. */}
+              <Text dimColor>{`${index === 0 ? "GitHub: " : ""}${t.mineHeading(group, shown.length, pulls.length + more)}`}</Text>
+              {shown.map(pull => row(group, pull))}
+            </Box>
+          )
+        })}
         {below}
       </Box>
     )

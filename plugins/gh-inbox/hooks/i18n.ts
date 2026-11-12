@@ -136,6 +136,12 @@ const en = {
   approvals: (n: number) => count(n, "approval"),
   changeRequests: (n: number) => count(n, "change request"),
   reviewRequired: "awaiting review",
+  /** The reviews' parts naming who gave them or is still asked: `names` as `reviewerNames` lists them. */
+  approvedBy: (names: string) => `approved by ${names}`,
+  changesRequestedBy: (names: string) => `changes requested by ${names}`,
+  awaitingFrom: (names: string) => `awaiting review from ${names}`,
+  /** How many more people a list leaves unnamed. */
+  morePeople: (n: number) => ` and ${n} more`,
   conflicting: "conflicts",
   behind: "behind its base",
   blocked: "blocked by a rule",
@@ -185,6 +191,8 @@ const en = {
   logRangeByPull: (from: number, to: number, total: number) => `${from}–${to} of ${total}, by pull request, newest first`,
   /** The heading of a narrowed log's notices on no pull request or issue. */
   logNoPull: "Not on a pull request (pushes, branches, CI)",
+  /** The button that unfolds where a pull request stands under its heading, where the heading's row cannot hold it. */
+  logStandsButton: (isOpen: boolean) => `${isOpen ? " ▾" : " ▸"} status`,
   older: "Older",
   logAll: "All",
   logNoRepo: (name: string, names: readonly string[]) =>
@@ -368,6 +376,12 @@ const en = {
   repick: "Pick again",
   detach: "Detach",
 
+  // The band above the prompt: the open pull requests the person opened, and those asked of them to review
+  /** A group's heading: `opened` or `requested`, and how many of all it shows. */
+  mineHeading: (group: string, shown: number, total: number) =>
+    `${group === "requested" ? "asked to review" : "your pull requests"}${shown < total ? ` (${shown} of ${total})` : ""}`,
+  mineCount: (opened: number, requested: number) => `Your open pull requests: ${opened}; asked to review: ${requested} (above the prompt)`,
+
   // What `/inbox pick` lists, and what Claude reads of it
   searchedHere: "Pull requests of this repository",
   searchedMine: "Pull requests in registered repositories you are involved in",
@@ -387,6 +401,7 @@ const en = {
   reviewFallback: "Review",
   reviewName: (who: string, state: string) => `${state} by ${who}`,
   commentName: (who: string) => `Comment by ${who}`,
+  descriptionName: (who: string) => `Description by ${who}`,
   replies: (n: number) => count(n, "reply", "replies"),
   resolved: "resolved",
   resolvedBy: (who: string) => `resolved by ${who}`,
@@ -497,6 +512,10 @@ const ja: Messages = {
   approvals: n => `承認${n}`,
   changeRequests: n => `変更依頼${n}`,
   reviewRequired: "レビュー待ち",
+  approvedBy: names => `承認（${names}）`,
+  changesRequestedBy: names => `変更依頼（${names}）`,
+  awaitingFrom: names => `レビュー待ち（${names}）`,
+  morePeople: n => ` ほか${n}人`,
   conflicting: "コンフリクト",
   behind: "base より古い",
   blocked: "ルールでブロック中",
@@ -543,6 +562,7 @@ const ja: Messages = {
   logRange: (from, to, total) => `${total}件中 ${from}〜${to}件目（新しい順）`,
   logRangeByPull: (from, to, total) => `${total}件中 ${from}〜${to}件目（PR ごと、新しい順）`,
   logNoPull: "PR に付かないもの（push・ブランチ・CI）",
+  logStandsButton: isOpen => `${isOpen ? " ▾" : " ▸"} 状態`,
   older: "古い方へ",
   logAll: "すべて",
   logNoRepo: (name, names) => `${name} というリポジトリの通知は保存されていません。${names.length === 0 ? "" : `保存されているもの: ${names.join("、")}`}`,
@@ -713,6 +733,9 @@ const ja: Messages = {
   repick: "選び直す",
   detach: "外す",
 
+  mineHeading: (group, shown, total) => `${group === "requested" ? "レビュー依頼" : "自分の PR"}${shown < total ? `（${total}件中${shown}件）` : ""}`,
+  mineCount: (opened, requested) => `自分の PR: ${opened}件、レビュー依頼: ${requested}件（入力欄の上）`,
+
   searchedHere: "このリポジトリの PR",
   searchedMine: "登録したリポジトリで自分が関わる PR",
   searchedRequested: "登録したリポジトリでレビューを頼まれた PR",
@@ -731,6 +754,7 @@ const ja: Messages = {
   reviewFallback: "レビュー",
   reviewName: (who, state) => `${who} の${state}`,
   commentName: who => `${who} のコメント`,
+  descriptionName: who => `${who} の説明文`,
   replies: n => `返信${n}件`,
   resolved: "解決済み",
   resolvedBy: who => `解決済み（${who} が解決）`,

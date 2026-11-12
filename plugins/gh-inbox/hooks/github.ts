@@ -52,6 +52,10 @@ export type Check = {
   /** How many annotations it has, those not asked for too. */
   annotationCount: number
 }
+/** Someone a review is asked of: a person by their login, or a team by `org/team`. */
+export type Reviewer = { login: string; isTeam: boolean }
+/** A reviewer's last approving or change-requesting review: its state, and who gave it (null for a deleted account). */
+export type Verdict = { state: string; author: string | null }
 export type Mergeable = "MERGEABLE" | "CONFLICTING" | "UNKNOWN"
 /**
  * What GitHub says of merging it now, branch protection and all: `CLEAN` (mergeable, checks passing), `HAS_HOOKS`
@@ -94,9 +98,14 @@ export type Pull = {
   autoMerge: string | null
   /** `APPROVED`, `CHANGES_REQUESTED` or `REVIEW_REQUIRED`; null where the base asks for no review. */
   reviewDecision: string | null
-  /** Each reviewer's last approving or change-requesting review, by its state. */
-  verdicts: string[]
+  /** Each reviewer's last approving or change-requesting review. */
+  verdicts: Verdict[]
+  /** Those whose review is asked for and not given yet, people and teams; empty in an answer kept from before it was asked for. */
+  requested: Reviewer[]
 }
+
+/** What where a pull request stands is read from, who wrote last aside: its CI, its reviews, whether it merges cleanly. */
+export type Standing = Pick<Pull, "checks" | "ciState" | "verdicts" | "requested" | "reviewDecision" | "mergeable" | "mergeState" | "isDraft" | "autoMerge">
 
 // Checks listed at most of a commit.
 const CHECKS_LISTED = 100
@@ -114,8 +123,42 @@ export const checksFields = (annotations: number) => `oid statusCheckRollup { st
     } }
   ... on StatusContext { id context state description targetUrl } } } }`
 
-// One request a check: GraphQL costs one point of the 5000 an hour.
-export const PULL_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
+/**
+ * Who a pull request's reviews are from and asked of: each reviewer's last say, and those asked who have not answered.
+ * With `teams`, a team asked is named by `org/team`. Reading it takes the organization's teams (the `read:org` scope,
+ * which `gh auth login` asks for): a token that may not makes GitHub refuse the whole request, so it is asked again
+ * without them, a team asked then left out.
+ */
+export const reviewersFields = (teams = true) => `latestOpinionatedReviews(first: 50) { nodes { state author { login } } }
+      reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login }${teams ? " ... on Team { combinedSlug }" : ""} } } }`
+
+/**
+ * What a pull request is asked for where it stands, as the line under the prompt tells it, `latest` its newest commit;
+ * `teams` as `reviewersFields` takes it. The commit's checks are asked only how each went, so many pull requests cost
+ * one point between them.
+ */
+export const standingFields = (teams = true) => `isDraft mergeable reviewDecision mergeStateStatus
+      autoMergeRequest { mergeMethod }
+      ${reviewersFields(teams)}
+      latest: commits(last: 1) { nodes { commit { oid statusCheckRollup { state contexts(first: ${CHECKS_LISTED}) { totalCount nodes { __typename
+        ... on CheckRun { status conclusion }
+        ... on StatusContext { state } } } } } } }`
+
+/**
+ * Whether `stdout` is GitHub's answer refusing a GraphQL request, rather than no answer at all (no network): one asking
+ * for the teams asked to review is asked again without them.
+ */
+export function isRefused(stdout: string) {
+  try {
+    const errors = object(JSON.parse(stdout)).errors
+    return Array.isArray(errors) && errors.length > 0
+  } catch {
+    return false
+  }
+}
+
+// One request a check: GraphQL costs one point of the 5000 an hour. `teams` as `reviewersFields` takes it.
+export const pullQuery = (teams = true) => `query($owner: String!, $repo: String!, $number: Int!) {
   viewer { login }
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
@@ -123,7 +166,7 @@ export const PULL_QUERY = `query($owner: String!, $repo: String!, $number: Int!)
       author { login }
       mergedBy { login }
       autoMergeRequest { mergeMethod }
-      latestOpinionatedReviews(first: 50) { nodes { state } }
+      ${reviewersFields(teams)}
       closed: timelineItems(itemTypes: [CLOSED_EVENT], last: 1) { nodes { ... on ClosedEvent { actor { login } } } }
       comments(last: 50) { nodes { id author { login } body createdAt url } }
       reviews(last: 50) { nodes { id author { login } state body submittedAt url
@@ -156,8 +199,8 @@ export const pullName = (ref: PullRef) => `${ref.owner}/${ref.repo}#${ref.number
  */
 export const MERGE_INFO_PREVIEW = "Accept: application/vnd.github.merge-info-preview+json"
 
-/** The argv that fetches a pull request with `PULL_QUERY`. */
-export function pullArgv(ref: PullRef): string[] {
+/** The argv that fetches a pull request with `pullQuery`, `teams` as it takes it. */
+export function pullArgv(ref: PullRef, teams = true): string[] {
   return [
     "gh",
     "api",
@@ -172,7 +215,7 @@ export function pullArgv(ref: PullRef): string[] {
     "-F",
     `number=${ref.number}`,
     "-f",
-    `query=${PULL_QUERY}`,
+    `query=${pullQuery(teams)}`,
   ]
 }
 
@@ -198,6 +241,18 @@ function actionsOf(node: Json): Check["actions"] {
   const runId = linked === null ? Number(run.databaseId) : Number(linked[1])
   if (!Number.isInteger(runId) || runId <= 0) return null
   return { runId, jobId: linked === null ? null : Number(linked[2]) }
+}
+
+/** Each reviewer's last say, as `reviewersFields` asks for it. */
+export const parseVerdicts = (value: unknown): Verdict[] => nodes(value).map(node => ({ state: text(node.state), author: login(node.author) }))
+
+/** Those asked to review who have not answered, as `reviewersFields` asks for them: people by login, teams by `org/team` (none asked without them). */
+export function parseRequested(value: unknown): Reviewer[] {
+  return nodes(value).flatMap((node): Reviewer[] => {
+    const asked = object(node.requestedReviewer)
+    const name = asked.__typename === "Team" ? text(asked.combinedSlug) : text(asked.login)
+    return name === "" ? [] : [{ login: name, isTeam: asked.__typename === "Team" }]
+  })
 }
 
 /** A commit as `checksFields` asks for it: its id, its checks, GitHub's rollup of them, and how many there are, those not listed too. */
@@ -254,7 +309,29 @@ export function parseChecks(value: unknown): { oid: string; state: string | null
   return { oid: text(commit.oid), state: text(rollup.state) || null, checks, total: Math.max(checks.length, Number(contexts.totalCount) || 0) }
 }
 
-/** Reads `PULL_QUERY`'s answer; throws with GitHub's own words when it carries errors. */
+/** Whether it merges into its base cleanly, as GitHub says it; UNKNOWN for anything else. */
+export const parseMergeable = (value: unknown): Mergeable => (value === "MERGEABLE" || value === "CONFLICTING" ? value : "UNKNOWN")
+
+/** What GitHub says of merging it now; null where it said nothing it is known to say. */
+export const parseMergeState = (value: unknown): MergeState | null => (MERGE_STATES.has(text(value)) ? (text(value) as MergeState) : null)
+
+/** Where a pull request stands, as `standingFields` asks for it. */
+export function parseStanding(node: Json): Standing {
+  const ci = parseChecks(nodes(node.latest)[0]?.commit)
+  return {
+    checks: ci.checks,
+    ciState: ci.state,
+    verdicts: parseVerdicts(node.latestOpinionatedReviews),
+    requested: parseRequested(node.reviewRequests),
+    reviewDecision: text(node.reviewDecision) || null,
+    mergeable: parseMergeable(node.mergeable),
+    mergeState: parseMergeState(node.mergeStateStatus),
+    isDraft: node.isDraft === true,
+    autoMerge: text(object(node.autoMergeRequest).mergeMethod) || null,
+  }
+}
+
+/** Reads `pullQuery`'s answer; throws with GitHub's own words when it carries errors. */
 export function parsePull(ref: PullRef, answer: string, language: Language = "en"): Pull {
   const t = MESSAGES[language]
   const json = object(JSON.parse(answer))
@@ -321,11 +398,12 @@ export function parsePull(ref: PullRef, answer: string, language: Language = "en
     checks: latest.checks,
     checksTotal: latest.total,
     ciState: latest.state,
-    mergeable: pull.mergeable === "MERGEABLE" || pull.mergeable === "CONFLICTING" ? pull.mergeable : "UNKNOWN",
-    mergeState: MERGE_STATES.has(text(pull.mergeStateStatus)) ? (text(pull.mergeStateStatus) as MergeState) : null,
+    mergeable: parseMergeable(pull.mergeable),
+    mergeState: parseMergeState(pull.mergeStateStatus),
     isDraft: pull.isDraft === true,
     autoMerge: text(object(pull.autoMergeRequest).mergeMethod) || null,
     reviewDecision: text(pull.reviewDecision) || null,
-    verdicts: nodes(pull.latestOpinionatedReviews).map(node => text(node.state)),
+    verdicts: parseVerdicts(pull.latestOpinionatedReviews),
+    requested: parseRequested(pull.reviewRequests),
   }
 }

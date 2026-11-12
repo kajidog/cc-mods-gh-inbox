@@ -23,12 +23,23 @@ const COMMENT = {
 
 type Answer = { stdout?: string; stderr?: string; exitCode?: number }
 
+/** Whether `argv` searches a host for the open pull requests the person opened, for the band above the prompt. */
+const isMineSearch = (argv: readonly string[]) => (argv.at(-1) ?? "").includes("author:@me")
+/** The search for the person's open pull requests finding none. */
+const NO_PULLS_OF_MINE = JSON.stringify({ data: { viewer: { login: "me" }, opened: { issueCount: 0, nodes: [] }, requested: { issueCount: 0, nodes: [] } } })
+
 /**
  * Answers `gh` as GitHub would for o/r: the events in `answers` one call after
  * another, then a `304` while the ETag asked with is the one last given.
- * `other` answers first where it returns something.
+ * `other` answers first where it returns something; the search for the person's
+ * own pull requests is `mine`'s to answer, none found where it is not given.
  */
-function fakeGitHub(on: On, answers: unknown[][], other: (argv: string[]) => Answer | undefined | Promise<Answer | undefined> = () => undefined) {
+function fakeGitHub(
+  on: On,
+  answers: unknown[][],
+  other: (argv: string[]) => Answer | undefined | Promise<Answer | undefined> = () => undefined,
+  mine: (argv: string[]) => Answer = () => ({ stdout: NO_PULLS_OF_MINE }),
+) {
   const asked: string[][] = []
   const toasts: string[] = []
   const logs: string[] = []
@@ -37,7 +48,7 @@ function fakeGitHub(on: On, answers: unknown[][], other: (argv: string[]) => Ans
     const argv = [...e.argv]
     asked.push(argv)
     const done = (stdout: string, exitCode = 0, stderr = "") => ({ value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false } })
-    const answered = await other(argv)
+    const answered = isMineSearch(argv) ? mine(argv) : await other(argv)
     if (answered !== undefined) return done(answered.stdout ?? "", answered.exitCode ?? 0, answered.stderr ?? "")
     if (argv[0] === "git") return done("", 128)
     if (argv.includes("user")) return done("me\n")
@@ -268,7 +279,7 @@ test("titles are asked for in batches, so every notice has its own", JA, async (
   await $.command.run(CHECK)
   await clock.advance(61_000)
   await $.command.run(CHECK)
-  const queries = github.asked.filter(argv => argv.includes("graphql")).map(argv => argv.at(-1) ?? "")
+  const queries = github.asked.filter(argv => argv.includes("graphql") && !isMineSearch(argv)).map(argv => argv.at(-1) ?? "")
   expect(queries.map(query => query.match(/pullRequest\(/g)?.length)).toEqual([50, 10])
   expect(await $.command.run({ ...CHECK, args: "log text" })).toMatchObject({ text: expect.stringContaining("#60 t60") })
 })
@@ -649,32 +660,67 @@ test("narrowed to one repository, the log pane puts its notices together by pull
   mock.store(on, {
     "history:other": toKept([comment("c1", 3, 0), comment("c2", 5, 10), push, comment("c3", 3, 30), other] as GhEvent[], 1),
     repos: { "github.com/o/r": { kinds: ["comment", "push"], alias: "rr" } },
-    // The title of #5 is kept for the repository's notices: only #3's is asked for.
+    // The title of #5 is kept for the repository's notices: it shows before GitHub answers.
     "titles:github.com/o/r": { "5": { title: "Known title", author: null } },
   })
   mock.clock(on, { now: Date.parse("2026-10-17T00:00:00Z") })
-  const github = fakeGitHub(on, [[]], argv =>
-    argv.some(word => word.includes("issueOrPullRequest")) ? { stdout: JSON.stringify({ data: { repository: { n3: { title: "Add things" } } } }) } : undefined,
-  )
+  let answered = false
+  const headings = {
+    n3: {
+      __typename: "PullRequest",
+      title: "Add things",
+      state: "OPEN",
+      mergeable: "MERGEABLE",
+      mergeStateStatus: "BLOCKED",
+      reviewDecision: "REVIEW_REQUIRED",
+      latestOpinionatedReviews: { nodes: [{ state: "APPROVED", author: { login: "bob" } }] },
+      reviewRequests: { nodes: [{ requestedReviewer: { __typename: "User", login: "carol" } }] },
+      latest: { nodes: [] },
+    },
+    n5: { __typename: "PullRequest", title: "Known title", state: "MERGED" },
+  }
+  const github = fakeGitHub(on, [[]], argv => {
+    if (!argv.some(word => word.includes("issueOrPullRequest"))) return undefined
+    answered = true
+    return { stdout: JSON.stringify({ data: { repository: headings } }) }
+  })
   on("ui.open", async () => ({ value: { isPlaced: true } }))
 
   await $.command.run({ ...CHECK, args: "log rr" })
-  const pane = await $.ui.mount({
+  const LOG_PANE_WIDE = {
     plugin: "gh-inbox",
     surface: "terminal",
     component: "Pane",
     requestId: "gh-inbox-log",
     props: { title: "", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 20 }, view: {} },
-  })
+  } as const
+  let pane = await $.ui.mount(LOG_PANE_WIDE)
   expect(await pane.find({ type: "Text", text: "4件中 1〜4件目（PR ごと、新しい順）" })).toBeDefined()
-  const heading = { type: "Text", text: "#3 Add things" } as const
+  if (!answered) expect(await pane.find({ type: "Text", text: "#5 Known title" })).toBeDefined()
+  // Each heading says where its pull request stands now, the reviewers named, after its title.
+  const heading = { type: "Text", text: "#3 Add things  ○ レビュー待ち（carolさん）  ✓ 承認（bobさん）" } as const
   for (let tries = 0; tries < 100 && (await pane.find(heading)) === undefined; tries += 1) await pane.find({ key: "close" })
   expect(await pane.find(heading)).toBeDefined()
-  expect(await pane.find({ type: "Text", text: "#5 Known title" })).toBeDefined()
+  expect(await pane.find({ type: "Text", text: "#5 Known title（マージ済み）" })).toBeDefined()
   expect(await pane.find({ type: "Text", text: "PR に付かないもの（push・ブランチ・CI）" })).toBeDefined()
+  // One request for the page's headings, those whose titles were known too.
   const asked = github.asked.filter(argv => argv.some(word => word.includes("issueOrPullRequest")))
   expect(asked).toHaveLength(1)
-  expect(asked[0]?.find(word => word.startsWith("query="))).not.toContain("n5:")
+  expect(asked[0]?.find(word => word.startsWith("query="))).toContain("n5:")
+  // In a narrow pane, where a heading's row cannot hold where it stands, a button unfolds it under the heading.
+  await pane.unmount()
+  const narrow = await $.ui.mount({ ...LOG_PANE_WIDE, props: { ...LOG_PANE_WIDE.props, bodyColumns: 30 } })
+  expect(await narrow.find({ type: "Text", text: "#5 Known title（マージ済み）" })).toBeDefined()
+  expect(await narrow.find({ type: "Text", text: "○ レビュー待ち" })).toBeUndefined()
+  expect((await narrow.find({ key: "stands:github.com/o/r#3" }))?.props.label).toBe(" ▸ 状態")
+  expect(await narrow.find({ key: "stands:github.com/o/r#5" })).toBeUndefined()
+  await narrow.press({ key: "stands:github.com/o/r#3" })
+  expect((await narrow.find({ type: "Text", text: "○ レビュー待ち" }))?.text).toBe("○ レビュー待ち（carolさん）  ✓ 承認（bobさん）")
+  expect((await narrow.find({ key: "stands:github.com/o/r#3" }))?.props.label).toBe(" ▾ 状態")
+  await narrow.press({ key: "stands:github.com/o/r#3" })
+  expect(await narrow.find({ type: "Text", text: "○ レビュー待ち" })).toBeUndefined()
+  await narrow.unmount()
+  pane = await $.ui.mount(LOG_PANE_WIDE)
   // The pull request with the newest notice first, each one's newest first; each heading links to its pull request.
   expect((await pane.findAll({ type: "Link" })).map(link => link.props.href)).toEqual([
     "https://github.com/o/r/pull/3",
@@ -687,7 +733,7 @@ test("narrowed to one repository, the log pane puts its notices together by pull
   const labels = async () => (await pane.findAll({ type: "Text" })).filter(one => one.props.color === "suggestion" && one.children.join("") === "[rr]")
   expect(await labels()).toEqual([])
 
-  // Opened again, a title asked for is asked for afresh: one renamed since shows its new title.
+  // Opened again, a heading asked for is asked for afresh: one renamed or moved on since shows as it is now.
   await $.command.run({ ...CHECK, args: "log rr" })
   for (let tries = 0; tries < 100 && github.asked.filter(argv => argv.some(word => word.includes("issueOrPullRequest"))).length < 2; tries += 1) await pane.find({ key: "close" })
   expect(github.asked.filter(argv => argv.some(word => word.includes("issueOrPullRequest")))).toHaveLength(2)
@@ -985,7 +1031,7 @@ function branchPull(at: string) {
           mergeable: "CONFLICTING",
           reviewDecision: "APPROVED",
           mergedBy: null,
-          latestOpinionatedReviews: { nodes: [{ state: "APPROVED" }, { state: "APPROVED" }] },
+          latestOpinionatedReviews: { nodes: [{ state: "APPROVED", author: { login: "bob" } }, { state: "APPROVED", author: { login: "carol" } }] },
           comments: { nodes: [{ id: "c1", author: { login: "alice" }, body: "Looks good", createdAt: at, url: "u" }] },
           reviews: { nodes: [] },
           commits: { nodes: [] },
@@ -1034,7 +1080,10 @@ test("the tray tells where the branch's pull request stands, and /inbox tray swi
   const PULL_LINE = "GitHub: #12  ✗ コンフリクト  ✗ CI 1/2  ✓ 承認2 | aliceさん「Looks good」5分前"
   await $.command.run(CHECK)
   expect(lines.at(-1)).toBe(PULL_LINE)
-  expect(await $.command.run({ ...CHECK, args: "status" })).toMatchObject({ text: expect.stringContaining("\n  ✗ コンフリクト  ✗ CI 1/2  ✓ 承認2 | aliceさん「Looks good」5分前\n") })
+  // `/inbox` names who approved; the line under the prompt counts them.
+  expect(await $.command.run({ ...CHECK, args: "status" })).toMatchObject({
+    text: expect.stringContaining("\n  ✗ コンフリクト  ✗ CI 1/2  ✓ 承認（bobさん、carolさん） | aliceさん「Looks good」5分前\n"),
+  })
 
   expect(await $.command.run({ ...CHECK, args: "tray" })).toMatchObject({ text: expect.stringContaining("登録したリポジトリの一覧を出します") })
   expect(lines.at(-1)).toBe("GitHub: r 5分前")
@@ -1450,10 +1499,10 @@ test("the branch's own pull request, watched too, is asked about once a check, a
   const github = fakeGitHub(on, [[]], branchPull(COMMENT.created_at))
 
   await $.command.run(CHECK)
-  expect(github.asked.filter(argv => argv.includes("graphql"))).toHaveLength(1)
+  expect(github.asked.filter(argv => argv.includes("graphql") && !isMineSearch(argv))).toHaveLength(1)
   const listed = await $.command.run({ ...CHECK, args: "watch" })
   expect(listed).toMatchObject({ text: expect.stringContaining("o/r#12 Add things（通知中）（今のブランチの PR として通知中）") })
-  expect(listed).toMatchObject({ text: expect.stringContaining("\n  ✗ コンフリクト  ✗ CI 1/2  ✓ 承認2 | aliceさん「Looks good」5分前\n") })
+  expect(listed).toMatchObject({ text: expect.stringContaining("\n  ✗ コンフリクト  ✗ CI 1/2  ✓ 承認（bobさん、carolさん） | aliceさん「Looks good」5分前\n") })
 })
 
 test("/inbox watch add takes a pull request as GitHub spells it and refuses one watched or merged; remove stops it", JA, async ($, on) => {
@@ -1823,4 +1872,199 @@ test("/inbox approve refuses one's own pull request before any pane, and says in
   for (let tries = 0; tries < 100 && (await pane.find(refused)) === undefined; tries += 1) await pane.find({ key: "cancel" })
   expect(await pane.find(refused)).toBeDefined()
   expect(github.toasts.filter(text => text.startsWith("Approved"))).toEqual([])
+})
+
+// The band above the prompt, unfolded, as the terminal draws it.
+const BAND = {
+  plugin: "gh-inbox",
+  surface: "terminal",
+  component: "AbovePrompt",
+  props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+} as const
+
+/** A pull request the search for the person's own finds, as `MINE_QUERY` asks for it: open, blocked, with no checks or reviews unless `more` says. */
+const minePull = (url: string, title: string, updatedAt: string, more: Record<string, unknown> = {}) => ({
+  number: Number(url.split("/").at(-1)),
+  url,
+  title,
+  updatedAt,
+  isDraft: false,
+  mergeable: "MERGEABLE",
+  reviewDecision: null,
+  mergeStateStatus: "BLOCKED",
+  autoMergeRequest: null,
+  latestOpinionatedReviews: { nodes: [] },
+  reviewRequests: { nodes: [] },
+  latest: { nodes: [] },
+  ...more,
+})
+/** The newest commit's checks, each as it went: a check run's conclusion, or IN_PROGRESS while it runs. */
+const mineChecks = (...went: string[]) => ({
+  nodes: [
+    {
+      commit: {
+        oid: "abc1234",
+        statusCheckRollup: {
+          state: went.includes("FAILURE") ? "FAILURE" : went.includes("IN_PROGRESS") ? "PENDING" : "SUCCESS",
+          contexts: {
+            totalCount: went.length,
+            nodes: went.map(one =>
+              one === "IN_PROGRESS" ? { __typename: "CheckRun", status: "IN_PROGRESS", conclusion: null } : { __typename: "CheckRun", status: "COMPLETED", conclusion: one },
+            ),
+          },
+        },
+      },
+    },
+  ],
+})
+// Found updated last first, as the searches sort them: 12 the person opened in all, 2 asked of them to review.
+const MINE_ANSWER = JSON.stringify({
+  data: {
+    viewer: { login: "me" },
+    requested: {
+      issueCount: 2,
+      nodes: [
+        minePull("https://github.com/a/b/pull/15", "Bump deps", "2026-10-16T04:30:00Z", {
+          author: { login: "bob" },
+          reviewDecision: "REVIEW_REQUIRED",
+          reviewRequests: { nodes: [{ requestedReviewer: { __typename: "User", login: "me" } }] },
+          latest: mineChecks("SUCCESS"),
+        }),
+        minePull("https://github.com/a/b/pull/12", "Add search", "2026-10-16T02:30:00Z", {
+          author: { login: "alice" },
+          reviewDecision: "REVIEW_REQUIRED",
+          reviewRequests: { nodes: [{ requestedReviewer: { __typename: "User", login: "me" } }] },
+          latest: mineChecks("IN_PROGRESS", "SUCCESS"),
+        }),
+      ],
+    },
+    opened: {
+      issueCount: 12,
+      nodes: [
+        minePull("https://github.com/o/r/pull/4", "Draft thing", "2026-10-16T04:00:00Z", { isDraft: true, mergeStateStatus: "DRAFT", latest: mineChecks("IN_PROGRESS") }),
+        minePull("https://github.com/x/y/pull/9", "Waiting one", "2026-10-16T03:00:00Z", {
+          reviewDecision: "REVIEW_REQUIRED",
+          reviewRequests: { nodes: [{ requestedReviewer: { __typename: "User", login: "bob" } }] },
+        }),
+        minePull("https://github.com/x/y/pull/7", "Ready one", "2026-10-16T02:00:00Z", { mergeStateStatus: "CLEAN", latest: mineChecks("SUCCESS") }),
+        minePull("https://github.com/o/r/pull/3", "Fix the build", "2026-10-16T01:00:00Z", {
+          latest: mineChecks("FAILURE", "SUCCESS"),
+          latestOpinionatedReviews: { nodes: [{ state: "APPROVED", author: { login: "bob" } }] },
+        }),
+      ],
+    },
+  },
+})
+
+test("the band above the prompt shows the person's open pull requests, the most pressing first, then those asked of them to review, a row each linked from its number", JA, async ($, on) => {
+  mock.store(on, { repos: { [KEY]: { kinds: [], alias: "r" } } })
+  const clock = mock.clock(on, { now: Date.parse("2026-10-16T05:00:00Z") })
+  let isDown = false
+  const github = fakeGitHub(on, [], undefined, () => (isDown ? { exitCode: 1, stderr: "HTTP 502: Bad Gateway" } : { stdout: MINE_ANSWER }))
+  const searches = () => github.asked.filter(isMineSearch).length
+
+  await $.command.run(CHECK)
+  const band = await $.ui.mount(BAND)
+  expect(await band.find({ type: "Text", text: "GitHub: 自分の PR（12件中4件）" })).toBeDefined()
+  // The second heading goes without saying whose band it is.
+  expect((await band.find({ type: "Text", text: "レビュー依頼" }))?.text).toBe("レビュー依頼")
+  // Each row as the person reads it: the test's drawing writes a link's URL before its text.
+  const rows = (await band.findAll({ type: "Text", text: /^ {2}\S+#\d/ })).map(row => row.text.replace(/https:\/\/github\.com\/\S+?\/pull\/\d+/, ""))
+  expect(rows).toEqual([
+    // What fails first, then what can be merged now, what waits; the draft last. A registered repository by its alias.
+    "  r#3  ✗ CI 1/2  ✓ 承認1  Fix the build",
+    "  y#7  ● マージ可  Ready one",
+    "  y#9  ○ レビュー待ち  Waiting one",
+    "  r#4（下書き）  ◐ CI 0/1  Draft thing",
+    // Those asked of the person, updated last first, with who opened each; that each awaits their review goes unsaid.
+    "  b#15  bobさん  ✓ CI  Bump deps",
+    "  b#12  aliceさん  ◐ CI 1/2  Add search",
+  ])
+  expect((await band.find({ type: "Link", text: "r#3" }))?.props).toMatchObject({ href: "https://github.com/o/r/pull/3" })
+  expect(await $.command.run({ ...CHECK, args: "status" })).toMatchObject({ text: expect.stringContaining("\n自分の PR: 12件、レビュー依頼: 2件（入力欄の上）\n") })
+
+  // Within the interval the answer kept is used; after it, GitHub is searched again.
+  await $.command.run(CHECK)
+  expect(searches()).toBe(1)
+  await clock.advance(61_000)
+  // A search that fails for now leaves what was shown.
+  isDown = true
+  await $.command.run(CHECK)
+  expect(searches()).toBe(2)
+  expect(await band.find({ type: "Text", text: "r#3  ✗ CI 1/2  ✓ 承認1  Fix the build" })).toBeDefined()
+  expect(github.logs).toContain("gh-inbox: pull requests on github.com: HTTP 502: Bad Gateway")
+})
+
+test("with none open or asked, the band shows no pull requests", async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: 1_000_000 })
+  const github = fakeGitHub(on, [])
+  await $.command.run(CHECK)
+  expect(github.asked.filter(isMineSearch)).toHaveLength(1)
+  expect(await (await $.ui.mount(BAND)).find({ type: "Text", text: /your pull requests|asked to review/ })).toBeUndefined()
+})
+
+test("turned off, the band shows none of the person's pull requests and GitHub is not searched", { options: { myPulls: false } }, async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: 1_000_000 })
+  const github = fakeGitHub(on, [], undefined, () => ({ stdout: MINE_ANSWER }))
+  await $.command.run(CHECK)
+  expect(github.asked.filter(isMineSearch)).toHaveLength(0)
+  expect(await (await $.ui.mount(BAND)).find({ type: "Text", text: /your pull requests|asked to review/ })).toBeUndefined()
+})
+
+test("the band speaks English by default", async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: Date.parse("2026-10-16T05:00:00Z") })
+  fakeGitHub(on, [], undefined, () => ({ stdout: MINE_ANSWER }))
+  await $.command.run(CHECK)
+  const band = await $.ui.mount(BAND)
+  expect(await band.find({ type: "Text", text: "GitHub: your pull requests (4 of 12)" })).toBeDefined()
+  expect(await band.find({ type: "Text", text: "r#4 (draft)  ◐ CI 0/1  Draft thing" })).toBeDefined()
+  expect((await band.find({ type: "Text", text: "asked to review" }))?.text).toBe("asked to review")
+  expect(await band.find({ type: "Text", text: "b#12  alice  ◐ CI 1/2  Add search" })).toBeDefined()
+})
+
+test("with none of the person's own open, the band heads those asked of them as its own", async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: Date.parse("2026-10-16T05:00:00Z") })
+  const answer = JSON.parse(MINE_ANSWER)
+  answer.data.opened = { issueCount: 0, nodes: [] }
+  fakeGitHub(on, [], undefined, () => ({ stdout: JSON.stringify(answer) }))
+  await $.command.run(CHECK)
+  const band = await $.ui.mount(BAND)
+  expect(await band.find({ type: "Text", text: "GitHub: asked to review" })).toBeDefined()
+  expect(await band.find({ type: "Text", text: /your pull requests/ })).toBeUndefined()
+})
+
+test("a token that may not read the teams asked to review is asked again without them, and so from then on", JA, async ($, on) => {
+  mock.store(on, {})
+  const clock = mock.clock(on, { now: Date.parse(COMMENT.created_at) + 5 * 60_000 })
+  const refusal = {
+    errors: [{ type: "INSUFFICIENT_SCOPES", message: "Your token has not been granted the required scopes to execute this query. The 'combinedSlug' field requires one of the following scopes: ['read:org']" }],
+  }
+  const answer = branchPull(COMMENT.created_at)
+  const github = fakeGitHub(on, [[]], argv => {
+    const query = argv.at(-1) ?? ""
+    if (argv.includes("graphql") && query.includes("combinedSlug"))
+      return { exitCode: 1, stdout: JSON.stringify(refusal), stderr: "gh: Your token has not been granted the required scopes to execute this query." }
+    return answer(argv)
+  })
+  const lines: Array<string | undefined> = []
+  on("ui.status", async (_$, e) => {
+    lines.push(e.text)
+    return { value: undefined }
+  })
+  const pullQueries = () => github.asked.filter(argv => argv.includes("graphql") && !isMineSearch(argv))
+
+  await $.command.run(CHECK)
+  expect(lines.at(-1)).toBe("GitHub: #12  ✗ コンフリクト  ✗ CI 1/2  ✓ 承認2 | aliceさん「Looks good」5分前")
+  expect(pullQueries().map(argv => (argv.at(-1) ?? "").includes("combinedSlug"))).toEqual([true, false])
+  expect(github.logs.some(line => line.includes("asked without them now"))).toBe(true)
+  // The search for the person's own pull requests on the same host goes without them too.
+  expect(github.asked.filter(isMineSearch).map(argv => (argv.at(-1) ?? "").includes("combinedSlug"))).toEqual([false])
+
+  await clock.advance(61_000)
+  await $.command.run(CHECK)
+  expect(pullQueries().map(argv => (argv.at(-1) ?? "").includes("combinedSlug"))).toEqual([true, false, false])
 })

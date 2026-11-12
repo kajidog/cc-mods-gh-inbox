@@ -173,6 +173,22 @@ test("parsePicked lists each review with its threads, resolved ones too, and the
   expect(picked.notes).toEqual(["コメントは新しい30件だけを表示しています（全31件）。"])
 })
 
+test("the description goes first after CI, what GitHub does not show left out; one showing nothing is not listed", () => {
+  const withBody = (body: string) => {
+    const json = JSON.parse(PULL_ANSWER)
+    Object.assign(json.data.repository.pullRequest, { id: "PR1", body, createdAt: "2026-10-15T09:00:00Z", author: { login: "me" } })
+    return JSON.stringify(json)
+  }
+  const [first] = parsePicked(REF, withBody("<!-- Describe the change -->\nThis adds pick.\n\nCloses #3"), { me: "わたし" }, "ja").items
+  expect(first?.id).toBe("PR1")
+  expect(first?.parent).toBeUndefined()
+  expect(first?.label).toBe("わたし の説明文: This adds pick.")
+  expect(first?.context).toBe("## わたし の説明文（2026-10-15、https://github.com/o/r/pull/5）\n```markdown\nThis adds pick.\n\nCloses #3\n```")
+  // A template's comments alone show nothing on GitHub: not listed.
+  expect(parsePicked(REF, withBody("<!-- Describe the change -->\n"), {}, "ja").items.map(item => item.id)).toEqual(["C1", "R1", "T1", "T2"])
+  expect(parsePicked(REF, withBody("Adds pick"), {}).items[0]?.label).toBe("Description by me: Adds pick")
+})
+
 test("what GitHub does not show is left out of what the model reads, and a long hunk is cut to the lines before the comment", () => {
   const [, , open] = parsePicked(REF, PULL_ANSWER, {}, "ja").items
   expect(open?.context).not.toContain("hidden")

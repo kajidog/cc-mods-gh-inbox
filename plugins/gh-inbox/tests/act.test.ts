@@ -32,6 +32,7 @@ function pullWith(changes: Partial<Pull>): Pull {
     autoMerge: null,
     reviewDecision: null,
     verdicts: [],
+    requested: [],
     ...changes,
   }
 }
