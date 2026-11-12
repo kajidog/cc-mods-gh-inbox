@@ -17,7 +17,19 @@ import type {
   InboxNotice,
 } from "../types"
 
-import { actArgv, type MergeSettings, type Method, methodName, parseMergeWords, parseSettings, planMerge, settingsArgv } from "./act"
+import {
+  actArgv,
+  type MergeSettings,
+  type Method,
+  methodName,
+  parseMergeWords,
+  parseSettings,
+  parseViewerApproval,
+  planMerge,
+  planReview,
+  settingsArgv,
+  viewerReviewArgv,
+} from "./act"
 import { type Ci, CI_ITEM_PREFIX, ciForPrompt, ciKey, isResult } from "./ci"
 import { CLOSED_ID, displayName, MERGED_ID, mergeSeen, newEvents, type Nicknames, plain, pullIds, snippet } from "./events"
 import { type Pull, type PullRef, type PullState, parsePull, parsePullUrl, pullArgv, pullName } from "./github"
@@ -47,6 +59,7 @@ import {
 } from "./history"
 import { type Language, MESSAGES, type Messages, splitNotice, toLanguage } from "./i18n"
 import { changeOf, type Latest, type LatestItem, latestArgv, latestKey, latestWanted, parseLatest } from "./latest"
+import { byPull, logTitlesArgv, type PullGroup, parseLogTitles, pullGroups, titlesWanted } from "./log-groups"
 import {
   CONTEXT_LIMIT,
   idsOf,
@@ -180,6 +193,8 @@ const logUnfolded = atom({ plugin: "gh-inbox", key: "logUnfolded" } as const, []
 const logRepo = atom({ plugin: "gh-inbox", key: "logRepo" } as const, null as string | null)
 /** What the log pane's comments say now, by `latestKey`, asked for as their page shows. */
 const logLatest = atom({ plugin: "gh-inbox", key: "logLatest" } as const, {} as Record<string, Latest>)
+/** The titles of the pull requests the narrowed log pane heads its notices with, by `host/owner/repo#number`; "" for none. */
+const logTitles = atom({ plugin: "gh-inbox", key: "logTitles" } as const, {} as Record<string, string>)
 const pickUnfolded = atom({ plugin: "gh-inbox", key: "pickUnfolded" } as const, [] as string[])
 const watchPick = atom({ plugin: "gh-inbox", key: "watchPick" } as const, null as GhWatchPick | null)
 /** When each watched pull request was added, as this session last checked it: added again since, it starts over from a first look. */
@@ -190,7 +205,7 @@ const ciTold = atom({ plugin: "gh-inbox", key: "ciTold" } as const, null as stri
 const ciToldAt = atom({ plugin: "gh-inbox", key: "ciToldAt" } as const, 0)
 /** The rows the `row` channel placed in the transcript, and what each draws. */
 const placed = atom({ plugin: "gh-inbox", key: "placed" } as const, [] as GhPlaced[])
-/** What the pane of `/inbox merge`, `/inbox close` and `/inbox draft` asks to confirm. */
+/** What the pane of `/inbox merge`, `/inbox close`, `/inbox draft`, `/inbox approve` and `/inbox unapprove` asks to confirm. */
 const act = atom({ plugin: "gh-inbox", key: "act" } as const, null as GhAct | null)
 
 type Found = {
@@ -250,6 +265,8 @@ type Context = {
   askedLatest: Set<string>
   /** How many times the log has opened: an answer asked for at an opening that is no longer the last is not shown. */
   logOpenings: number
+  /** The `host/owner/repo#number`s whose titles the log pane has asked for since it opened, answered or not. */
+  askedTitles: Set<string>
   /** The open pull request of the branch and its newest commit's CI, as the last check that read it found them. */
   ci: { branch: string; ref: PullRef; title: string; url: string; ci: Ci; at: number } | undefined
   /** Whether what the action pane confirmed is under way: a second press does not send it again. */
@@ -504,6 +521,54 @@ async function lookUpLatest($: EngineInterface, ctx: Context, events: readonly G
     if (opening !== ctx.logOpenings) return
     if (latest.size > 0) await update($, logLatest, held => ({ ...held, ...Object.fromEntries(latest) }))
   }
+}
+
+/**
+ * Asks the titles of the pull requests `groups` head the narrowed log pane's page with, those not asked for since the
+ * pane opened, one request a repository. A failed request is let be: the heading shows the number alone.
+ */
+async function lookUpTitles($: EngineInterface, ctx: Context, groups: readonly PullGroup[]) {
+  const opening = ctx.logOpenings
+  for (const [repo, numbers] of titlesWanted(groups, ctx.askedTitles)) {
+    for (const number of numbers) ctx.askedTitles.add(`${repo}#${number}`)
+    // A number GitHub does not know fails the request, but the answer still holds the others.
+    const run = await $.process.run(logTitlesArgv(repo, numbers)).catch(() => undefined)
+    let titles: Map<number, string>
+    try {
+      titles = parseLogTitles(run?.stdout ?? "")
+    } catch {
+      $.ui.log(`gh-inbox: titles of ${repo}: ${firstLine(run?.stderr ?? "")}`, { to: "debug" })
+      continue
+    }
+    if (opening !== ctx.logOpenings) return
+    if (titles.size > 0) await update($, logTitles, held => ({ ...held, ...Object.fromEntries([...titles].map(([number, title]) => [`${repo}#${number}`, title])) }))
+  }
+}
+
+/**
+ * The title of each of `groups` known without asking GitHub: asked for since the log opened, a watched pull request's,
+ * or a registered repository's kept for its notices; absent where none is.
+ */
+async function knownTitles($: EngineInterface, groups: readonly PullGroup[]): Promise<Map<string, string>> {
+  const known = new Map<string, string>()
+  if (groups.length === 0) return known
+  const asked = await read($, logTitles)
+  const watched = await readWatched($)
+  const kept = new Map<string, Titles>()
+  for (const group of groups) {
+    if (group.key === undefined || group.number === undefined) continue
+    const repo = group.key.replace(/#\d+$/, "")
+    if (!kept.has(repo)) kept.set(repo, toTitles(await $.store.get(`${TITLES_PREFIX}${repo}`)))
+    const watchedKey = findWatched(watched, group.key)
+    const watchedTitle = watchedKey === undefined ? "" : (watched[watchedKey]?.title ?? "")
+    const keptTitle = kept.get(repo)?.[String(group.number)]?.title ?? ""
+    // One asked for and found empty stays so; one kept empty elsewhere is not known (for a registered repository, a
+    // number with no pull request there, maybe an issue) and is asked for.
+    const title = asked[group.key] ?? (watchedTitle || keptTitle || undefined)
+    if (title !== undefined) known.set(group.key, title)
+  }
+
+  return known
 }
 
 /** The repositories the log keeps notices of, named by the registered repositories' short names where it can. */
@@ -1584,11 +1649,15 @@ async function namedPull($: EngineInterface, ctx: Context, arg: string, command:
   }
 }
 
+/** The commands that change a pull request once the person confirms it in the pane. */
+type ActCommand = "merge" | "close" | "draft" | "approve" | "unapprove"
+
 /**
- * `/inbox merge`, `/inbox close` and `/inbox draft`: reads the pull request afresh and opens the pane that says what
- * would be done, refusing at once what cannot be. Nothing is sent to GitHub before the person presses the pane's button.
+ * `/inbox merge`, `/inbox close`, `/inbox draft`, `/inbox approve` and `/inbox unapprove`: reads the pull request
+ * afresh and opens the pane that says what would be done, refusing at once what cannot be. Nothing is sent to GitHub
+ * before the person presses the pane's button.
  */
-async function actCommand($: EngineInterface, ctx: Context, command: "merge" | "close" | "draft", words: readonly string[]): Promise<string> {
+async function actCommand($: EngineInterface, ctx: Context, command: ActCommand, words: readonly string[]): Promise<string> {
   const { t } = ctx
   const { method: named, rest } = command === "merge" ? parseMergeWords(words) : { method: undefined, rest: words }
   const ref = await namedPull($, ctx, rest.join(" "), command)
@@ -1608,6 +1677,24 @@ async function actCommand($: EngineInterface, ctx: Context, command: "merge" | "
   let notes: string[] = []
   let methods: Method[] = []
   let method: Method | null = null
+  let review: string | undefined
+  if (command === "approve" || command === "unapprove") {
+    if (pull.viewer === "") return t.cannotRead(name, t.viewerUnknown)
+    // Whether the person's approval stands is asked of their own reviews alone, however many others reviewed.
+    let approval: string | null
+    try {
+      const run = await $.process.run(viewerReviewArgv(ref, pull.viewer))
+      if (run.exitCode !== 0) throw new Error(firstLine(run.stderr) || t.exitedWith("gh api", run.exitCode))
+      approval = parseViewerApproval(run.stdout)
+    } catch (error) {
+      return t.cannotRead(name, message(error))
+    }
+    const plan = planReview(t, pull, command, approval)
+    if ("refusal" in plan) return `${name}: ${plan.refusal}`
+    kind = plan.kind
+    notes = plan.notes
+    review = plan.kind === "unapprove" ? (approval ?? undefined) : undefined
+  }
   if (command === "merge") {
     let settings: MergeSettings
     try {
@@ -1628,7 +1715,19 @@ async function actCommand($: EngineInterface, ctx: Context, command: "merge" | "
   }
 
   const stands = statusText({ head: pull.head.slice(0, 7), marks: statusMarks(t, status), latest: undefined })
-  await update($, act, (): GhAct => ({ stage: "confirm", kind, pull: key, title: pull.title, url: pull.url, head: pull.head, status: stands, notes, methods, method }))
+  await update($, act, (): GhAct => ({
+    stage: "confirm",
+    kind,
+    pull: key,
+    title: pull.title,
+    url: pull.url,
+    head: pull.head,
+    status: stands,
+    notes,
+    methods,
+    method,
+    ...(review === undefined ? {} : { review }),
+  }))
   if (!(await $.ui.open({ id: ACT_PANE, title: t.actTitle(kind), focus: true })).isPlaced) {
     await $.ui.close({ id: ACT_PANE }).catch(() => undefined)
     await update($, act, () => null)
@@ -1647,7 +1746,9 @@ async function runAct($: EngineInterface, ctx: Context) {
     if (held === null || held.stage === "running") return
     await update($, act, (one): GhAct | null => one && { ...one, stage: "running" })
     const run = await $.process
-      .run(actArgv(held.kind, held.url, held.head, held.method), { timeoutMs: ACT_TIMEOUT_MS })
+      .run(actArgv(held.kind, held.url, held.head, held.method, held.review === undefined ? undefined : { id: held.review, message: ctx.t.dismissMessage }), {
+        timeoutMs: ACT_TIMEOUT_MS,
+      })
       .catch(error => ({ exitCode: -1, stdout: "", stderr: message(error) }))
     if (run.exitCode !== 0) {
       const why = firstLine(run.stderr) || ctx.t.exitedWith("gh", run.exitCode)
@@ -1723,6 +1824,7 @@ export const register: Register = (on, options) => {
     isEnded: false,
     askedLatest: new Set(),
     logOpenings: 0,
+    askedTitles: new Set(),
     ci: undefined,
     isActing: false,
   }
@@ -1852,7 +1954,9 @@ export const register: Register = (on, options) => {
         // What the comments say now is asked for afresh each time the log opens.
         ctx.logOpenings += 1
         ctx.askedLatest.clear()
+        ctx.askedTitles.clear()
         await update($, logLatest, () => ({}))
+        await update($, logTitles, () => ({}))
         if (!asText && (await $.ui.open({ id: LOG_PANE, title: t.logTitle, focus: true })).isPlaced)
           return { text: t.logOpened(all.length) }
         const list = latest(all, LOG_SHOWN)
@@ -1877,6 +1981,8 @@ export const register: Register = (on, options) => {
       case "merge":
       case "close":
       case "draft":
+      case "approve":
+      case "unapprove":
         return { text: await actCommand($, ctx, action, rest) }
       case "clear": {
         const count = stagedCount(await read($, staged))
@@ -1914,8 +2020,9 @@ export const register: Register = (on, options) => {
     ui: ReturnType<EngineInterface["ui"]["resolve"]>,
     row: LogRow,
     made: LogMade | undefined,
-    // The log pane's: what unfolds the row, and what it says in full once unfolded.
-    fold?: { mark: ReturnType<typeof ui.Button>; full?: readonly LatestItem[] },
+    // The log pane's: what unfolds the row, what it says in full once unfolded, and whether its short name goes unsaid
+    // (the pane narrowed to its repository).
+    fold?: { mark: ReturnType<typeof ui.Button>; full?: readonly LatestItem[]; isUnlabelled?: boolean },
     // What leads its first line, dim: a transcript row's `GitHub: `.
     lead?: string,
   ) => {
@@ -1945,7 +2052,7 @@ export const register: Register = (on, options) => {
     const head = (
       <Text>
         {lead === undefined ? null : <Text dimColor>{lead}</Text>}
-        {label === "" ? null : <Text color={LABEL_COLOR}>{label}</Text>}
+        {label === "" || fold?.isUnlabelled === true ? null : <Text color={LABEL_COLOR}>{label}</Text>}
         {who === "" && action === "" ? null : (
           <Text bold color={HEAD_COLOR}>
             {who}
@@ -1999,17 +2106,21 @@ export const register: Register = (on, options) => {
     return drawLogRow(ui, { text: row.text, url: row.url, when: "" }, row.made, undefined, "GitHub: ")
   })
 
-  // The log pane: every notice kept, newest first, a page at a time.
+  // The log pane: every notice kept, newest first, a page at a time. Narrowed to one repository, its notices go
+  // together by pull request, each under a heading with its number and title, the short name left unsaid.
   on("ui.render", { component: "Pane", requestId: LOG_PANE }, async ($, e) => {
     const ui = $.ui.resolve(e)
-    const { Box, Text, Button } = ui
+    const { Box, Text, Button, Link } = ui
     const history = await readHistory($)
     const repos = await readLogRepos($, history)
     // A repository chosen whose notices are no longer kept shows them all.
     const narrowedTo = await read($, logRepo)
     const chosen = repos.find(one => one.repo === narrowedTo)
     const all = chosen === undefined ? history : history.filter(event => repoOfEvent(event) === chosen.repo)
-    const list = latest(all, all.length).reverse()
+    const isByPull = chosen !== undefined
+    const newest = latest(all, all.length).reverse()
+    // The pull request with the newest notice first, each one's newest first.
+    const list = isByPull ? byPull(newest) : newest
     const pages = Math.max(1, Math.ceil(list.length / LOG_PAGE))
     const page = Math.min(Math.max(0, await read($, logPage)), pages - 1)
     const shown = list.slice(page * LOG_PAGE, (page + 1) * LOG_PAGE)
@@ -2017,6 +2128,9 @@ export const register: Register = (on, options) => {
     const unfolded = await read($, logUnfolded)
     const latestOf = await read($, logLatest)
     void lookUpLatest($, ctx, shown)
+    const groups = isByPull ? pullGroups(shown, all) : []
+    const titles = await knownTitles($, groups)
+    void lookUpTitles($, ctx, groups.filter(group => group.key !== undefined && !titles.has(group.key)))
     const turn = (to: number) => () => void update($, logPage, () => to)
     const narrow = (to: string | null) => async () => {
       await update($, logRepo, () => to)
@@ -2025,6 +2139,41 @@ export const register: Register = (on, options) => {
     // `r` goes to the next repository, after the last back to all.
     const options: Array<string | null> = [null, ...repos.map(one => one.repo)]
     const next = options[(options.indexOf(chosen?.repo ?? null) + 1) % options.length] ?? null
+
+    /** One notice of the page, `index` its place on it. */
+    const drawPaneRow = (event: GhEvent, index: number) => {
+      const at = Date.parse(event.at)
+      const change = changeOf(event, latestOf[latestKey(event) ?? ""])
+      const editedAt = Date.parse(change?.editedAt ?? "")
+      // Beside when it happened, whether the comment was edited (and when) or deleted since it was told.
+      const remarks = [
+        ...(Number.isNaN(at) ? [] : [ago(t, now - at)]),
+        ...(change?.isDeleted === true ? [t.logDeleted] : []),
+        ...(change?.editedAt != null ? [t.logEdited(Number.isNaN(editedAt) ? "" : ago(t, now - editedAt)).trim()] : []),
+        ...(change?.isPartDeleted === true ? [t.logPartDeleted] : []),
+      ]
+      const row = { text: plain(event.text), url: plain(event.url), when: remarks.length === 0 ? "" : t.paren(remarks.join(t.listSeparator)) }
+      const key = `${event.pull}|${event.id}`
+      // An edited comment unfolds to what it says now, however short; a review, to which of its comments changed.
+      const said = saidInFull(event)
+      const full =
+        change !== undefined && !change.isDeleted ? change.items.filter(item => item.body.trim() !== "" || item.note !== undefined) : said
+      const isOpen = full !== undefined && unfolded.includes(key)
+      // A row with more to say than its line unfolds by its mark, or the digit of its place on the page.
+      const mark =
+        full === undefined ? (
+          <Text>{"  "}</Text>
+        ) : (
+          <Button
+            key={`unfold:${key}`}
+            hotkey={index < 10 ? String((index + 1) % 10) : undefined}
+            plain
+            label={isOpen ? "▾ " : "▸ "}
+            onPress={() => void update($, logUnfolded, list => (list.includes(key) ? list.filter(one => one !== key) : [...list, key]))}
+          />
+        )
+      return <Box key={key}>{drawLogRow(ui, row, madeOf(event), { mark, full: isOpen ? full : undefined, isUnlabelled: isByPull })}</Box>
+    }
 
     return (
       <Box flexDirection="column">
@@ -2045,40 +2194,29 @@ export const register: Register = (on, options) => {
             })}
           </Box>
         )}
-        <Text dimColor>{list.length === 0 ? t.noLog : t.logRange(page * LOG_PAGE + 1, page * LOG_PAGE + shown.length, list.length)}</Text>
-        {shown.map((event, index) => {
-          const at = Date.parse(event.at)
-          const change = changeOf(event, latestOf[latestKey(event) ?? ""])
-          const editedAt = Date.parse(change?.editedAt ?? "")
-          // Beside when it happened, whether the comment was edited (and when) or deleted since it was told.
-          const remarks = [
-            ...(Number.isNaN(at) ? [] : [ago(t, now - at)]),
-            ...(change?.isDeleted === true ? [t.logDeleted] : []),
-            ...(change?.editedAt != null ? [t.logEdited(Number.isNaN(editedAt) ? "" : ago(t, now - editedAt)).trim()] : []),
-            ...(change?.isPartDeleted === true ? [t.logPartDeleted] : []),
-          ]
-          const row = { text: plain(event.text), url: plain(event.url), when: remarks.length === 0 ? "" : t.paren(remarks.join(t.listSeparator)) }
-          const key = `${event.pull}|${event.id}`
-          // An edited comment unfolds to what it says now, however short; a review, to which of its comments changed.
-          const said = saidInFull(event)
-          const full =
-            change !== undefined && !change.isDeleted ? change.items.filter(item => item.body.trim() !== "" || item.note !== undefined) : said
-          const isOpen = full !== undefined && unfolded.includes(key)
-          // A row with more to say than its line unfolds by its mark, or the digit of its place on the page.
-          const mark =
-            full === undefined ? (
-              <Text>{"  "}</Text>
-            ) : (
-              <Button
-                key={`unfold:${key}`}
-                hotkey={index < 10 ? String((index + 1) % 10) : undefined}
-                plain
-                label={isOpen ? "▾ " : "▸ "}
-                onPress={() => void update($, logUnfolded, list => (list.includes(key) ? list.filter(one => one !== key) : [...list, key]))}
-              />
-            )
-          return <Box key={key}>{drawLogRow(ui, row, madeOf(event), { mark, full: isOpen ? full : undefined })}</Box>
-        })}
+        <Text dimColor>{list.length === 0 ? t.noLog : (isByPull ? t.logRangeByPull : t.logRange)(page * LOG_PAGE + 1, page * LOG_PAGE + shown.length, list.length)}</Text>
+        {isByPull
+          ? groups.map((group, index) => {
+              const title = group.key === undefined ? "" : (titles.get(group.key) ?? "")
+              return (
+                <Box key={`group:${group.pull}`} flexDirection="column" marginTop={index === 0 ? 0 : 1}>
+                  <Text bold>
+                    {group.number === undefined ? (
+                      <Text color={LABEL_COLOR}>{t.logNoPull}</Text>
+                    ) : (
+                      <Text color={LABEL_COLOR}>
+                        <Link href={plain(group.url)}>{`#${group.number}`}</Link>
+                      </Text>
+                    )}
+                    {title === "" ? null : <Text>{` ${plain(title)}`}</Text>}
+                  </Text>
+                  <Box flexDirection="column" paddingLeft={LOG_INDENT}>
+                    {group.events.map(event => drawPaneRow(event, shown.indexOf(event)))}
+                  </Box>
+                </Box>
+              )
+            })
+          : shown.map((event, index) => drawPaneRow(event, index))}
         <Box>
           {page + 1 < pages && <Button key="older" hotkey="n" label={t.older} onPress={turn(page + 1)} />}
           {page > 0 && <Button key="newer" hotkey="p" label={t.newer} onPress={turn(page - 1)} />}
@@ -2086,6 +2224,7 @@ export const register: Register = (on, options) => {
         </Box>
       </Box>
     )
+
   })
 
   on("ui.render", { component: "Pane", requestId: WATCH_PANE }, async ($, e) => {
@@ -2126,8 +2265,8 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // What `/inbox merge`, `/inbox close` and `/inbox draft` would do, done only by its button: no hotkey, nothing focused
-  // at first, so neither a key typed for the prompt nor an Enter sends it.
+  // What `/inbox merge`, `/inbox close`, `/inbox draft`, `/inbox approve` and `/inbox unapprove` would do, done only by
+  // its button: no hotkey, nothing focused at first, so neither a key typed for the prompt nor an Enter sends it.
   on("ui.render", { component: "Pane", requestId: ACT_PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const held = await read($, act)

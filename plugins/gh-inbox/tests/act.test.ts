@@ -1,6 +1,6 @@
 import { describe, expect, test } from "claude-code/testing"
 
-import { actArgv, type MergeSettings, parseMergeWords, parseSettings, planMerge } from "../hooks/act"
+import { actArgv, type MergeSettings, parseMergeWords, parseSettings, parseViewerApproval, planMerge, planReview, viewerReviewArgv } from "../hooks/act"
 import type { Pull } from "../hooks/github"
 import { MESSAGES } from "../hooks/i18n"
 import { pullStatus } from "../hooks/status"
@@ -12,6 +12,7 @@ function pullWith(changes: Partial<Pull>): Pull {
   return {
     ref: { host: "github.com", owner: "o", repo: "r", number: 7 },
     viewer: "me",
+    author: "someone",
     title: "T",
     url: URL,
     state: "OPEN",
@@ -104,6 +105,57 @@ test("actArgv: a merge goes only at the head commit confirmed, never past branch
     const argv = actArgv(kind, URL, "abc", "MERGE")
     expect(argv.some(word => word === "--admin" || word === "--delete-branch" || word === "-d")).toBe(false)
   }
+})
+
+describe("planReview", () => {
+  test("approved where the person has not approved it yet, at its head commit", () => {
+    expect(planReview(t, pullWith({}), "approve", null)).toEqual({ kind: "approve", notes: [] })
+  })
+
+  test("an approval that stands is not given again, one's own pull request not at all, nor one whose head is not known", () => {
+    expect(planReview(t, pullWith({}), "approve", "PRR_1")).toEqual({ refusal: t.alreadyApproved })
+    expect(planReview(t, pullWith({ author: "me" }), "approve", null)).toEqual({ refusal: t.ownCannotApprove })
+    expect(planReview(t, pullWith({ head: "" }), "approve", null)).toEqual({ refusal: t.headUnknown })
+  })
+
+  test("an approval that stands is withdrawn as GitHub keeps it, a dismissal saying why; none is refused", () => {
+    expect(planReview(t, pullWith({}), "unapprove", "PRR_1")).toEqual({
+      kind: "unapprove",
+      notes: ["GitHub では、自分のレビューの却下（dismiss）として「承認を取り消しました」と PR に残ります。"],
+    })
+    expect(planReview(t, pullWith({}), "unapprove", null)).toEqual({ refusal: t.notApproved })
+  })
+})
+
+describe("viewerReviewArgv and parseViewerApproval", () => {
+  test("the person's own last review that says yes or no is asked for, however many others reviewed", () => {
+    const argv = viewerReviewArgv({ host: "github.com", owner: "o", repo: "r", number: 7 }, "me")
+    expect(argv.slice(0, 3)).toEqual(["gh", "api", "graphql"])
+    expect(argv[argv.indexOf("login=me") - 1]).toBe("-f")
+    expect(argv[argv.indexOf("number=7") - 1]).toBe("-F")
+    expect(argv.find(word => word.startsWith("query="))).toContain("reviews(author: $login, states: [APPROVED, CHANGES_REQUESTED, DISMISSED], last: 1)")
+    expect(viewerReviewArgv({ host: "ghe.example", owner: "o", repo: "r", number: 7 }, "me").slice(0, 4)).toEqual(["gh", "api", "--hostname", "ghe.example"])
+  })
+
+  test("an approval stands only where it is the last say: changes asked for, or the approval dismissed, it does not", () => {
+    const answer = (nodes: object[]) => JSON.stringify({ data: { repository: { pullRequest: { reviews: { nodes } } } } })
+    expect(parseViewerApproval(answer([{ id: "PRR_2", state: "APPROVED" }]))).toBe("PRR_2")
+    expect(parseViewerApproval(answer([{ id: "PRR_2", state: "DISMISSED" }]))).toBeNull()
+    expect(parseViewerApproval(answer([{ id: "PRR_3", state: "CHANGES_REQUESTED" }]))).toBeNull()
+    expect(parseViewerApproval(answer([]))).toBeNull()
+    expect(() => parseViewerApproval(JSON.stringify({ errors: [{ message: "Bad credentials" }] }))).toThrow("Bad credentials")
+  })
+})
+
+test("actArgv: an approval approves the head commit confirmed; a withdrawal dismisses the person's approving review", () => {
+  expect(actArgv("approve", URL, "abc", null)).toEqual(["gh", "api", "--silent", "-X", "POST", "repos/o/r/pulls/7/reviews", "-f", "commit_id=abc", "-f", "event=APPROVE"])
+  const dismissal = actArgv("unapprove", URL, "abc", null, { id: "PRR_1", message: "Approval withdrawn" })
+  expect(dismissal.slice(0, 4)).toEqual(["gh", "api", "graphql", "--silent"])
+  expect(dismissal.find(word => word.startsWith("query="))).toContain("dismissPullRequestReview")
+  expect(dismissal.slice(-4)).toEqual(["-f", "id=PRR_1", "-f", "message=Approval withdrawn"])
+  // Another host is asked as itself.
+  expect(actArgv("approve", "https://ghe.example/o/r/pull/7", "abc", null).slice(0, 4)).toEqual(["gh", "api", "--hostname", "ghe.example"])
+  expect(actArgv("unapprove", "https://ghe.example/o/r/pull/7", "abc", null, { id: "PRR_1", message: "m" }).slice(0, 4)).toEqual(["gh", "api", "--hostname", "ghe.example"])
 })
 
 test("parseMergeWords takes a method out of the words, whatever its case", () => {

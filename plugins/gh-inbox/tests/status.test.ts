@@ -10,6 +10,7 @@ function pullWith(changes: Partial<Pull>): Pull {
   return {
     ref,
     viewer: "me",
+    author: "someone",
     title: "T",
     url: "",
     state: "OPEN",

@@ -64,6 +64,8 @@ const MERGE_STATES: ReadonlySet<string> = new Set(["CLEAN", "HAS_HOOKS", "UNSTAB
 export type Pull = {
   ref: PullRef
   viewer: string
+  /** Who opened it; null where GitHub names no one (a deleted account). */
+  author: string | null
   title: string
   url: string
   state: PullState
@@ -118,6 +120,7 @@ export const PULL_QUERY = `query($owner: String!, $repo: String!, $number: Int!)
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
       title url state closedAt mergeable reviewDecision isDraft mergeStateStatus
+      author { login }
       mergedBy { login }
       autoMergeRequest { mergeMethod }
       latestOpinionatedReviews(first: 50) { nodes { state } }
@@ -281,6 +284,7 @@ export function parsePull(ref: PullRef, answer: string, language: Language = "en
   return {
     ref,
     viewer: login(data.viewer) ?? "",
+    author: login(pull.author),
     title: text(pull.title),
     url: text(pull.url),
     state: state === "MERGED" || state === "CLOSED" ? state : "OPEN",

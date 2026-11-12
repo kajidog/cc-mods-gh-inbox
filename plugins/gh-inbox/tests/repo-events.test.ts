@@ -136,6 +136,7 @@ describe("one notice for what the pull request and the repository both see", () 
   const pull: Pull = {
     ref: { ...ref, number: 18 },
     viewer: "me",
+    author: "someone",
     title: "T",
     url: "",
     state: "MERGED",

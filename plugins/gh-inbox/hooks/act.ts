@@ -1,9 +1,9 @@
-// What `/inbox merge`, `/inbox close` and `/inbox draft` do to a pull request: whether it can be done now, and the
-// `gh` command that does it once the person confirms it in the pane.
+// What `/inbox merge`, `/inbox close`, `/inbox draft`, `/inbox approve` and `/inbox unapprove` do to a pull request:
+// whether it can be done now, and the `gh` command that does it once the person confirms it in the pane.
 
 import type { GhActKind, GhPullStatus } from "../types"
 
-import { object, type Pull, type PullRef, text } from "./github"
+import { object, type Pull, type PullRef, parsePullUrl, text } from "./github"
 import type { Messages } from "./i18n"
 import { MARKS, statusMarks } from "./status"
 
@@ -95,9 +95,81 @@ export function planMerge(t: Messages, pull: Pull, status: GhPullStatus, setting
   }
 }
 
-/** What GitHub is asked to do, by `gh`; a merge only while `head` is still the pull request's head commit. */
-export function actArgv(kind: GhActKind, url: string, head: string, method: string | null): string[] {
+/**
+ * The person's last review that says yes or no (approving, asking for changes, or one of those dismissed since):
+ * whether their approval stands, however many others reviewed. Asked for only as an approval or its withdrawal is
+ * about to be confirmed.
+ */
+const VIEWER_REVIEW_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $login: String!) {
+  repository(owner: $owner, name: $repo) { pullRequest(number: $number) {
+    reviews(author: $login, states: [APPROVED, CHANGES_REQUESTED, DISMISSED], last: 1) { nodes { id state } }
+  } }
+}`
+
+/** The argv that asks for `login`'s last review of the pull request `ref` that says yes or no. */
+export function viewerReviewArgv(ref: PullRef, login: string): string[] {
+  return [
+    "gh",
+    "api",
+    ...(ref.host === "github.com" ? [] : ["--hostname", ref.host]),
+    "graphql",
+    "-f",
+    `owner=${ref.owner}`,
+    "-f",
+    `repo=${ref.repo}`,
+    "-F",
+    `number=${ref.number}`,
+    "-f",
+    `login=${login}`,
+    "-f",
+    `query=${VIEWER_REVIEW_QUERY}`,
+  ]
+}
+
+/**
+ * Reads `VIEWER_REVIEW_QUERY`'s answer: the node id of the person's approval where their last say approves, null where
+ * it does not (none, changes asked for, an approval dismissed); throws with GitHub's own words when it carries errors.
+ */
+export function parseViewerApproval(answer: string): string | null {
+  const json = object(JSON.parse(answer))
+  if (Array.isArray(json.errors) && json.errors.length > 0) throw new Error(text(object(json.errors[0]).message) || "GitHub answered with an error")
+  const reviews = object(object(object(object(json.data).repository).pullRequest).reviews).nodes
+  const last = object(Array.isArray(reviews) ? reviews.at(-1) : undefined)
+  return text(last.state) === "APPROVED" ? text(last.id) || null : null
+}
+
+/** What an approval or its withdrawal asked for comes to, or refused with why. */
+export type ReviewPlan = { kind: Extract<GhActKind, "approve" | "unapprove">; notes: string[] } | { refusal: string }
+
+/**
+ * Whether the person can approve the pull request now, or withdraw their approval (`approval`, the node id of theirs
+ * that stands, or null): approved once, at the head commit the pane shows; withdrawn by dismissing the approving
+ * review, which GitHub keeps on the pull request with why.
+ */
+export function planReview(t: Messages, pull: Pull, command: "approve" | "unapprove", approval: string | null): ReviewPlan {
+  if (command === "unapprove") {
+    if (approval === null) return { refusal: t.notApproved }
+    return { kind: "unapprove", notes: [t.unapproveNote(t.dismissMessage)] }
+  }
+  if (approval !== null) return { refusal: t.alreadyApproved }
+  if (pull.viewer !== "" && pull.author === pull.viewer) return { refusal: t.ownCannotApprove }
+  if (pull.head === "") return { refusal: t.headUnknown }
+  return { kind: "approve", notes: [] }
+}
+
+/** The mutation that withdraws an approval: GitHub's dismissal of the review, with why. */
+const DISMISS_MUTATION = `mutation($id: ID!, $message: String!) {
+  dismissPullRequestReview(input: { pullRequestReviewId: $id, message: $message }) { clientMutationId }
+}`
+
+/**
+ * What GitHub is asked to do, by `gh`: a merge only while `head` is still the pull request's head commit, an approval
+ * of `head` itself, a withdrawal by dismissing the review `review` names with its message.
+ */
+export function actArgv(kind: GhActKind, url: string, head: string, method: string | null, review?: { id: string; message: string }): string[] {
   const merge = ["gh", "pr", "merge", url, `--${(method ?? "merge").toLowerCase()}`, "--match-head-commit", head]
+  const ref = parsePullUrl(url)
+  const api = ["gh", "api", ...(ref === null || ref.host === "github.com" ? [] : ["--hostname", ref.host])]
   switch (kind) {
     case "merge":
       return merge
@@ -111,6 +183,13 @@ export function actArgv(kind: GhActKind, url: string, head: string, method: stri
       return ["gh", "pr", "ready", url]
     case "draft":
       return ["gh", "pr", "ready", url, "--undo"]
+    case "approve":
+      // The commit the pane showed is the one approved, whatever was pushed since.
+      return ref === null
+        ? ["gh", "pr", "review", url, "--approve"]
+        : [...api, "--silent", "-X", "POST", `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/reviews`, "-f", `commit_id=${head}`, "-f", "event=APPROVE"]
+    case "unapprove":
+      return [...api, "graphql", "--silent", "-f", `query=${DISMISS_MUTATION}`, "-f", `id=${review?.id ?? ""}`, "-f", `message=${review?.message ?? ""}`]
   }
 }
 

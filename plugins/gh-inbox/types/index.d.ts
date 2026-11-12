@@ -167,10 +167,16 @@ export type GhStaged = {
   at?: number
 }
 
-/** What `/inbox merge`, `/inbox close` and `/inbox draft` do to a pull request once the person confirms it. */
-export type GhActKind = "merge" | "auto" | "disable-auto" | "close" | "ready" | "draft"
+/**
+ * What `/inbox merge`, `/inbox close`, `/inbox draft`, `/inbox approve` and `/inbox unapprove` do to a pull request
+ * once the person confirms it.
+ */
+export type GhActKind = "merge" | "auto" | "disable-auto" | "close" | "ready" | "draft" | "approve" | "unapprove"
 
-/** What the pane of `/inbox merge`, `/inbox close` and `/inbox draft` shows: what is about to be done, to confirm. */
+/**
+ * What the pane of `/inbox merge`, `/inbox close`, `/inbox draft`, `/inbox approve` and `/inbox unapprove` shows: what
+ * is about to be done, to confirm.
+ */
 export type GhAct = {
   /** confirm: waiting for the person. running: under way. failed: GitHub refused it, `message` saying why. */
   stage: "confirm" | "running" | "failed"
@@ -179,7 +185,7 @@ export type GhAct = {
   pull: string
   title: string
   url: string
-  /** The head commit it was confirmed at, in full: a merge goes only while it is still the head. */
+  /** The head commit it was confirmed at, in full: a merge goes only while it is still the head; an approval approves it. */
   head: string
   /** Where it stands, as the line under the prompt tells it. */
   status: string
@@ -188,6 +194,8 @@ export type GhAct = {
   /** For a merge: the methods the repository allows (`MERGE`, `SQUASH`, `REBASE`) and the one chosen. */
   methods: string[]
   method: string | null
+  /** For a withdrawn approval: the node id of the person's approving review, which is dismissed. */
+  review?: string
   /** Why GitHub refused it, once it did. */
   message?: string
 }
@@ -276,6 +284,11 @@ declare module "claude-code" {
             isComplete?: boolean
           }
       >
+      /**
+       * The titles of the pull requests and issues the log pane narrowed to one repository heads its notices with, by
+       * `host/owner/repo#number`; "" for a number GitHub knows nothing of.
+       */
+      logTitles: Record<string, string>
       /** The pick pane's items unfolded to say in full what they say, by id. */
       pickUnfolded: string[]
       /** What the pane of `/inbox watch` shows. */
@@ -288,7 +301,7 @@ declare module "claude-code" {
       ciToldAt: number
       /** The rows the `row` channel placed in the transcript, oldest first, the newest kept. */
       placed: GhPlaced[]
-      /** What the pane of `/inbox merge`, `/inbox close` and `/inbox draft` shows. */
+      /** What the pane of `/inbox merge`, `/inbox close`, `/inbox draft`, `/inbox approve` and `/inbox unapprove` shows. */
       act: GhAct | null
     }
   }

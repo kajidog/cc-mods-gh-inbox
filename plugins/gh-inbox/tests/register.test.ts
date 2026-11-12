@@ -602,7 +602,7 @@ test("the log pane narrows to one repository by its buttons, `r` or /inbox log <
 
   await pane.press({ key: "repo:o/r" })
   expect((await pane.find({ key: "repo:o/r" }))?.props.label).toBe("[rr]")
-  expect(await pane.find({ type: "Text", text: "1件中 1〜1件目（新しい順）" })).toBeDefined()
+  expect(await pane.find({ type: "Text", text: "1件中 1〜1件目（PR ごと、新しい順）" })).toBeDefined()
   expect(await pane.find({ type: "Text", text: "in other" })).toBeUndefined()
   // `r` goes on to the next one, newest first; after the last, back to all.
   expect((await pane.find({ key: "repo:" }))?.props.hotkey).toBe("r")
@@ -615,6 +615,88 @@ test("the log pane narrows to one repository by its buttons, `r` or /inbox log <
   const text = await $.command.run({ ...CHECK, args: "log rr text" })
   expect(text).toMatchObject({ text: expect.stringContaining("in r") })
   expect(text).not.toMatchObject({ text: expect.stringContaining("in other") })
+})
+
+test("narrowed to one repository, the log pane puts its notices together by pull request under headings, its short name left unsaid", JA, async ($, on) => {
+  const at = (minutes: number) => new Date(Date.parse("2026-10-16T23:00:00Z") + minutes * 60_000).toISOString()
+  const comment = (id: string, number: number, minutes: number) => ({
+    id,
+    kind: "comment",
+    pull: `o/r#${number}`,
+    author: "a",
+    who: "aさん",
+    head: `aさんが #${number} にコメントしました。`,
+    label: "rr",
+    at: at(minutes),
+    text: `[rr] aさんが #${number} にコメントしました。${id}`,
+    url: `https://github.com/o/r/pull/${number}#issuecomment-${id}`,
+    items: [],
+  })
+  const push = {
+    id: "event:1",
+    kind: "push",
+    pull: "o/r",
+    author: "a",
+    who: "aさん",
+    head: "aさんが main に push しました。",
+    label: "rr",
+    at: at(20),
+    text: "[rr] aさんが main に push しました。fix",
+    url: "https://github.com/o/r/compare/a...b",
+    items: [],
+  }
+  const other = { ...comment("x1", 1, 40), pull: "o/other#1", label: "oth", text: "[oth] aさんが #1 にコメントしました。x1", url: "https://github.com/o/other/pull/1" }
+  mock.store(on, {
+    "history:other": toKept([comment("c1", 3, 0), comment("c2", 5, 10), push, comment("c3", 3, 30), other] as GhEvent[], 1),
+    repos: { "github.com/o/r": { kinds: ["comment", "push"], alias: "rr" } },
+    // The title of #5 is kept for the repository's notices: only #3's is asked for.
+    "titles:github.com/o/r": { "5": { title: "Known title", author: null } },
+  })
+  mock.clock(on, { now: Date.parse("2026-10-17T00:00:00Z") })
+  const github = fakeGitHub(on, [[]], argv =>
+    argv.some(word => word.includes("issueOrPullRequest")) ? { stdout: JSON.stringify({ data: { repository: { n3: { title: "Add things" } } } }) } : undefined,
+  )
+  on("ui.open", async () => ({ value: { isPlaced: true } }))
+
+  await $.command.run({ ...CHECK, args: "log rr" })
+  const pane = await $.ui.mount({
+    plugin: "gh-inbox",
+    surface: "terminal",
+    component: "Pane",
+    requestId: "gh-inbox-log",
+    props: { title: "", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 20 }, view: {} },
+  })
+  expect(await pane.find({ type: "Text", text: "4件中 1〜4件目（PR ごと、新しい順）" })).toBeDefined()
+  const heading = { type: "Text", text: "#3 Add things" } as const
+  for (let tries = 0; tries < 100 && (await pane.find(heading)) === undefined; tries += 1) await pane.find({ key: "close" })
+  expect(await pane.find(heading)).toBeDefined()
+  expect(await pane.find({ type: "Text", text: "#5 Known title" })).toBeDefined()
+  expect(await pane.find({ type: "Text", text: "PR に付かないもの（push・ブランチ・CI）" })).toBeDefined()
+  const asked = github.asked.filter(argv => argv.some(word => word.includes("issueOrPullRequest")))
+  expect(asked).toHaveLength(1)
+  expect(asked[0]?.find(word => word.startsWith("query="))).not.toContain("n5:")
+  // The pull request with the newest notice first, each one's newest first; each heading links to its pull request.
+  expect((await pane.findAll({ type: "Link" })).map(link => link.props.href)).toEqual([
+    "https://github.com/o/r/pull/3",
+    "https://github.com/o/r/pull/3#issuecomment-c3",
+    "https://github.com/o/r/pull/3#issuecomment-c1",
+    "https://github.com/o/r/compare/a...b",
+    "https://github.com/o/r/pull/5",
+    "https://github.com/o/r/pull/5#issuecomment-c2",
+  ])
+  const labels = async () => (await pane.findAll({ type: "Text" })).filter(one => one.props.color === "suggestion" && one.children.join("") === "[rr]")
+  expect(await labels()).toEqual([])
+
+  // Opened again, a title asked for is asked for afresh: one renamed since shows its new title.
+  await $.command.run({ ...CHECK, args: "log rr" })
+  for (let tries = 0; tries < 100 && github.asked.filter(argv => argv.some(word => word.includes("issueOrPullRequest"))).length < 2; tries += 1) await pane.find({ key: "close" })
+  expect(github.asked.filter(argv => argv.some(word => word.includes("issueOrPullRequest")))).toHaveLength(2)
+
+  // All of them again: newest first, each with its short name, no heading.
+  await pane.press({ key: "repo:" })
+  expect(await pane.find({ type: "Text", text: "5件中 1〜5件目（新しい順）" })).toBeDefined()
+  expect(await pane.find(heading)).toBeUndefined()
+  expect(await labels()).toHaveLength(4)
 })
 
 test("a commit or push row of the log pane unfolds to its commits under its line counts, which stay", JA, async ($, on) => {
@@ -1192,6 +1274,10 @@ type PullSays = {
   /** How it merges once it can, where auto-merge is on. */
   autoMerge?: string
   reviewDecision?: string
+  /** Who opened it; alice where not said. */
+  author?: string
+  /** Whose approval stands, its review's id `PRR_<login>`. */
+  approvedBy?: string
 }
 
 /** `PULL_QUERY`'s answer for o/r#number, as GitHub would give it. */
@@ -1212,8 +1298,9 @@ function pullAnswer(says: PullSays) {
           isDraft: says.isDraft === true,
           mergeStateStatus: says.mergeState ?? "UNKNOWN",
           autoMergeRequest: says.autoMerge === undefined ? null : { mergeMethod: says.autoMerge },
+          author: { login: says.author ?? "alice" },
           mergedBy: says.state === "MERGED" ? { login: "alice" } : null,
-          latestOpinionatedReviews: { nodes: [] },
+          latestOpinionatedReviews: { nodes: says.approvedBy === undefined ? [] : [{ state: "APPROVED" }] },
           closed: { nodes: [] },
           comments: { nodes: (says.comments ?? []).map(one => ({ id: one.id, author: { login: one.author }, body: one.body, createdAt: one.at, url: `https://github.com/o/r/pull/${number}#${one.id}` })) },
           reviews: { nodes: [] },
@@ -1525,16 +1612,24 @@ function actingGitHub(on: On, says: () => PullSays, acted: (argv: string[]) => A
     if (argv[0] === "git") return { stdout: "feat\n" }
     if (argv[1] === "repo" && argv[2] === "view") return { stdout: "https://github.com/o/r\n" }
     if (argv[1] === "pr" && argv[2] === "view") return { stdout: JSON.stringify({ url: "https://github.com/o/r/pull/12", state: "OPEN" }) }
-    if (argv[1] === "pr") return acted(argv)
+    if (argv[1] === "pr" || isReviewSent(argv)) return acted(argv)
     if (askedPull(argv) === 12) return { stdout: pullAnswer({ head: HEAD, ...says() }) }
     if (argv.some(word => word.includes("squashMergeAllowed"))) return { stdout: SETTINGS }
+    // The person's own last review that says yes or no: their approval where `approvedBy` is them.
+    if (argv.some(word => word.includes("reviews(author: $login"))) {
+      const by = says().approvedBy
+      const nodes = by !== undefined && argv.includes(`login=${by}`) ? [{ id: `PRR_${by}`, state: "APPROVED" }] : []
+      return { stdout: JSON.stringify({ data: { repository: { pullRequest: { reviews: { nodes } } } } }) }
+    }
     return undefined
   })
   return { ...github, opened }
 }
 
-/** What was sent to change a pull request: `gh pr merge`, `close`, `ready`. */
-const changes = (asked: string[][]) => asked.filter(argv => argv[1] === "pr" && argv[2] !== "view")
+/** Whether `argv` approves a pull request or withdraws an approval. */
+const isReviewSent = (argv: string[]) => argv.includes("event=APPROVE") || argv.some(word => word.includes("dismissPullRequestReview"))
+/** What was sent to change a pull request: `gh pr merge`, `close`, `ready`, an approval or its withdrawal. */
+const changes = (asked: string[][]) => asked.filter(argv => (argv[1] === "pr" && argv[2] !== "view") || isReviewSent(argv))
 
 test("/inbox merge asks in a pane, and merges at the head commit it showed only once its button is pressed", JA, async ($, on) => {
   mock.store(on, {})
@@ -1666,4 +1761,66 @@ test("one a required review keeps from merging turns on auto-merge, and one with
   await pane.press({ key: "act" })
   for (let tries = 0; tries < 100 && changes(github.asked).length < 2; tries += 1) await pane.find({ key: "act" })
   expect(changes(github.asked).at(-1)).toEqual(["gh", "pr", "merge", "https://github.com/o/r/pull/12", "--disable-auto"])
+})
+
+test("/inbox approve approves the head commit the pane showed once its button is pressed; /inbox unapprove withdraws it by a dismissal", JA, async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: 1_000_000 })
+  let approvedBy: string | undefined
+  const github = actingGitHub(on, () => ({ mergeState: "BLOCKED", reviewDecision: "REVIEW_REQUIRED", approvedBy }))
+
+  expect(await $.command.run({ ...CHECK, args: "approve" })).toEqual({ text: "ペインで確かめてください。ボタンを押すまでは何もしません。" })
+  expect(github.opened).toEqual(["gh-inbox-act"])
+  const pane = await $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "Pane", requestId: "gh-inbox-act", props: ACT_PANE })
+  expect(await pane.find({ type: "Text", text: "abc1234  ○ レビュー待ち" })).toBeDefined()
+  expect((await pane.find({ key: "act" }))?.props.label).toBe("承認する")
+  expect((await pane.find({ key: "act" }))?.props.hotkey).toBeUndefined()
+  expect(changes(github.asked)).toEqual([])
+
+  await pane.press({ key: "act" })
+  for (let tries = 0; tries < 100 && !github.toasts.includes("o/r#12 を承認しました。"); tries += 1) await pane.find({ key: "cancel" })
+  expect(changes(github.asked)).toEqual([["gh", "api", "--silent", "-X", "POST", "repos/o/r/pulls/12/reviews", "-f", `commit_id=${HEAD}`, "-f", "event=APPROVE"]])
+  expect(github.toasts).toContain("o/r#12 を承認しました。")
+
+  // Approved already: not again, and the way to withdraw it said.
+  approvedBy = "me"
+  expect(await $.command.run({ ...CHECK, args: "approve" })).toEqual({ text: "o/r#12: もう承認しています。取り消すには /inbox unapprove を使います。" })
+
+  await $.command.run({ ...CHECK, args: "unapprove 12" })
+  expect(await pane.find({ type: "Text", text: "GitHub では、自分のレビューの却下（dismiss）として「承認を取り消しました」と PR に残ります。" })).toBeDefined()
+  expect((await pane.find({ key: "act" }))?.props.label).toBe("承認を取り消す")
+  await pane.press({ key: "act" })
+  for (let tries = 0; tries < 100 && !github.toasts.includes("o/r#12 の承認を取り消しました。"); tries += 1) await pane.find({ key: "cancel" })
+  const dismissal = changes(github.asked).at(-1) ?? []
+  expect(dismissal.slice(0, 4)).toEqual(["gh", "api", "graphql", "--silent"])
+  expect(dismissal.slice(-4)).toEqual(["-f", "id=PRR_me", "-f", "message=承認を取り消しました"])
+  expect(github.toasts).toContain("o/r#12 の承認を取り消しました。")
+
+  approvedBy = undefined
+  expect(await $.command.run({ ...CHECK, args: "unapprove" })).toEqual({ text: "o/r#12: この PR は承認していません。" })
+  expect(changes(github.asked)).toHaveLength(2)
+})
+
+test("/inbox approve refuses one's own pull request before any pane, and says in the pane why GitHub refused one", async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: 1_000_000 })
+  let author = "me"
+  const github = actingGitHub(
+    on,
+    () => ({ mergeState: "BLOCKED", author }),
+    () => ({ exitCode: 1, stderr: "gh: Can not approve a draft pull request (HTTP 422)\n" }),
+  )
+
+  expect(await $.command.run({ ...CHECK, args: "approve" })).toEqual({ text: "o/r#12: It is your own pull request: GitHub does not let its author approve it." })
+  expect(github.opened).toEqual([])
+
+  author = "alice"
+  await $.command.run({ ...CHECK, args: "approve" })
+  const pane = await $.ui.mount({ plugin: "gh-inbox", surface: "terminal", component: "Pane", requestId: "gh-inbox-act", props: ACT_PANE })
+  expect((await pane.find({ key: "act" }))?.props.label).toBe("Approve")
+  await pane.press({ key: "act" })
+  const refused = { type: "Text", text: "GitHub refused it: gh: Can not approve a draft pull request (HTTP 422)" } as const
+  for (let tries = 0; tries < 100 && (await pane.find(refused)) === undefined; tries += 1) await pane.find({ key: "cancel" })
+  expect(await pane.find(refused)).toBeDefined()
+  expect(github.toasts.filter(text => text.startsWith("Approved"))).toEqual([])
 })

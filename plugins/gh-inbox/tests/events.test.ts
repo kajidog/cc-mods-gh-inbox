@@ -9,6 +9,7 @@ function pullWith(changes: Partial<Pull>): Pull {
   return {
     ref,
     viewer: "me",
+    author: "someone",
     title: "Add things",
     url: "https://github.com/o/r/pull/7",
     state: "OPEN",
@@ -215,8 +216,14 @@ test("parsePull reads checks of the newest commit", async () => {
   }
   const pull = parsePull(ref, JSON.stringify(answer))
   expect(pull.commits[0]?.author).toBe("N")
+  expect(pull.author).toBeNull()
   expect(pull.checks).toEqual([{ ...run("run:5", "CI / test", "Run tests"), actions: null }])
   expect(() => parsePull(ref, JSON.stringify({ errors: [{ message: "Bad credentials" }] }))).toThrow("Bad credentials")
+})
+
+test("parsePull reads who opened it", async () => {
+  const answer = { data: { viewer: { login: "me" }, repository: { pullRequest: { title: "T", url: "u", state: "OPEN", author: { login: "alice" } } } } }
+  expect(parsePull(ref, JSON.stringify(answer)).author).toBe("alice")
 })
 
 describe("newEvents in English, the default", () => {
