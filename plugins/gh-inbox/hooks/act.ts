@@ -73,11 +73,12 @@ const holdingBack = (t: Messages, status: GhPullStatus) => {
 /**
  * Whether the pull request can be merged now, as GitHub says of it, branch protection and all: merged at once when it
  * can, auto-merge turned on where the repository allows it while a required review or check is missing, refused
- * otherwise. Never past branch protection (no `--admin`). One with auto-merge on has it turned off instead.
+ * otherwise. Never past branch protection (no `--admin`). One with auto-merge on has it turned off instead. `pr` names
+ * it in a command a refusal points to; undefined where it was asked from its pane, whose buttons do it.
  */
-export function planMerge(t: Messages, pull: Pull, status: GhPullStatus, settings: MergeSettings): MergePlan {
+export function planMerge(t: Messages, pull: Pull, status: GhPullStatus, settings: MergeSettings, pr?: string): MergePlan {
   if (pull.autoMerge !== null) return { kind: "disable-auto", notes: [t.autoMergeIsOn(methodName(t, pull.autoMerge))] }
-  if (pull.isDraft || pull.mergeState === "DRAFT") return { refusal: t.draftCannotMerge }
+  if (pull.isDraft || pull.mergeState === "DRAFT") return { refusal: t.draftCannotMerge(pr) }
   if (pull.mergeable === "CONFLICTING" || pull.mergeState === "DIRTY") return { refusal: t.conflictsCannotMerge }
   if (pull.mergeState === "BEHIND") return { refusal: t.behindCannotMerge }
   if (pull.head === "") return { refusal: t.headUnknown }
@@ -147,14 +148,15 @@ export type ReviewPlan = { kind: Extract<GhActKind, "approve" | "unapprove">; no
 /**
  * Whether the person can approve the pull request now, or withdraw their approval (`approval`, the node id of theirs
  * that stands, or null): approved once, at the head commit the pane shows; withdrawn by dismissing the approving
- * review, which GitHub keeps on the pull request with why.
+ * review, which GitHub keeps on the pull request with why. `pr` names it in a command a refusal points to; undefined
+ * where it was asked from its pane, whose buttons do it.
  */
-export function planReview(t: Messages, pull: Pull, command: "approve" | "unapprove", approval: string | null): ReviewPlan {
+export function planReview(t: Messages, pull: Pull, command: "approve" | "unapprove", approval: string | null, pr?: string): ReviewPlan {
   if (command === "unapprove") {
     if (approval === null) return { refusal: t.notApproved }
     return { kind: "unapprove", notes: [t.unapproveNote(t.dismissMessage)] }
   }
-  if (approval !== null) return { refusal: t.alreadyApproved }
+  if (approval !== null) return { refusal: t.alreadyApproved(pr) }
   if (pull.viewer !== "" && pull.author === pull.viewer) return { refusal: t.ownCannotApprove }
   if (pull.head === "") return { refusal: t.headUnknown }
   return { kind: "approve", notes: [] }

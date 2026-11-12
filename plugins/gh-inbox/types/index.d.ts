@@ -184,6 +184,8 @@ export type GhPrDetail =
       status: GhPullStatus
       /** Why what the last button pressed asked for could not be done. */
       note?: string
+      /** What the pane says while what the last button pressed asked for is asked of GitHub. */
+      asking?: string
       /** When it was asked of GitHub, ms since the epoch. */
       at: number
     }

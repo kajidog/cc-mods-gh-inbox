@@ -327,14 +327,15 @@ test("one thread can be chosen alone, its review shown as partly chosen", JA, as
   expect(contexts[0]?.[0]).not.toContain("Rename this")
 })
 
-test("on a branch with no pull request, /inbox pr pick says so, and the list has this repository's to choose from", JA, async ($, on) => {
+test("on a branch with no pull request, /inbox pr show says so, and the list has this repository's to choose from", JA, async ($, on) => {
   mock.store(on, {})
   mock.clock(on, { now: 1_000_000 })
   fakeGh(on, "main")
 
-  expect(await $.command.run({ ...PICK, args: "pr pick" })).toEqual({
-    text: "main の PR はありません。/inbox pr 12 pick のように 12・owner/repo#12・PR の URL で指定するか、/inbox pr の一覧から選べます。",
-  })
+  const none = { text: "main の PR はありません。/inbox pr 12 のように 12・owner/repo#12・PR の URL で指定するか、/inbox pr の一覧から選べます。" }
+  expect(await $.command.run({ ...PICK, args: "pr show" })).toEqual(none)
+  // `pick`, as `/inbox pick` was, is another word for it.
+  expect(await $.command.run({ ...PICK, args: "pr pick" })).toEqual(none)
   await $.command.run({ ...PICK, args: "pr" })
   const pane = await $.ui.mount(PANE)
   await pane.press({ key: "pr:github.com/o/r#5" })

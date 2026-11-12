@@ -73,7 +73,7 @@ Everything done to a pull request goes through `/inbox pr`: the list, one pull r
 /inbox pr                          # the list of pull requests
 /inbox pr 12                       # #12 of this repository: where it stands, what to hand to Claude, what to do to it
 /inbox pr owner/repo#12            # or the pull request's URL
-/inbox pr pick                     # this branch's pull request, shown to choose what to hand to Claude
+/inbox pr show                     # this branch's pull request (pick works too)
 /inbox pr merge                    # merge this branch's pull request, once you confirm it in a pane
 /inbox pr 12 merge squash          # #12, squashed
 /inbox pr 12 close                 # close it without merging; draft, approve and unapprove go the same way
@@ -97,7 +97,7 @@ Each row tells its repository's short name and number, where it stands as the ba
 
 ### One pull request
 
-`/inbox pr 12` (or a row pressed) shows the pull request: its number (a link to it on GitHub) and title, who opened it, whether it is a draft, merged, closed or watched, where it stands with the reviewers named and who wrote last, and buttons that do something to it: **Watch** / **Stop watching** (`w`), **Merge** (`m`), **Convert to draft** / **Mark ready for review** (`d`), **Approve** / **Withdraw approval** (`v`, not on your own) and **Close** (`x`). Merging, closing, drafting and approving open the pane that confirms them ([Merging, closing and drafts](#merging-closing-and-drafts), [Approving](#approving)); what cannot be done is said on the pane instead. `r` reads it again, `l` goes back to the list, `q` closes the pane.
+`/inbox pr 12` (or a row pressed) shows the pull request: its number (a link to it on GitHub) and title, who opened it, whether it is a draft, merged, closed or watched, where it stands with the reviewers named and who wrote last, and buttons that do something to it: **Watch** / **Stop watching** (`w`), **Merge** (`m`), **Convert to draft** / **Mark ready for review** (`d`), **Approve** / **Withdraw approval** (`v`, not on your own) and **Close PR** (`x`). Merging, closing, drafting and approving open the pane that confirms them ([Merging, closing and drafts](#merging-closing-and-drafts), [Approving](#approving)); what cannot be done is said on the pane instead. `r` reads it again, `l` goes back to the list, `q` closes the pane.
 
 Under that come the description, reviews and comments, to hand to Claude: press an item's `▸` to unfold all it says. Choose some and press **Attach** (`a`): they go to Claude with the next prompt you send. Write your request in the prompt as usual.
 
@@ -210,7 +210,7 @@ asked to review
 | `/inbox log text` | Lists the newest 20 in the transcript instead, for Claude to read |
 | `/inbox pr` | The list of pull requests: this branch's, yours, those asked of you, watched, with notices, this repository's ([Pull requests](#pull-requests-inbox-pr)) |
 | `/inbox pr PR` | Show a pull request (`12`, `owner/repo#12` or its URL): where it stands, buttons to watch, merge, draft, approve or close it, and its description, threads, reviews and comments to hand to Claude |
-| `/inbox pr [PR] pick` | The same, for this branch's pull request where none is named |
+| `/inbox pr show` | The same, for this branch's pull request (`pick` works too) |
 | `/inbox pr [PR] merge [merge\|squash\|rebase]` | Merge a pull request once you confirm it in a pane; auto-merge while a required review or check is missing ([Merging, closing and drafts](#merging-closing-and-drafts)) |
 | `/inbox pr [PR] close` | Close a pull request without merging, once you confirm it in a pane |
 | `/inbox pr [PR] draft` | Mark a draft ready for review, or convert a pull request to a draft, once you confirm it in a pane |

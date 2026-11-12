@@ -1210,6 +1210,8 @@ type PullSays = {
   author?: string
   /** Whose approval stands, its review's id `PRR_<login>`. */
   approvedBy?: string
+  /** How many others approve it, listed first: as many as GitHub is asked for leave `approvedBy`'s out of the list. */
+  othersApproving?: number
 }
 
 /** `PULL_QUERY`'s answer for o/r#number, as GitHub would give it. */
@@ -1232,7 +1234,12 @@ function pullAnswer(says: PullSays) {
           autoMergeRequest: says.autoMerge === undefined ? null : { mergeMethod: says.autoMerge },
           author: { login: says.author ?? "alice" },
           mergedBy: says.state === "MERGED" ? { login: "alice" } : null,
-          latestOpinionatedReviews: { nodes: says.approvedBy === undefined ? [] : [{ state: "APPROVED" }] },
+          latestOpinionatedReviews: {
+            nodes: [
+              ...Array.from({ length: says.othersApproving ?? 0 }, (_, index) => ({ state: "APPROVED", author: { login: `r${index}` } })),
+              ...(says.approvedBy === undefined ? [] : [{ state: "APPROVED" }]),
+            ].slice(0, 50),
+          },
           closed: { nodes: [] },
           comments: { nodes: (says.comments ?? []).map(one => ({ id: one.id, author: { login: one.author }, body: one.body, createdAt: one.at, url: `https://github.com/o/r/pull/${number}#${one.id}` })) },
           reviews: { nodes: [] },
@@ -1623,7 +1630,7 @@ test("/inbox pr merge refuses what cannot be merged now, before any pane", JA, a
   let says: PullSays = { isDraft: true, mergeState: "DRAFT" }
   const github = actingGitHub(on, () => says)
 
-  expect(await $.command.run({ ...CHECK, args: "pr merge" })).toEqual({ text: "o/r#12: 下書きです。先にレビュー待ちにします（/inbox pr draft）。" })
+  expect(await $.command.run({ ...CHECK, args: "pr merge" })).toEqual({ text: "o/r#12: 下書きです。先にレビュー待ちにします（/inbox pr o/r#12 draft）。" })
   says = { mergeState: "BEHIND" }
   expect(await $.command.run({ ...CHECK, args: "pr merge o/r#12" })).toMatchObject({ text: expect.stringContaining("base が先に進んでいて") })
   says = { mergeState: "CLEAN" }
@@ -1740,7 +1747,7 @@ test("/inbox pr approve approves the head commit the pane showed once its button
 
   // Approved already: not again, and the way to withdraw it said.
   approvedBy = "me"
-  expect(await $.command.run({ ...CHECK, args: "pr approve" })).toEqual({ text: "o/r#12: もう承認しています。取り消すには /inbox pr unapprove を使います。" })
+  expect(await $.command.run({ ...CHECK, args: "pr approve" })).toEqual({ text: "o/r#12: もう承認しています。取り消すには /inbox pr o/r#12 unapprove を使います。" })
 
   await $.command.run({ ...CHECK, args: "pr unapprove 12" })
   expect(await pane.find({ type: "Text", text: "GitHub では、自分のレビューの却下（dismiss）として「承認を取り消しました」と PR に残ります。" })).toBeDefined()
@@ -1861,7 +1868,7 @@ test("/inbox pr lists pull requests a group each, every one once, those the log 
   // An issue's notices, and a push's, are no pull request's.
   expect(await row("github.com/o/r#7")).toBeUndefined()
   const texts = (await pane.findAll({ type: "Text" })).map(one => one.text)
-  expect(texts.filter(text => text.endsWith("PR"))).toEqual(["通知している PR", "通知があった PR", "このリポジトリと登録したリポジトリの PR"])
+  expect(texts.filter(text => text.endsWith("PR"))).toEqual(["通知している PR", "ログに残っている PR", "このリポジトリと登録したリポジトリの PR"])
   // One request for those that say nothing of where they stand: the watched one's is the check's.
   const asked = github.asked.filter(argv => argv.some(word => word.includes("issueOrPullRequest")))
   expect(asked).toHaveLength(1)
@@ -1873,6 +1880,12 @@ test("/inbox pr lists pull requests a group each, every one once, those the log 
   expect((await pane.find({ type: "Link" }))?.props.href).toBe("https://github.com/o/r/pull/3")
   await pane.press({ key: "list" })
   expect((await row("github.com/o/r#3"))?.label).toBe("rr#3  ○ レビュー待ち  ✓ 承認1  Add things  通知2件・30分前")
+
+  // In a narrow pane a row keeps to one line: its title gives way, where it stands and its notices kept; its label, all.
+  await pane.unmount()
+  const narrow = await $.ui.mount({ ...PR_PANE, props: { ...PR_PANE.props, bodyColumns: 60 } })
+  expect((await narrow.findAll({ type: "Text" })).map(one => one.text)).toContain("  Add th…  通知2件・30分前")
+  expect((await narrow.find({ key: "pr:github.com/o/r#3" }))?.props.label).toBe("rr#3  ○ レビュー待ち  ✓ 承認1  Add things  通知2件・30分前")
 })
 
 test("the pane of /inbox pr <PR> says where it stands and what can be done to it, and why what was pressed cannot be", JA, async ($, on) => {
@@ -1885,8 +1898,11 @@ test("the pane of /inbox pr <PR> says where it stands and what can be done to it
   expect(github.opened).toEqual(["gh-inbox-pr"])
   const pane = await $.ui.mount(PR_PANE)
   const label = async (key: string) => (await pane.find({ key }))?.props.label
+  // Named as the list names it, its repository in full under it.
   expect((await pane.find({ type: "Link" }))?.props.href).toBe("https://github.com/o/r/pull/12")
-  expect(await pane.find({ type: "Text", text: "aliceさんの PR" })).toBeDefined()
+  // (A Link's text as found leads with its address.)
+  expect((await pane.find({ type: "Link" }))?.text).toBe("https://github.com/o/r/pull/12r#12")
+  expect(await pane.find({ type: "Text", text: "o/r、aliceさんの PR" })).toBeDefined()
   expect(await pane.find({ type: "Text", text: "abc1234  ○ レビュー待ち" })).toBeDefined()
   expect(await label("pr:watch")).toBe("通知する")
   expect(await label("pr:merge")).toBe("マージする")
@@ -1898,27 +1914,86 @@ test("the pane of /inbox pr <PR> says where it stands and what can be done to it
   // Watching is saved at once; a merge opens the pane that confirms it, nothing sent before its button.
   await pane.press({ key: "pr:watch" })
   expect(await label("pr:watch")).toBe("通知をやめる")
-  expect(await pane.find({ type: "Text", text: "aliceさんの PR、通知中" })).toBeDefined()
+  expect(await pane.find({ type: "Text", text: "o/r、aliceさんの PR、通知中" })).toBeDefined()
   await pane.press({ key: "pr:merge" })
   for (let tries = 0; tries < 100 && !github.opened.includes("gh-inbox-act"); tries += 1) await pane.find({ key: "close" })
   expect(github.opened).toEqual(["gh-inbox-pr", "gh-inbox-act"])
   expect(changes(github.asked)).toEqual([])
 
-  // Read again: one's own draft has no button to approve it, and what cannot be done is said on the pane alone.
+  // Read again: one's own draft has no button to approve it or to merge it, marking it ready a button of its own; the
+  // head commit alone, with nothing of where it stands, is no line.
   says = { isDraft: true, mergeState: "DRAFT", author: "me" }
   await pane.press({ key: "reload" })
   for (let tries = 0; tries < 100 && (await label("pr:draft")) !== "レビュー待ちにする"; tries += 1) await pane.find({ key: "close" })
   expect(await pane.find({ key: "pr:approve" })).toBeUndefined()
+  expect(await pane.find({ key: "pr:merge" })).toBeUndefined()
+  expect((await pane.findAll({ type: "Text" })).map(one => one.text)).not.toContain("abc1234")
+
+  // Made a draft again before the pane knew: why it cannot be merged is said on the pane, with no command for what its
+  // own button does, and it is read again, so the buttons follow.
+  says = { mergeState: "CLEAN", author: "me" }
+  await pane.press({ key: "reload" })
+  for (let tries = 0; tries < 100 && (await label("pr:merge")) !== "マージする"; tries += 1) await pane.find({ key: "close" })
+  says = { isDraft: true, mergeState: "DRAFT", author: "me" }
   await pane.press({ key: "pr:merge" })
-  const refused = { type: "Text", text: "o/r#12: 下書きです。先にレビュー待ちにします（/inbox pr draft）。" } as const
+  const refused = { type: "Text", text: "o/r#12: 下書きです。先にレビュー待ちにします。" } as const
   for (let tries = 0; tries < 100 && (await pane.find(refused)) === undefined; tries += 1) await pane.find({ key: "close" })
   expect(await pane.find(refused)).toBeDefined()
+  expect(await label("pr:draft")).toBe("レビュー待ちにする")
+  expect(await pane.find({ key: "pr:merge" })).toBeUndefined()
+  expect(await pane.find({ type: "Text", text: "GitHub に確かめています…" })).toBeUndefined()
   expect(github.opened).toEqual(["gh-inbox-pr", "gh-inbox-act"])
 
   // Back on the list, it is there, watched and the branch's.
   await pane.press({ key: "list" })
   for (let tries = 0; tries < 100 && (await pane.find({ key: "pr:github.com/o/r#12" })) === undefined; tries += 1) await pane.find({ key: "close" })
   expect(await pane.find({ key: "pr:github.com/o/r#12" })).toBeDefined()
+})
+
+test("the pane of /inbox pr <PR> asks whether the person approves it where as many reviewers came as are asked for, theirs maybe left out", JA, async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: 1_000_000 })
+  let says: PullSays = { mergeState: "BLOCKED", othersApproving: 50, approvedBy: "me" }
+  const github = actingGitHub(on, () => says)
+  const asked = () => github.asked.filter(argv => argv.some(word => word.includes("reviews(author: $login"))).length
+
+  await $.command.run({ ...CHECK, args: "pr 12" })
+  const pane = await $.ui.mount(PR_PANE)
+  const label = async () => (await pane.find({ key: "pr:approve" }))?.props.label
+  expect(await label()).toBe("承認を取り消す")
+  expect(asked()).toBe(1)
+
+  // With fewer, whether the person approves it is read from those that came: not asked.
+  says = { mergeState: "BLOCKED", othersApproving: 3 }
+  await pane.press({ key: "reload" })
+  for (let tries = 0; tries < 100 && (await label()) !== "承認する"; tries += 1) await pane.find({ key: "close" })
+  expect(await label()).toBe("承認する")
+  expect(asked()).toBe(1)
+})
+
+test("a pull request still asked for as /inbox pr opens the list is not shown over the list", JA, async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: 1_000_000 })
+  on("ui.open", async () => ({ value: { isPlaced: true } }))
+  let answer: () => void = () => undefined
+  const answered = new Promise<void>(resolve => {
+    answer = resolve
+  })
+  const github = fakeGitHub(on, [[]], async argv => {
+    if (argv[1] === "repo" && argv[2] === "view") return { stdout: "https://github.com/o/r\n" }
+    if (askedPull(argv) !== 12) return undefined
+    await answered
+    return { stdout: pullAnswer({}) }
+  })
+
+  const pane = await $.ui.mount(PR_PANE)
+  const shown = $.command.run({ ...CHECK, args: "pr 12" })
+  for (let tries = 0; tries < 100 && !github.asked.some(argv => askedPull(argv) === 12); tries += 1) await pane.find({ key: "close" })
+  expect(await $.command.run({ ...CHECK, args: "pr" })).toEqual({ text: "PR の一覧をペインで開きました。押すとその PR を開きます。" })
+  answer()
+  await shown
+  expect(await pane.find({ type: "Link" })).toBeUndefined()
+  expect(await pane.find({ key: "list" })).toBeUndefined()
 })
 
 test("each pull request's command that went under /inbox pr says where it went", JA, async ($, on) => {
@@ -1940,7 +2015,7 @@ test("/inbox pr speaks English by default", async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
   const github = actingGitHub(on, () => ({ mergeState: "CLEAN" }))
 
-  expect(await $.command.run({ ...CHECK, args: "pick" })).toEqual({ text: "/inbox pick is now part of /inbox pr: /inbox pr pick for this branch's pull request, /inbox pr 12 pick for another." })
+  expect(await $.command.run({ ...CHECK, args: "pick" })).toEqual({ text: "/inbox pick is now part of /inbox pr: /inbox pr show for this branch's pull request, /inbox pr 12 for another." })
   expect(await $.command.run({ ...CHECK, args: "pr pick" })).toEqual({ text: 'Showed it in the pane: choose what to hand to Claude and press "Attach", or press what to do to it.' })
   const pane = await $.ui.mount(PR_PANE)
   expect(await pane.find({ type: "Text", text: "opened by alice" })).toBeDefined()

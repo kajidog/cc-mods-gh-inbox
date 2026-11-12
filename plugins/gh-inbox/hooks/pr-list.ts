@@ -7,11 +7,18 @@ import { isMethod, type Method } from "./act"
 import { MERGE_INFO_PREVIEW, object, type PullState, parseStanding, type Standing, standingFields, text } from "./github"
 import { repoOfEvent } from "./history"
 
-/** What `/inbox pr [PR] <action>` does to a pull request: change it once confirmed in a pane, hand it to Claude, watch it. */
-export const PR_ACTIONS = ["merge", "close", "draft", "approve", "unapprove", "pick", "watch", "unwatch"] as const
+/** What `/inbox pr [PR] <action>` does to a pull request: show it, change it once confirmed in a pane, watch it. */
+export const PR_ACTIONS = ["show", "merge", "close", "draft", "approve", "unapprove", "watch", "unwatch"] as const
 export type PrAction = (typeof PR_ACTIONS)[number]
 
-export const isPrAction = (value: string): value is PrAction => PR_ACTIONS.includes(value as PrAction)
+/** Other words for an action: `pick`, as `/inbox pick` was, shows it. */
+const ALIASES: Readonly<Record<string, PrAction>> = { pick: "show" }
+
+/** The action `word` names, whatever its case; undefined where it names none. */
+const actionOf = (word: string): PrAction | undefined => {
+  const lower = word.toLowerCase()
+  return PR_ACTIONS.includes(lower as PrAction) ? (lower as PrAction) : ALIASES[lower]
+}
 
 /** `/inbox pr`'s words read: the pull request ("" for the branch's), what to do to it (none: show it), a merge's method. */
 export type PrWords = { pull: string; action: PrAction | undefined; method: Method | undefined }
@@ -22,8 +29,8 @@ export type PrWords = { pull: string; action: PrAction | undefined; method: Meth
  */
 export function parsePrWords(words: readonly string[]): PrWords | undefined {
   const rest = [...words]
-  const at = rest.findIndex(word => isPrAction(word.toLowerCase()))
-  const action = at === -1 ? undefined : (rest.splice(at, 1)[0]?.toLowerCase() as PrAction)
+  const at = rest.findIndex(word => actionOf(word) !== undefined)
+  const action = at === -1 ? undefined : actionOf(rest.splice(at, 1)[0] ?? "")
   let method: Method | undefined
   // `merge` names the action first, then the method: `/inbox pr merge merge` merges with a merge commit.
   const named = action === "merge" ? rest.findIndex(word => isMethod(word.toUpperCase())) : -1
@@ -186,4 +193,29 @@ export function parseHeadings(answer: string): Map<number, PrHeading> {
   }
 
   return headings
+}
+
+// What a terminal draws two cells wide: East Asian wide and fullwidth letters (kana, kanji, hangul, fullwidth forms) and
+// most emoji. Anything else is taken for one, a combining mark too, so a row is never taken for shorter than it is.
+const WIDE =
+  /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]|[\u{1F300}-\u{1F64F}\u{1F900}-\u{1F9FF}\u{20000}-\u{3FFFD}]/u
+
+const cellsOf = (char: string) => (WIDE.test(char) ? 2 : 1)
+
+/** How many cells a terminal draws `text` in, as near as can be told without drawing it. */
+export const cells = (text: string) => [...text].reduce((sum, char) => sum + cellsOf(char), 0)
+
+/** `text` cut to `width` cells, an ellipsis where it was cut; "" where not even that fits. */
+export function fitCells(text: string, width: number): string {
+  if (cells(text) <= width) return text
+  if (width < 1) return ""
+  let fitted = ""
+  let used = 0
+  for (const char of text) {
+    if (used + cellsOf(char) > width - 1) break
+    fitted += char
+    used += cellsOf(char)
+  }
+
+  return `${fitted}…`
 }

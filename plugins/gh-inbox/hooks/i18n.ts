@@ -173,7 +173,7 @@ const en = {
   commandDescription:
     "GitHub notices for this branch's pull request, pull requests you watch and registered repositories: status, check now, recent notices, pull requests (list them, show one to hand its reviews to Claude, watch, merge, close, draft or approve it), repositories, nicknames, what the line under the prompt shows",
   commandHint:
-    "[status|check|log [repo] [text]|pr [pr] [merge [merge|squash|rebase]|close|draft|approve|unapprove|pick|watch|unwatch]|clear|repo [add|set|remove|alias ...]|nick [login [nickname]]|tray [pull|repos]]",
+    "[status|check|log [repo] [text]|pr [pr] [show|merge [merge|squash|rebase]|close|draft|approve|unapprove|watch|unwatch]|clear|repo [add|set|remove|alias ...]|nick [login [nickname]]|tray [pull|repos]]",
   noBranch: "The branch is not known (outside a git repository, or a detached HEAD).",
   noPull: (branch: string) => `${branch} has no pull request.`,
   pullState: (state: string | null): string => (state === "OPEN" ? "watching" : state === "MERGED" ? "merged" : "closed"),
@@ -206,7 +206,9 @@ const en = {
     `/inbox ${command} is now part of /inbox pr: ${
       command === "watch"
         ? "watch one with /inbox pr 12 watch (stop with unwatch); /inbox pr lists those watched"
-        : `/inbox pr ${command} for this branch's pull request, /inbox pr 12 ${command} for another`
+        : command === "pick"
+          ? "/inbox pr show for this branch's pull request, /inbox pr 12 for another"
+          : `/inbox pr ${command} for this branch's pull request, /inbox pr 12 ${command} for another`
     }.`,
   trayShows: (view: string): string =>
     view === "pull"
@@ -252,9 +254,9 @@ const en = {
     "Usage:",
     "  /inbox pr                                    List pull requests: yours, asked of you, watched, with notices, this repository's",
     "  /inbox pr PR                                 Show one: where it stands, what to do to it, what to hand to Claude",
+    "  /inbox pr show                               Show this branch's pull request",
     "  /inbox pr [PR] merge [merge|squash|rebase]   Merge it once you confirm it in a pane",
     "  /inbox pr [PR] close|draft|approve|unapprove Close it, switch draft and ready, approve it or withdraw your approval, once confirmed",
-    "  /inbox pr [PR] pick                          Show it, to choose what to hand to Claude",
     "  /inbox pr [PR] watch|unwatch                 Notify what comes on it as on this branch's pull request, or stop",
     "PR: 12, owner/repo#12 or its URL; none: this branch's pull request.",
   ].join("\n"),
@@ -292,8 +294,11 @@ const en = {
   prToDraft: "Convert to draft",
   prApprove: "Approve",
   prUnapprove: "Withdraw approval",
-  prClose: "Close",
+  /** Closing the pull request, not the pane: told apart from `close`. */
+  prClose: "Close PR",
   prReload: "Reload",
+  /** What the pane says while what a button pressed is asked of GitHub. */
+  prAsking: "Asking GitHub…",
   prNoHereRepo: (action: string) => `The repository of this directory is not known. Name it with /inbox pr owner/repo#12${action === "" ? "" : ` ${action}`}.`,
 
   // Watching a pull request: `/inbox pr [PR] watch` and `unwatch`
@@ -319,7 +324,8 @@ const en = {
     `${branch} has no pull request. Name one with /inbox pr 12${action === "" ? "" : ` ${action}`}, owner/repo#12 or its URL, or choose one from /inbox pr.`,
   actNotOpen: (name: string, state: string) => `${name} is ${state} already.`,
   actPaneOpened: "Confirm it in the pane: nothing is done until you press the button.",
-  draftCannotMerge: "It is a draft: mark it ready for review first (/inbox pr draft).",
+  /** `pr` names the pull request in the command that marks it ready; undefined in its pane, whose button does. */
+  draftCannotMerge: (pr: string | undefined) => `It is a draft: mark it ready for review first${pr === undefined ? "" : ` (/inbox pr ${pr} draft)`}.`,
   conflictsCannotMerge: "It conflicts with its base: resolve the conflicts first.",
   behindCannotMerge: "Its base has moved on and must be merged into it first (gh pr update-branch, or Update branch on GitHub).",
   mergeUnknown: "GitHub is still working out whether it can be merged. Try again in a moment.",
@@ -333,7 +339,8 @@ const en = {
   methods: { MERGE: "merge commit", SQUASH: "squash", REBASE: "rebase" } as Record<string, string>,
   methodHint: "Method:",
   notApproved: "You have not approved it.",
-  alreadyApproved: "You have approved it already. Withdraw it with /inbox pr unapprove.",
+  /** `pr` names the pull request in the command that withdraws the approval; undefined in its pane, whose button does. */
+  alreadyApproved: (pr: string | undefined) => `You have approved it already.${pr === undefined ? "" : ` Withdraw it with /inbox pr ${pr} unapprove.`}`,
   ownCannotApprove: "It is your own pull request: GitHub does not let its author approve it.",
   unapproveNote: (message: string) => `GitHub keeps this on the pull request as your review dismissed, with “${message}”.`,
   /** Why the approval was dismissed, as GitHub shows it on the pull request. */
@@ -573,7 +580,7 @@ const ja: Messages = {
   commandDescription:
     "このブランチの PR、選んだ PR、登録したリポジトリの GitHub 通知: 状態、すぐに確認、最近の通知、PR（一覧、開いて Claude にレビューを渡す、通知・マージ・クローズ・下書きの切り替え・承認）、リポジトリ、ニックネーム、プロンプトの下の表示",
   commandHint:
-    "[status|check|log [リポジトリ] [text]|pr [PR] [merge [merge|squash|rebase]|close|draft|approve|unapprove|pick|watch|unwatch]|clear|repo [add|set|remove|alias ...]|nick [login [ニックネーム]]|tray [pull|repos]]",
+    "[status|check|log [リポジトリ] [text]|pr [PR] [show|merge [merge|squash|rebase]|close|draft|approve|unapprove|watch|unwatch]|clear|repo [add|set|remove|alias ...]|nick [login [ニックネーム]]|tray [pull|repos]]",
   noBranch: "ブランチが分かりません（git リポジトリの外か、detached HEAD です）。",
   noPull: branch => `${branch} の PR はありません。`,
   pullState: state => (state === "OPEN" ? "通知中" : state === "MERGED" ? "マージ済み" : "クローズ済み"),
@@ -600,7 +607,9 @@ const ja: Messages = {
     `/inbox ${command} は /inbox pr にまとめました。${
       command === "watch"
         ? "/inbox pr 12 watch で通知を始め（やめるときは unwatch）、通知している PR は /inbox pr の一覧に出ます"
-        : `今のブランチの PR は /inbox pr ${command}、ほかの PR は /inbox pr 12 ${command} です`
+        : command === "pick"
+          ? "今のブランチの PR は /inbox pr show、ほかの PR は /inbox pr 12 で開きます"
+          : `今のブランチの PR は /inbox pr ${command}、ほかの PR は /inbox pr 12 ${command} です`
     }。`,
   trayShows: view =>
     view === "pull"
@@ -642,11 +651,11 @@ const ja: Messages = {
 
   prUsage: [
     "使い方:",
-    "  /inbox pr                                    PR の一覧（自分の PR・レビュー依頼・通知している PR・通知があった PR・このリポジトリの PR）",
+    "  /inbox pr                                    PR の一覧（自分の PR・レビュー依頼・通知している PR・ログに残っている PR・このリポジトリの PR）",
     "  /inbox pr PR                                 PR を開く（状態・操作・Claude に渡すもの）",
+    "  /inbox pr show                               今のブランチの PR を開く",
     "  /inbox pr [PR] merge [merge|squash|rebase]   ペインで確かめてからマージする",
     "  /inbox pr [PR] close|draft|approve|unapprove ペインで確かめてから、クローズ・下書きの切り替え・承認・承認の取り消しをする",
-    "  /inbox pr [PR] pick                          PR を開いて、Claude に渡すものを選ぶ",
     "  /inbox pr [PR] watch|unwatch                 今のブランチの PR と同じように通知する・やめる",
     "PR は 12・owner/repo#12・PR の URL で指定します。省くと今のブランチの PR です。",
   ].join("\n"),
@@ -665,7 +674,7 @@ const ja: Messages = {
             : group === "watched"
               ? "通知している PR"
               : group === "noticed"
-                ? "通知があった PR"
+                ? "ログに残っている PR"
                 : "このリポジトリと登録したリポジトリの PR"
     }${shown < total ? `（${total}件中${shown}件）` : ""}`,
   prNoticed: (n, ago) => `通知${n}件${ago === "" ? "" : `・${ago}`}`,
@@ -684,6 +693,7 @@ const ja: Messages = {
   prUnapprove: "承認を取り消す",
   prClose: "クローズする",
   prReload: "読み直す",
+  prAsking: "GitHub に確かめています…",
   prNoHereRepo: action => `このディレクトリのリポジトリが分かりません。/inbox pr owner/repo#12${action === "" ? "" : ` ${action}`} で指定します。`,
 
   notWatched: name => `${name} は通知していません。`,
@@ -707,7 +717,7 @@ const ja: Messages = {
     `${branch} の PR はありません。/inbox pr 12${action === "" ? "" : ` ${action}`} のように 12・owner/repo#12・PR の URL で指定するか、/inbox pr の一覧から選べます。`,
   actNotOpen: (name, state) => `${name} はもう${state}です。`,
   actPaneOpened: "ペインで確かめてください。ボタンを押すまでは何もしません。",
-  draftCannotMerge: "下書きです。先にレビュー待ちにします（/inbox pr draft）。",
+  draftCannotMerge: pr => `下書きです。先にレビュー待ちにします${pr === undefined ? "" : `（/inbox pr ${pr} draft）`}。`,
   conflictsCannotMerge: "base とコンフリクトしています。先に解消します。",
   behindCannotMerge: "base が先に進んでいて、先に取り込む必要があります（gh pr update-branch か、GitHub の Update branch）。",
   mergeUnknown: "マージできるかどうかを GitHub がまだ確かめています。少し待ってからもう一度試してください。",
@@ -721,7 +731,7 @@ const ja: Messages = {
   methods: { MERGE: "マージコミット", SQUASH: "スカッシュ", REBASE: "リベース" },
   methodHint: "方式:",
   notApproved: "この PR は承認していません。",
-  alreadyApproved: "もう承認しています。取り消すには /inbox pr unapprove を使います。",
+  alreadyApproved: pr => `もう承認しています。${pr === undefined ? "" : `取り消すには /inbox pr ${pr} unapprove を使います。`}`,
   ownCannotApprove: "自分の PR です。GitHub では作者は承認できません。",
   unapproveNote: message => `GitHub では、自分のレビューの却下（dismiss）として「${message}」と PR に残ります。`,
   dismissMessage: "承認を取り消しました",

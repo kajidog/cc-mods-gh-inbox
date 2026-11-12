@@ -36,7 +36,7 @@ import {
 } from "./act"
 import { type Ci, CI_ITEM_PREFIX, ciForPrompt, ciKey, isResult } from "./ci"
 import { CLOSED_ID, displayName, MERGED_ID, mergeSeen, newEvents, type Nicknames, plain, pullIds, snippet } from "./events"
-import { isRefused, type Pull, type PullRef, type PullState, parsePull, parsePullUrl, pullArgv, pullName } from "./github"
+import { isRefused, type Pull, type PullRef, type PullState, parsePull, parsePullUrl, pullArgv, pullName, VERDICTS_ASKED } from "./github"
 import {
   addSharedSeen,
   HISTORIES_KEPT,
@@ -79,7 +79,7 @@ import {
   stagedCount,
   stagedSize,
 } from "./pick"
-import { headingsArgv, headingsWanted, noticedPulls, type PrAction, type PrHeading, parseHeadings, parsePrWords } from "./pr-list"
+import { cells, fitCells, headingsArgv, headingsWanted, noticedPulls, type PrAction, type PrHeading, parseHeadings, parsePrWords } from "./pr-list"
 import { PRESENCE_PREFIX, type Presence, pickActive, toPresence } from "./presence"
 import {
   ACTIONS_PRIMED,
@@ -199,6 +199,8 @@ const PR_PANE = "gh-inbox-pr"
 const ACT_PANE = "gh-inbox-act"
 /** The pull requests the list of `/inbox pr` shows at most of those the log keeps notices of. */
 const NOTICED_SHOWN = 10
+/** How far the list of `/inbox pr` sets its rows in under their group's heading. */
+const PR_ROW_INDENT = 2
 /** How long a merge, a close or a draft toggle may take GitHub. */
 const ACT_TIMEOUT_MS = 60 * 1000
 // Titles asked for in one GraphQL request at most.
@@ -307,6 +309,8 @@ type Context = {
   ci: { branch: string; ref: PullRef; title: string; url: string; ci: Ci; at: number } | undefined
   /** Whether what the action pane confirmed is under way: a second press does not send it again. */
   isActing: boolean
+  /** Whether what a button of `/inbox pr`'s pull request asked is still asked of GitHub: another press waits for it. */
+  isPrPressing: boolean
   /** The hosts that refused a request naming the teams asked to review (a token that may not read them): asked without them since. */
   teamless: Set<string>
 }
@@ -1705,9 +1709,17 @@ type ActCommand = Extract<PrAction, "merge" | "close" | "draft" | "approve" | "u
 /**
  * Reads the pull request afresh and opens the pane that says what `command` would do to it, `named` the merge method
  * asked for: undefined once it opened, else why not, what cannot be done refused at once. Nothing is sent to GitHub
- * before the person presses the pane's button.
+ * before the person presses the pane's button. Asked from the pane of `/inbox pr` (`isFromPane`), a refusal points to
+ * its buttons; else to a command naming the pull request, which acts on that one whatever the branch.
  */
-async function openAct($: EngineInterface, ctx: Context, command: ActCommand, ref: PullRef, named: Method | undefined): Promise<string | undefined> {
+async function openAct(
+  $: EngineInterface,
+  ctx: Context,
+  command: ActCommand,
+  ref: PullRef,
+  named: Method | undefined,
+  isFromPane = false,
+): Promise<string | undefined> {
   const { t } = ctx
   let pull: Pull
   try {
@@ -1717,6 +1729,7 @@ async function openAct($: EngineInterface, ctx: Context, command: ActCommand, re
   }
   const key = pullKeyOfUrl(pull.url, ref)
   const name = pullLabel(key)
+  const pr = isFromPane ? undefined : name
   if (pull.state !== "OPEN") return t.actNotOpen(name, t.pullState(pull.state))
   const status = pullStatus(pull, toNicknames(await $.store.get(NICKNAMES_KEY)), ctx.language)
 
@@ -1736,7 +1749,7 @@ async function openAct($: EngineInterface, ctx: Context, command: ActCommand, re
     } catch (error) {
       return t.cannotRead(name, message(error))
     }
-    const plan = planReview(t, pull, command, approval)
+    const plan = planReview(t, pull, command, approval, pr)
     if ("refusal" in plan) return `${name}: ${plan.refusal}`
     kind = plan.kind
     notes = plan.notes
@@ -1751,7 +1764,7 @@ async function openAct($: EngineInterface, ctx: Context, command: ActCommand, re
     } catch (error) {
       return t.cannotRead(name, message(error))
     }
-    const plan = planMerge(t, pull, status, settings)
+    const plan = planMerge(t, pull, status, settings, pr)
     if ("refusal" in plan) return `${name}: ${plan.refusal}`
     if (named !== undefined && plan.kind !== "disable-auto" && !settings.methods.includes(named))
       return t.methodNotAllowed(methodName(t, named), settings.methods.map(one => methodName(t, one)).join(t.listSeparator))
@@ -1828,6 +1841,23 @@ async function runAct($: EngineInterface, ctx: Context) {
 }
 
 /**
+ * Whether the account `gh` uses approves `pull` (`ref`), by its last say: read from the reviewers' last says that came
+ * with it, unless it is not among them and as many came as are asked for (it may be one left out): then asked of its
+ * own reviews. What cannot be asked goes by those that came.
+ */
+async function viewerApproves($: EngineInterface, ref: PullRef, pull: Pull): Promise<boolean> {
+  if (pull.viewer === "") return false
+  const said = pull.verdicts.find(verdict => verdict.author === pull.viewer)
+  if (said !== undefined || pull.verdicts.length < VERDICTS_ASKED) return said?.state === "APPROVED"
+  try {
+    const run = await $.process.run(viewerReviewArgv(ref, pull.viewer))
+    return run.exitCode === 0 && parseViewerApproval(run.stdout) !== null
+  } catch {
+    return false
+  }
+}
+
+/**
  * Reads where the pull request `ref` stands for the pane of `/inbox pr`: afresh where `isFresh`, else the answer kept
  * younger than one interval. What it showed of the same pull request stays while it is asked.
  */
@@ -1843,6 +1873,7 @@ async function loadHeader($: EngineInterface, ctx: Context, ref: PullRef, isFres
   try {
     const { pull, at } = await fetchPull($, ctx, ref, await $.clock.now(), isFresh)
     const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
+    const isOwn = pull.viewer !== "" && pull.author === pull.viewer
     shown = {
       stage: "pull",
       pull: pullKeyOfUrl(pull.url, ref),
@@ -1850,8 +1881,8 @@ async function loadHeader($: EngineInterface, ctx: Context, ref: PullRef, isFres
       url: pull.url,
       state: pull.state,
       author: pull.author === null ? null : displayName(pull.author, nicknames, ctx.language),
-      isOwn: pull.viewer !== "" && pull.author === pull.viewer,
-      isApproved: pull.viewer !== "" && pull.verdicts.some(verdict => verdict.state === "APPROVED" && verdict.author === pull.viewer),
+      isOwn,
+      isApproved: !isOwn && (await viewerApproves($, ref, pull)),
       head: pull.head,
       status: pullStatus(pull, nicknames, ctx.language),
       at,
@@ -1896,6 +1927,8 @@ async function lookForList($: EngineInterface, ctx: Context) {
 /** Opens the pane of `/inbox pr` on the list of pull requests, looked for afresh; whether it opened. */
 async function openList($: EngineInterface, ctx: Context) {
   ctx.prListings += 1
+  // A pull request still asked for as the list opens is not shown over it.
+  ctx.prShowings += 1
   ctx.askedHeadings.clear()
   await update($, prHeadings, () => ({}))
   await update($, prFound, (): GhPrFound => ({ stage: "searching" }))
@@ -2021,11 +2054,12 @@ async function prCommand($: EngineInterface, ctx: Context, words: readonly strin
   if (words.length === 0) return (await openList($, ctx)) ? t.prListOpened : t.paneNotOpened
   const said = parsePrWords(words)
   if (said === undefined) return t.prUsage
-  const ref = await namedPull($, ctx, said.pull, said.action ?? "")
+  // Showing it goes without saying where the pull request is named.
+  const ref = await namedPull($, ctx, said.pull, said.action === undefined || said.action === "show" ? "" : said.action)
   if (typeof ref === "string") return ref
   switch (said.action) {
     case undefined:
-    case "pick":
+    case "show":
       return (await openPull($, ctx, ref)) ? t.prOpened : t.paneNotOpened
     case "watch":
       return (await watchPull($, ctx, ref)).text
@@ -2071,6 +2105,7 @@ export const register: Register = (on, options) => {
     askedHeadings: new Set(),
     ci: undefined,
     isActing: false,
+    isPrPressing: false,
     teamless: new Set(),
   }
   let timer: Timer | undefined
@@ -2584,14 +2619,20 @@ export const register: Register = (on, options) => {
                 const head = `${plain(row.label)}${flag}`
                 // A title not known yet (asked of GitHub, or none to be had) leaves no gap.
                 const title = row.title === "" ? "" : `  ${plain(row.title)}`
-                const text = `${head}${author}${marks === "" ? "" : `  ${marks}`}${title}${when}`
+                const stands = `${head}${author}${marks === "" ? "" : `  ${marks}`}`
+                const hotkey = at < 9 ? String(at + 1) : undefined
+                // A row keeps to one line: where the pane is too narrow, the title gives way, what it says around it kept.
+                const room = e.props.bodyColumns - PR_ROW_INDENT - (hotkey === undefined ? 0 : cells(`${hotkey}: `)) - cells(stands) - cells(when)
+                const fitted = fitCells(title, room)
+                // A gap and an ellipsis alone say nothing.
+                const shownTitle = fitted.trim() === "…" ? "" : fitted
                 return (
-                  <Box key={`row:${row.key}`} paddingLeft={2}>
+                  <Box key={`row:${row.key}`} paddingLeft={PR_ROW_INDENT}>
                     <Button
                       key={`pr:${row.key}`}
-                      hotkey={at < 9 ? String(at + 1) : undefined}
+                      hotkey={hotkey}
                       plain
-                      label={text}
+                      label={`${stands}${title}${when}`}
                       onPress={() => {
                         const ref = refOfPullKey(row.key)
                         if (ref !== null) void showPull($, ctx, ref)
@@ -2600,7 +2641,7 @@ export const register: Register = (on, options) => {
                       <Text color={LABEL_COLOR}>{head}</Text>
                       {author}
                       {marks === "" ? "" : `  ${marks}`}
-                      <Text dimColor>{`${title}${when}`}</Text>
+                      <Text dimColor>{`${shownTitle}${when}`}</Text>
                     </Button>
                   </Box>
                 )
@@ -2614,22 +2655,38 @@ export const register: Register = (on, options) => {
     }
 
     const ref = refOfPullKey(detail.pull)
+    const repos = await readRepos($)
     const isWatched = findWatched(await readWatched($), detail.pull) !== undefined
-    /** Says on the pane why what was pressed could not be done; with nothing to say, takes back what it said before. */
-    const say = (note: string | undefined) =>
+    /** Says on the pane what the last button pressed came to: that GitHub is asked, or why it could not be done; else nothing. */
+    const say = (said: { asking?: string; note?: string }) =>
       update($, prDetail, held => {
         if (held?.stage !== "pull" || held.pull !== detail.pull) return held
-        const { note: _, ...rest } = held
-        return note === undefined ? rest : { ...rest, note }
+        const { note: _, asking: __, ...rest } = held
+        return { ...rest, ...(said.asking === undefined ? {} : { asking: said.asking }), ...(said.note === undefined ? {} : { note: said.note }) }
       })
-    const doing = (command: ActCommand) => async () => {
-      if (ref !== null) await say(await openAct($, ctx, command, ref, undefined))
+    /**
+     * Runs what a button asks, one press at a time, the pane saying so while GitHub is asked; `run` answers why it could
+     * not be done, if it could not. Where `isReread`, a refusal reads the pull request again (as GitHub just answered),
+     * so the buttons follow where it stands now.
+     */
+    const press = (run: (one: PullRef) => Promise<string | undefined>, isReread = false) => async () => {
+      if (ref === null || ctx.isPrPressing) return
+      ctx.isPrPressing = true
+      try {
+        await say({ asking: t.prAsking })
+        const note = await run(ref)
+        const isShown = (await read($, prDetail))?.pull.toLowerCase() === detail.pull.toLowerCase()
+        if (note !== undefined && isReread && isShown) await loadHeader($, ctx, ref)
+        await say(note === undefined ? {} : { note })
+      } finally {
+        ctx.isPrPressing = false
+      }
     }
-    const toggleWatch = async () => {
-      if (ref === null) return
-      const done = isWatched ? await unwatchPull($, ctx, ref) : await watchPull($, ctx, ref)
-      await say(done.isDone ? undefined : done.text)
-    }
+    const doing = (command: ActCommand) => press(one => openAct($, ctx, command, one, undefined, true), true)
+    const toggleWatch = press(async one => {
+      const done = isWatched ? await unwatchPull($, ctx, one) : await watchPull($, ctx, one)
+      return done.isDone ? undefined : done.text
+    })
     const items = await read($, pick)
     const unfolded = await read($, pickUnfolded)
     // What can be handed to Claude is that of the pull request shown: one still loading, or another's, is not. What it
@@ -2642,26 +2699,34 @@ export const register: Register = (on, options) => {
       const isOpen = shown.state === "OPEN"
       const said = shown.status.latest
       const latestSaid = said === null ? undefined : t.latestComment(t.who(plain(said.name)), plain(said.body), sinceAt(said.at))
+      const shownRef = refOfPullKey(shown.pull)
       const about = [
+        // Its repository in full: the heading names it as the list does, by its short name.
+        pullLabel(shown.pull).replace(/#\d+$/, ""),
         ...(shown.author === null ? [] : [t.prBy(t.who(plain(shown.author)))]),
         ...(isOpen ? (shown.status.isDraft === true ? [t.draft] : []) : [t.pullState(shown.state)]),
         ...(isWatched ? [t.prWatchedNow] : []),
         ...(isBranchPull(ctx, shown.pull) ? [t.prIsBranch] : []),
       ]
+      const marks = statusMarks(t, shown.status, { withNames: true })
+      // A draft is marked ready before it is merged, by its own button: one with auto-merge on can still have it turned off.
+      const canMerge = isOpen && (shown.status.isDraft !== true || shown.status.autoMerge === true)
       return (
         <Box flexDirection="column">
           <Text bold>
             <Text color={LABEL_COLOR}>
-              <Link href={plain(shown.url)}>{plain(pullLabel(shown.pull))}</Link>
+              <Link href={plain(shown.url)}>{plain(shownRef === null ? pullLabel(shown.pull) : watchLabel(repos, shownRef))}</Link>
             </Text>{" "}
             {plain(shown.title)}
           </Text>
-          {about.length > 0 && <Text dimColor>{about.join(t.listSeparator)}</Text>}
-          {isOpen && <Text>{statusText({ head: shown.head.slice(0, 7), marks: statusMarks(t, shown.status, { withNames: true }), latest: latestSaid })}</Text>}
+          <Text dimColor>{plain(about.join(t.listSeparator))}</Text>
+          {/* The head commit alone says nothing of where it stands. */}
+          {isOpen && (marks.length > 0 || latestSaid !== undefined) && <Text>{statusText({ head: shown.head.slice(0, 7), marks, latest: latestSaid })}</Text>}
+          {shown.asking !== undefined && <Text dimColor>{shown.asking}</Text>}
           {shown.note !== undefined && <Text color="warning">{plain(shown.note)}</Text>}
           <Box flexWrap="wrap">
             {(isOpen || isWatched) && <Button key="pr:watch" hotkey="w" label={isWatched ? t.prUnwatch : t.prWatch} onPress={() => void toggleWatch()} />}
-            {isOpen && <Button key="pr:merge" hotkey="m" label={shown.status.autoMerge === true ? t.prDisableAuto : t.prMerge} onPress={() => void doing("merge")()} />}
+            {canMerge && <Button key="pr:merge" hotkey="m" label={shown.status.autoMerge === true ? t.prDisableAuto : t.prMerge} onPress={() => void doing("merge")()} />}
             {isOpen && <Button key="pr:draft" hotkey="d" label={shown.status.isDraft === true ? t.prReady : t.prToDraft} onPress={() => void doing("draft")()} />}
             {isOpen && !shown.isOwn && (
               <Button key="pr:approve" hotkey="v" label={shown.isApproved ? t.prUnapprove : t.prApprove} onPress={() => void doing(shown.isApproved ? "unapprove" : "approve")()} />

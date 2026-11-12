@@ -1,7 +1,7 @@
 import type { GhEvent } from "../types"
 import { describe, expect, test } from "claude-code/testing"
 
-import { byPull, headingsArgv, headingsWanted, noticedPulls, numberOf, parseHeadings, parsePrWords, pullGroups } from "../hooks/pr-list"
+import { byPull, cells, fitCells, headingsArgv, headingsWanted, noticedPulls, numberOf, parseHeadings, parsePrWords, pullGroups } from "../hooks/pr-list"
 
 const event = (id: string, pull: string, url = ""): GhEvent => ({ id, kind: "comment", pull, author: "a", at: "", text: id, url, items: [] })
 
@@ -17,6 +17,26 @@ test("parsePrWords reads the pull request, the action and a merge's method in an
   expect(parsePrWords(["12", "close", "squash"])).toBeUndefined()
   expect(parsePrWords(["12", "13"])).toBeUndefined()
   expect(parsePrWords(["12", "nonsense"])).toBeUndefined()
+})
+
+test("parsePrWords reads show, and pick as another word for it, as /inbox pick was", () => {
+  expect(parsePrWords(["show"])).toEqual({ pull: "", action: "show", method: undefined })
+  expect(parsePrWords(["Pick", "12"])).toEqual({ pull: "12", action: "show", method: undefined })
+})
+
+test("cells counts what a terminal draws two cells wide (kana, kanji, fullwidth brackets) as two, the marks as one", () => {
+  expect(cells("#3 Add things")).toBe(13)
+  expect(cells("（マージ済み）")).toBe(14)
+  expect(cells("✓ 承認  ◐ CI 1/2")).toBe(16)
+  expect(cells("한글 😀")).toBe(7)
+})
+
+test("fitCells cuts what is wider than it may be, an ellipsis in the last cell, never a wide letter in half", () => {
+  expect(fitCells("  Add things", 12)).toBe("  Add things")
+  expect(fitCells("  Add things", 6)).toBe("  Add…")
+  expect(fitCells("  承認待ち", 6)).toBe("  承…")
+  expect(fitCells("  承認待ち", 5)).toBe("  承…")
+  expect(fitCells("abc", 0)).toBe("")
 })
 
 test("numberOf reads the pull request's or issue's number, none for a notice on the repository alone", () => {
