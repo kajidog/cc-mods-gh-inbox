@@ -1,9 +1,23 @@
 import type { GhEvent } from "../types"
 import { describe, expect, test } from "claude-code/testing"
 
-import { byPull, cells, headingsWanted, logHeadingsArgv, numberOf, parseLogHeadings, pullGroups } from "../hooks/log-groups"
+import { byPull, headingsArgv, headingsWanted, noticedPulls, numberOf, parseHeadings, parsePrWords, pullGroups } from "../hooks/pr-list"
 
 const event = (id: string, pull: string, url = ""): GhEvent => ({ id, kind: "comment", pull, author: "a", at: "", text: id, url, items: [] })
+
+test("parsePrWords reads the pull request, the action and a merge's method in any order, nothing more", () => {
+  expect(parsePrWords(["12"])).toEqual({ pull: "12", action: undefined, method: undefined })
+  expect(parsePrWords(["merge"])).toEqual({ pull: "", action: "merge", method: undefined })
+  expect(parsePrWords(["o/r#12", "Merge", "squash"])).toEqual({ pull: "o/r#12", action: "merge", method: "SQUASH" })
+  expect(parsePrWords(["squash", "merge", "12"])).toEqual({ pull: "12", action: "merge", method: "SQUASH" })
+  // `merge` is the action first, then the method.
+  expect(parsePrWords(["12", "merge", "merge"])).toEqual({ pull: "12", action: "merge", method: "MERGE" })
+  expect(parsePrWords(["unwatch", "https://github.com/o/r/pull/3"])).toEqual({ pull: "https://github.com/o/r/pull/3", action: "unwatch", method: undefined })
+  // A method goes with a merge alone; two pull requests, or a word that is neither, say too much.
+  expect(parsePrWords(["12", "close", "squash"])).toBeUndefined()
+  expect(parsePrWords(["12", "13"])).toBeUndefined()
+  expect(parsePrWords(["12", "nonsense"])).toBeUndefined()
+})
 
 test("numberOf reads the pull request's or issue's number, none for a notice on the repository alone", () => {
   expect(numberOf({ pull: "o/r#12" })).toBe(12)
@@ -53,14 +67,33 @@ describe("pullGroups", () => {
   })
 })
 
-test("headingsWanted asks each repository for the numbers not known yet, once each", () => {
-  const groups = pullGroups([event("a", "o/r#3", "https://github.com/o/r/pull/3"), event("b", "o/r#5", "https://github.com/o/r/pull/5"), event("c", "o/r")])
-  expect(headingsWanted(groups, new Set(["github.com/o/r#5"]))).toEqual(new Map([["github.com/o/r", [3]]]))
-  expect(headingsWanted(groups, new Set(["github.com/o/r#3", "github.com/o/r#5"]))).toEqual(new Map())
+test("noticedPulls lists the pull requests the log keeps notices of, the newest first, an issue's and those on none left out", () => {
+  const groups = noticedPulls([
+    event("a", "o/r#3", "https://github.com/o/r/pull/3#issuecomment-1"),
+    event("b", "o/r#5", "https://github.com/o/r/issues/5#issuecomment-2"),
+    event("c", "o/r", "https://github.com/o/r/compare/a...b"),
+    event("d", "o/other#1", "https://github.com/o/other/pull/1"),
+    event("e", "o/r#3", "https://github.com/o/r/pull/3#issuecomment-3"),
+  ])
+  expect(groups.map(group => ({ key: group.key, ids: group.events.map(one => one.id) }))).toEqual([
+    { key: "github.com/o/r#3", ids: ["a", "e"] },
+    { key: "github.com/o/other#1", ids: ["d"] },
+  ])
 })
 
-test("logHeadingsArgv asks a pull request's title and where it stands, an issue's title, another host as itself", () => {
-  const argv = logHeadingsArgv("ghe.example/o/r", [3, 5])
+test("headingsWanted asks each repository for the numbers not known yet, once each", () => {
+  const keys = ["github.com/o/r#3", "github.com/o/r#5", "ghe.example/x/y#7", "github.com/o/r#3"]
+  expect(headingsWanted(keys, new Set(["github.com/o/r#5"]))).toEqual(
+    new Map([
+      ["github.com/o/r", [3]],
+      ["ghe.example/x/y", [7]],
+    ]),
+  )
+  expect(headingsWanted(keys, new Set(keys))).toEqual(new Map())
+})
+
+test("headingsArgv asks a pull request's title and where it stands, an issue's title, another host as itself", () => {
+  const argv = headingsArgv("ghe.example/o/r", [3, 5])
   expect(argv.slice(0, 4)).toEqual(["gh", "api", "--hostname", "ghe.example"])
   expect(argv).toContain("owner=o")
   expect(argv).toContain("repo=r")
@@ -69,11 +102,11 @@ test("logHeadingsArgv asks a pull request's title and where it stands, an issue'
   expect(query).toContain("reviewRequests(first: 20)")
   expect(query).toContain("... on Issue { title } }")
   expect(query).toContain("n5: issueOrPullRequest(number: 5)")
-  expect(logHeadingsArgv("github.com/o/r", [3]).slice(0, 2)).toEqual(["gh", "api"])
-  expect(logHeadingsArgv("github.com/o/r", [3])).not.toContain("--hostname")
+  expect(headingsArgv("github.com/o/r", [3]).slice(0, 2)).toEqual(["gh", "api"])
+  expect(headingsArgv("github.com/o/r", [3])).not.toContain("--hostname")
 })
 
-test("parseLogHeadings reads each title and where a pull request stands, a number GitHub knows nothing of as none, a repository it did not answer for as nothing", () => {
+test("parseHeadings reads each title and where a pull request stands, a number GitHub knows nothing of as none, a repository it did not answer for as nothing", () => {
   const answer = {
     data: {
       repository: {
@@ -91,17 +124,10 @@ test("parseLogHeadings reads each title and where a pull request stands, a numbe
     },
     errors: [{ type: "NOT_FOUND", path: ["repository", "n9"] }],
   }
-  const headings = parseLogHeadings(JSON.stringify(answer))
+  const headings = parseHeadings(JSON.stringify(answer))
   expect([...headings.keys()]).toEqual([3, 4, 9])
   expect(headings.get(3)).toMatchObject({ title: "Add things", pull: { state: "MERGED", verdicts: [{ state: "APPROVED", author: "bob" }], requested: [] } })
   expect(headings.get(4)).toEqual({ title: "A bug" })
   expect(headings.get(9)).toEqual({ title: "" })
-  expect(parseLogHeadings(JSON.stringify({ data: { repository: null } }))).toEqual(new Map())
-})
-
-test("cells counts what a terminal draws two cells wide (kana, kanji, fullwidth brackets) as two, the marks as one", () => {
-  expect(cells("#3 Add things")).toBe(13)
-  expect(cells("（マージ済み）")).toBe(14)
-  expect(cells("✓ 承認  ◐ CI 1/2")).toBe(16)
-  expect(cells("한글 😀")).toBe(7)
+  expect(parseHeadings(JSON.stringify({ data: { repository: null } }))).toEqual(new Map())
 })

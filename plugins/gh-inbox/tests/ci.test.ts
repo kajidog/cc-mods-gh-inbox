@@ -14,7 +14,7 @@ const PANE = {
   plugin: "gh-inbox",
   surface: "terminal",
   component: "Pane",
-  requestId: "gh-inbox-pick",
+  requestId: "gh-inbox-pr",
   props: { title: "", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 20 }, view: {} },
 } as const
 
@@ -262,7 +262,7 @@ describe("CI told with a prompt", () => {
     const contexts = sentContexts(on)
 
     await $.command.run(CHECK)
-    await $.command.run({ ...CHECK, args: "pick" })
+    await $.command.run({ ...CHECK, args: "pr pick" })
     const pane = await $.ui.mount(PANE)
     const key = `ci:${OID}:failed:run:11`
     expect((await pane.find({ key }))?.props.label).toBe("[ ] ✗ CI 1/2 0123456: CI / test")
@@ -289,7 +289,7 @@ describe("CI told with a prompt", () => {
 
     // CI finishes before the next check, and the pick reads it so.
     github.contexts = [job(12, "lint", "SUCCESS"), job(13, "build", "SUCCESS")]
-    await $.command.run({ ...CHECK, args: "pick" })
+    await $.command.run({ ...CHECK, args: "pr pick" })
     const pane = await $.ui.mount(PANE)
     await pane.press({ key: `ci:${OID}:done` })
     await pane.press({ key: "stage" })
@@ -318,7 +318,7 @@ describe("CI told with a prompt", () => {
     github.oid = NEW
     github.contexts = [job(21, "test", "SUCCESS")]
     await clock.advance(10_000)
-    await $.command.run({ ...CHECK, args: "pick" })
+    await $.command.run({ ...CHECK, args: "pr pick" })
     const pane = await $.ui.mount(PANE)
     await pane.press({ key: `ci:${NEW}:done` })
     await pane.press({ key: "stage" })

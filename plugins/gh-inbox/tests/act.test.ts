@@ -1,6 +1,6 @@
 import { describe, expect, test } from "claude-code/testing"
 
-import { actArgv, type MergeSettings, parseMergeWords, parseSettings, parseViewerApproval, planMerge, planReview, viewerReviewArgv } from "../hooks/act"
+import { actArgv, type MergeSettings, parseSettings, parseViewerApproval, planMerge, planReview, viewerReviewArgv } from "../hooks/act"
 import type { Pull } from "../hooks/github"
 import { MESSAGES } from "../hooks/i18n"
 import { pullStatus } from "../hooks/status"
@@ -157,9 +157,4 @@ test("actArgv: an approval approves the head commit confirmed; a withdrawal dism
   // Another host is asked as itself.
   expect(actArgv("approve", "https://ghe.example/o/r/pull/7", "abc", null).slice(0, 4)).toEqual(["gh", "api", "--hostname", "ghe.example"])
   expect(actArgv("unapprove", "https://ghe.example/o/r/pull/7", "abc", null, { id: "PRR_1", message: "m" }).slice(0, 4)).toEqual(["gh", "api", "--hostname", "ghe.example"])
-})
-
-test("parseMergeWords takes a method out of the words, whatever its case", () => {
-  expect(parseMergeWords(["Squash", "o/r#7"])).toEqual({ method: "SQUASH", rest: ["o/r#7"] })
-  expect(parseMergeWords(["12"])).toEqual({ method: undefined, rest: ["12"] })
 })

@@ -9,7 +9,7 @@ Claude Code mods around GitHub notices.
 
 | mod | What it does |
 | --- | --- |
-| [gh-inbox](plugins/gh-inbox/README.md) | Shows GitHub events on the checked-out branch's pull request, on pull requests you choose to watch and on repositories you register, hands the ones you pick to Claude, shows above the prompt where your own pull requests and those you are asked to review stand, and merges, closes, drafts or approves a pull request once you confirm it |
+| [gh-inbox](plugins/gh-inbox/README.md) | Shows GitHub events on the checked-out branch's pull request, on pull requests you choose to watch and on repositories you register, and shows above the prompt where your own pull requests and those you are asked to review stand. `/inbox pr` lists pull requests and shows one, to hand its reviews to Claude, watch it, or merge, close, draft or approve it once you confirm it |
 | [gh-inbox-tts](plugins/gh-inbox-tts/README.md) | Reads gh-inbox's notices aloud through [tts](https://github.com/kajidog/cc-mods-tts) |
 
 Notices, commands and panes are in English by default. Set **GitHub: Language** to `ja` in `/config` for Japanese.

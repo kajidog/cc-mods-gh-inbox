@@ -12,9 +12,12 @@ import type {
   GhPicker,
   GhPickPull,
   GhPlaced,
+  GhPrDetail,
+  GhPrFound,
+  GhPrHeading,
+  GhPullStatus,
   GhStaged,
   GhWatch,
-  GhWatchPick,
   Inbox,
   InboxNotice,
 } from "../types"
@@ -24,7 +27,6 @@ import {
   type MergeSettings,
   type Method,
   methodName,
-  parseMergeWords,
   parseSettings,
   parseViewerApproval,
   planMerge,
@@ -61,7 +63,6 @@ import {
 } from "./history"
 import { type Language, MESSAGES, type Messages, splitNotice, toLanguage } from "./i18n"
 import { changeOf, type Latest, type LatestItem, latestArgv, latestKey, latestWanted, parseLatest } from "./latest"
-import { byPull, cells, headingsWanted, type LogHeading, logHeadingsArgv, type PullGroup, parseLogHeadings, pullGroups } from "./log-groups"
 import { type MineGroup, mineArgv, parseMine } from "./mine"
 import {
   CONTEXT_LIMIT,
@@ -78,6 +79,7 @@ import {
   stagedCount,
   stagedSize,
 } from "./pick"
+import { headingsArgv, headingsWanted, noticedPulls, type PrAction, type PrHeading, parseHeadings, parsePrWords } from "./pr-list"
 import { PRESENCE_PREFIX, type Presence, pickActive, toPresence } from "./presence"
 import {
   ACTIONS_PRIMED,
@@ -191,10 +193,12 @@ const MINE_GROUPS: readonly MineGroup[] = ["opened", "requested"]
 const PRESENCE_KEPT_MS = 24 * 60 * 60 * 1000
 const CACHE_KEPT_MS = 60 * 60 * 1000
 const PICKER_PANE = "gh-inbox-kinds"
-const PICK_PANE = "gh-inbox-pick"
 const LOG_PANE = "gh-inbox-log"
-const WATCH_PANE = "gh-inbox-watch"
+/** The pane of `/inbox pr`: the list of pull requests, or one of them with what can be handed to Claude. */
+const PR_PANE = "gh-inbox-pr"
 const ACT_PANE = "gh-inbox-act"
+/** The pull requests the list of `/inbox pr` shows at most of those the log keeps notices of. */
+const NOTICED_SHOWN = 10
 /** How long a merge, a close or a draft toggle may take GitHub. */
 const ACT_TIMEOUT_MS = 60 * 1000
 // Titles asked for in one GraphQL request at most.
@@ -206,6 +210,7 @@ const events = atom({ plugin: "gh-inbox", key: "events" } as const, [] as GhEven
 const watch = atom({ plugin: "gh-inbox", key: "watch" } as const, null as GhWatch | null)
 const seenIds = atom({ plugin: "gh-inbox", key: "seen" } as const, {} as Record<string, string[]>)
 const picker = atom({ plugin: "gh-inbox", key: "picker" } as const, null as GhPicker | null)
+/** What the pull request `/inbox pr` shows holds that can be handed to Claude. */
 const pick = atom({ plugin: "gh-inbox", key: "pick" } as const, null as GhPick | null)
 const staged = atom({ plugin: "gh-inbox", key: "staged" } as const, [] as GhStaged[])
 const logPage = atom({ plugin: "gh-inbox", key: "logPage" } as const, 0)
@@ -213,12 +218,13 @@ const logUnfolded = atom({ plugin: "gh-inbox", key: "logUnfolded" } as const, []
 const logRepo = atom({ plugin: "gh-inbox", key: "logRepo" } as const, null as string | null)
 /** What the log pane's comments say now, by `latestKey`, asked for as their page shows. */
 const logLatest = atom({ plugin: "gh-inbox", key: "logLatest" } as const, {} as Record<string, Latest>)
-/** The titles of the pull requests the narrowed log pane heads its notices with, by `host/owner/repo#number`; "" for none. */
-const logTitles = atom({ plugin: "gh-inbox", key: "logTitles" } as const, {} as Record<string, string>)
-/** Where each pull request the narrowed log pane heads its notices with stands now, as its heading says it after the title, by `host/owner/repo#number`. */
-const logStands = atom({ plugin: "gh-inbox", key: "logStands" } as const, {} as Record<string, string>)
 const pickUnfolded = atom({ plugin: "gh-inbox", key: "pickUnfolded" } as const, [] as string[])
-const watchPick = atom({ plugin: "gh-inbox", key: "watchPick" } as const, null as GhWatchPick | null)
+/** The pull request the pane of `/inbox pr` shows; null while it shows the list. */
+const prDetail = atom({ plugin: "gh-inbox", key: "prDetail" } as const, null as GhPrDetail | null)
+/** What the list of `/inbox pr` looked for as it opened. */
+const prFound = atom({ plugin: "gh-inbox", key: "prFound" } as const, null as GhPrFound | null)
+/** What GitHub says of the pull requests the list of `/inbox pr` shows that nothing else tells of, by `host/owner/repo#number`. */
+const prHeadings = atom({ plugin: "gh-inbox", key: "prHeadings" } as const, {} as Record<string, GhPrHeading>)
 /** When each watched pull request was added, as this session last checked it: added again since, it starts over from a first look. */
 const watchedSince = atom({ plugin: "gh-inbox", key: "watchedSince" } as const, {} as Record<string, number>)
 /** How CI of the branch's pull request stood when Claude was last told of it in this session: kept across a reload. */
@@ -227,7 +233,7 @@ const ciTold = atom({ plugin: "gh-inbox", key: "ciTold" } as const, null as stri
 const ciToldAt = atom({ plugin: "gh-inbox", key: "ciToldAt" } as const, 0)
 /** The rows the `row` channel placed in the transcript, and what each draws. */
 const placed = atom({ plugin: "gh-inbox", key: "placed" } as const, [] as GhPlaced[])
-/** What the pane of `/inbox merge`, `/inbox close`, `/inbox draft`, `/inbox approve` and `/inbox unapprove` asks to confirm. */
+/** What the pane that confirms `/inbox pr`'s merge, close, draft, approve or unapprove asks to confirm. */
 const act = atom({ plugin: "gh-inbox", key: "act" } as const, null as GhAct | null)
 /** The open pull requests the person opened, as the band above the prompt shows them. */
 const mine = atom({ plugin: "gh-inbox", key: "mine" } as const, null as GhMine | null)
@@ -283,16 +289,20 @@ type Context = {
   retries: Map<string, number>
   /** The picker's toggles, one after another. */
   toggling: Promise<void>
-  /** How many loads the pick pane has started: a load that is no longer the last one is not shown. */
+  /** How many loads of a pull request's items `/inbox pr` has started: a load that is no longer the last one is not shown. */
   picking: number
+  /** How many times `/inbox pr` has shown a pull request: an answer asked for at one that is no longer the last is not shown. */
+  prShowings: number
+  /** How many times the list of `/inbox pr` has opened: an answer asked for at an opening that is no longer the last is not shown. */
+  prListings: number
   /** Whether the session has ended: a check still under way then does not mark it alive again. */
   isEnded: boolean
   /** The `latestKey`s the log pane has asked for since it opened, answered or not: each is asked once an opening. */
   askedLatest: Set<string>
   /** How many times the log has opened: an answer asked for at an opening that is no longer the last is not shown. */
   logOpenings: number
-  /** The `host/owner/repo#number`s whose headings (title, where it stands) the log pane has asked for since it opened, answered or not. */
-  askedTitles: Set<string>
+  /** The `host/owner/repo#number`s whose headings (title, where it stands) the list of `/inbox pr` has asked for since it opened, answered or not. */
+  askedHeadings: Set<string>
   /** The open pull request of the branch and its newest commit's CI, as the last check that read it found them. */
   ci: { branch: string; ref: PullRef; title: string; url: string; ci: Ci; at: number } | undefined
   /** Whether what the action pane confirmed is under way: a second press does not send it again. */
@@ -568,70 +578,55 @@ async function lookUpLatest($: EngineInterface, ctx: Context, events: readonly G
 }
 
 /**
- * What a narrowed log's heading says after the title of pull request `number`: merged or closed, else whether it is a
- * draft and where it stands, the reviewers named; "" for an issue, or an open one with nothing to tell.
+ * Asks the headings of the pull requests `keys` (`host/owner/repo#number`) the list of `/inbox pr` shows that nothing
+ * else tells of, those not asked for since the list opened, one request a repository: each one's title, whether it is
+ * a pull request, and where it stands now. A failed request is let be: the row shows the title known without asking.
  */
-function headingStands(t: Messages, number: number, heading: LogHeading, nicknames: Nicknames, language: Language) {
-  if (heading.pull === undefined) return ""
-  const parts = statusParts(t, number, heading.pull.state, standingStatus(heading.pull, nicknames, language), () => undefined, true)
-  const marks = statusText({ head: "", marks: parts.marks, latest: undefined }, false)
-  return `${parts.head.slice(`#${number}`.length)}${marks === "" ? "" : `  ${marks}`}`
-}
-
-/**
- * Asks the headings of the pull requests `groups` head the narrowed log pane's page with, those not asked for since
- * the pane opened, one request a repository: each one's title and where it stands now. A failed request is let be: the
- * heading shows the number, and the title known without asking if there is one.
- */
-async function lookUpHeadings($: EngineInterface, ctx: Context, groups: readonly PullGroup[]) {
-  const opening = ctx.logOpenings
-  const wanted = headingsWanted(groups, ctx.askedTitles)
+async function lookUpHeadings($: EngineInterface, ctx: Context, keys: readonly string[]) {
+  const listing = ctx.prListings
+  const wanted = headingsWanted(keys, ctx.askedHeadings)
   if (wanted.size === 0) return
   const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
   for (const [repo, numbers] of wanted) {
-    for (const number of numbers) ctx.askedTitles.add(`${repo}#${number}`)
+    for (const number of numbers) ctx.askedHeadings.add(`${repo}#${number}`)
     // A number GitHub does not know fails the request, but the answer still holds the others.
     const host = repo.slice(0, repo.indexOf("/"))
-    const run = await runNamingTeams($, ctx, host, teams => logHeadingsArgv(repo, numbers, teams)).catch(() => undefined)
-    let headings: Map<number, LogHeading>
+    const run = await runNamingTeams($, ctx, host, teams => headingsArgv(repo, numbers, teams)).catch(() => undefined)
+    let headings: Map<number, PrHeading>
     try {
-      headings = parseLogHeadings(run?.stdout ?? "")
+      headings = parseHeadings(run?.stdout ?? "")
     } catch {
       $.ui.log(`gh-inbox: headings of ${repo}: ${firstLine(run?.stderr ?? "")}`, { to: "debug" })
       continue
     }
-    if (opening !== ctx.logOpenings) return
+    if (listing !== ctx.prListings) return
     if (headings.size === 0) continue
-    const keyed = [...headings].map(([number, heading]) => [`${repo}#${number}`, number, heading] as const)
-    await update($, logTitles, held => ({ ...held, ...Object.fromEntries(keyed.map(([key, , heading]) => [key, heading.title])) }))
-    await update($, logStands, held => ({
-      ...held,
-      ...Object.fromEntries(keyed.map(([key, number, heading]) => [key, headingStands(ctx.t, number, heading, nicknames, ctx.language)])),
-    }))
+    const read = [...headings].map(([number, heading]): [string, GhPrHeading] => [
+      `${repo}#${number}`,
+      {
+        title: heading.title,
+        isPull: heading.pull !== undefined,
+        state: heading.pull?.state ?? null,
+        status: heading.pull === undefined ? null : standingStatus(heading.pull, nicknames, ctx.language),
+      },
+    ])
+    await update($, prHeadings, held => ({ ...held, ...Object.fromEntries(read) }))
   }
 }
 
-/**
- * The title of each of `groups` known without asking GitHub: asked for since the log opened, a watched pull request's,
- * or a registered repository's kept for its notices; absent where none is.
- */
-async function knownTitles($: EngineInterface, groups: readonly PullGroup[]): Promise<Map<string, string>> {
+/** The title of each of `keys` known without asking GitHub: a watched pull request's, or a registered repository's kept for its notices. */
+async function knownTitles($: EngineInterface, keys: readonly string[]): Promise<Map<string, string>> {
   const known = new Map<string, string>()
-  if (groups.length === 0) return known
-  const asked = await read($, logTitles)
   const watched = await readWatched($)
   const kept = new Map<string, Titles>()
-  for (const group of groups) {
-    if (group.key === undefined || group.number === undefined) continue
-    const repo = group.key.replace(/#\d+$/, "")
+  for (const key of keys) {
+    const ref = refOfPullKey(key)
+    if (ref === null) continue
+    const repo = repoKey(ref)
     if (!kept.has(repo)) kept.set(repo, toTitles(await $.store.get(`${TITLES_PREFIX}${repo}`)))
-    const watchedKey = findWatched(watched, group.key)
-    const watchedTitle = watchedKey === undefined ? "" : (watched[watchedKey]?.title ?? "")
-    const keptTitle = kept.get(repo)?.[String(group.number)]?.title ?? ""
-    // One asked for and found empty stays so; one kept empty elsewhere is not known (for a registered repository, a
-    // number with no pull request there, maybe an issue) and is asked for.
-    const title = asked[group.key] ?? (watchedTitle || keptTitle || undefined)
-    if (title !== undefined) known.set(group.key, title)
+    const watchedKey = findWatched(watched, key)
+    const title = (watchedKey === undefined ? "" : (watched[watchedKey]?.title ?? "")) || (kept.get(repo)?.[String(ref.number)]?.title ?? "")
+    if (title !== "") known.set(key, title)
   }
 
   return known
@@ -836,7 +831,7 @@ function watchLabel(repos: Repos, ref: PullRef) {
 }
 
 /**
- * Checks the pull requests `/inbox watch` chose as the branch's is checked, one GraphQL request each; their notices go
+ * Checks the pull requests `/inbox pr` watches as the branch's is checked, one GraphQL request each; their notices go
  * to `checked`, their names in brackets in front. One seen merged or closed is asked about no more by a session that
  * told its end or never looked at it, and leaves the list a day after.
  */
@@ -940,16 +935,11 @@ async function fetchMine($: EngineInterface, ctx: Context, host: string, now: nu
 }
 
 /**
- * Searches each host for the open pull requests the person opened and those asked of them to review, for the band
- * above the prompt; a host that cannot be searched for now keeps what it showed. Turned off, the band shows none.
+ * Searches each host for the open pull requests the person opened, the most pressing first, and those asked of them to
+ * review, updated last first; a host that cannot be searched for now keeps what `held` had of it.
  */
-async function checkMine($: EngineInterface, ctx: Context) {
-  if (!ctx.mine) {
-    if ((await read($, mine)) !== null) await update($, mine, () => null)
-    return
-  }
+async function findMine($: EngineInterface, ctx: Context, held: GhMine | null): Promise<GhMine> {
   const now = await $.clock.now()
-  const held = await read($, mine)
   const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
   const repos = await readRepos($)
   const groups: Record<MineGroup, { pulls: GhMinePull[]; more: number }> = { opened: { pulls: [], more: 0 }, requested: { pulls: [], more: 0 } }
@@ -979,11 +969,21 @@ async function checkMine($: EngineInterface, ctx: Context) {
   }
   // Those the person opened, the most pressing first; those asked of them, as GitHub found them, updated last first.
   const byUpdate = [...groups.requested.pulls].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-  await update($, mine, (): GhMine => ({
+  return {
     opened: { pulls: byPressing(ctx.t, groups.opened.pulls), more: groups.opened.more },
     requested: { pulls: byUpdate, more: groups.requested.more },
     checkedAt: now,
-  }))
+  }
+}
+
+/** Searches for the band above the prompt the person's open pull requests and those asked of them. Turned off, the band shows none. */
+async function checkMine($: EngineInterface, ctx: Context) {
+  if (!ctx.mine) {
+    if ((await read($, mine)) !== null) await update($, mine, () => null)
+    return
+  }
+  const found = await findMine($, ctx, await read($, mine))
+  await update($, mine, () => found)
 }
 
 /** Runs a conditional `gh api -i`; a `304` answers with nothing changed. */
@@ -1350,7 +1350,7 @@ async function trayCommand($: EngineInterface, ctx: Context, words: readonly str
   return ctx.tray ? t.trayShows(view) : t.trayOff
 }
 
-/** What `/inbox` and `/inbox watch` say after a pull request's title: watched, merged or closed, and whether it is a draft. */
+/** What `/inbox` says after a pull request's title: watched, merged or closed, and whether it is a draft. */
 const stateOf = (t: Messages, state: string | null, isDraft: boolean) => t.paren([...(isDraft ? [t.draft] : []), t.pullState(state)].join(t.listSeparator))
 
 async function status($: EngineInterface, ctx: Context) {
@@ -1540,7 +1540,7 @@ function pickedCi(held: readonly GhStaged[], ref: PullRef | null | undefined): {
   return item === undefined ? undefined : { key: item.id.slice(CI_ITEM_PREFIX.length), at: one?.at ?? 0 }
 }
 
-/** Shows what the pull request holds now in the pick pane, what is staged from it chosen already. */
+/** Shows in the pane of `/inbox pr` what the pull request holds now to hand to Claude, what is staged from it chosen already. */
 async function loadItems($: EngineInterface, ctx: Context, ref: PullRef) {
   ctx.picking += 1
   const token = ctx.picking
@@ -1594,62 +1594,7 @@ async function searchPulls($: EngineInterface, ctx: Context) {
   return { pulls, notes, errors }
 }
 
-/** Lists in the pick pane pull requests to choose from; `failure` says why the branch's own could not be looked up. */
-async function loadPulls($: EngineInterface, ctx: Context, failure?: string) {
-  ctx.picking += 1
-  const token = ctx.picking
-  const { t } = ctx
-  await update($, pick, (): GhPick => ({ stage: "loading", message: t.searchingPulls }))
-  let shown: GhPick
-  try {
-    const { pulls, notes, errors: failed } = await searchPulls($, ctx)
-    const errors = [...(failure === undefined ? [] : [failure]), ...failed]
-    shown = pulls.length === 0 && errors.length > 0 ? { stage: "error", message: t.searchFailed(errors.join(" / ")) } : { stage: "pulls", pulls, notes: [...errors.map(t.notSearched), ...notes] }
-  } catch (error) {
-    shown = { stage: "error", message: t.searchFailed(message(error)) }
-  }
-  if (token === ctx.picking) await update($, pick, () => shown)
-}
-
-async function pickCommand($: EngineInterface, ctx: Context, words: readonly string[]): Promise<string> {
-  const arg = words.join(" ")
-  let ref: PullRef | null = null
-  let failure: string | undefined
-  if (arg !== "") {
-    const isBare = /^#?\d+$/.test(arg)
-    ref = parsePullArg(arg, isBare ? await hereRepo($) : null)
-    if (ref === null)
-      return isBare ? ctx.t.noHereRepo : ctx.t.pullFormat
-  } else {
-    const branch = await currentBranch($)
-    const now = await $.clock.now()
-    if (branch !== null && ctx.found?.branch === branch) ref = ctx.found.ref
-    else if (branch !== null)
-      // A branch with no pull request is not a failure; anything else is said above the list.
-      ref = await lookUp($, ctx, branch, now).then(
-        found => found.ref,
-        error => {
-          failure = ctx.t.branchPullFailed(branch, message(error))
-          return null
-        },
-      )
-  }
-  if (!(await openPick($, ctx, ref, failure))) return ctx.t.paneNotOpened
-
-  return ctx.t.pickOpened
-}
-
-/** Opens the pick pane on the pull request's items, or on the list of pull requests when there is none. */
-async function openPick($: EngineInterface, ctx: Context, ref: PullRef | null, failure?: string) {
-  await update($, pick, (): GhPick => ({ stage: "loading", message: ctx.t.loading }))
-  const opened = await $.ui.open({ id: PICK_PANE, title: ctx.t.pickTitle, focus: true })
-  if (!opened.isPlaced) return false
-  await (ref === null ? loadPulls($, ctx, failure) : loadItems($, ctx, ref))
-
-  return true
-}
-
-/** Turns one item of the pick pane on or off: a review with its threads. */
+/** Turns one item of the pull request shown on or off: a review with its threads. */
 async function toggleItem($: EngineInterface, id: string) {
   await update($, pick, held => {
     if (held?.stage !== "items") return held
@@ -1661,7 +1606,7 @@ async function toggleItem($: EngineInterface, id: string) {
   })
 }
 
-/** Stages the pick pane's chosen items in place of what was staged from that pull request. */
+/** Stages the chosen items in place of what was staged from that pull request, and closes the pane: they go with the next prompt. */
 async function stageChosen($: EngineInterface, ctx: Context) {
   const held = await read($, pick)
   if (held?.stage !== "items") return
@@ -1670,7 +1615,7 @@ async function stageChosen($: EngineInterface, ctx: Context) {
     ...list.filter(one => one.pull !== held.pull),
     ...(items.length === 0 ? [] : [{ pull: held.pull, title: held.title, url: held.url, head: held.head, items, language: ctx.language, at: held.at }]),
   ])
-  await $.ui.close({ id: PICK_PANE })
+  await $.ui.close({ id: PR_PANE })
 }
 
 // A host other than github.com is named, so the same owner/repo#N on two hosts is told apart.
@@ -1698,137 +1643,72 @@ async function stopWatching($: EngineInterface, ctx: Context, key: string) {
   ctx.watchErrors.delete(key)
 }
 
-/** The watched pull requests, a few lines each: where each stands as the last check that read it found it. */
-async function watchList($: EngineInterface, ctx: Context): Promise<string | undefined> {
-  const { t } = ctx
-  const entries = Object.entries(await readWatched($))
-  if (entries.length === 0) return undefined
-  const now = await $.clock.now()
-  const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
-  const lines: string[] = []
-  for (const [key, entry] of entries) {
-    const ref = refOfPullKey(key)
-    if (ref === null) continue
-    const cached = await cachedPull($, ctx, ref)
-    const state = cached?.pull.state ?? entry.done?.state ?? "OPEN"
-    lines.push(`${pullLabel(key)} ${cached?.pull.title ?? entry.title}${stateOf(t, state, state === "OPEN" && cached?.pull.isDraft === true)}${isBranchPull(ctx, key) ? t.watchIsBranch : ""}`)
-    if (cached !== undefined) {
-      // Where it stands, as the line under the prompt tells the branch's with the reviewers named, the number left off.
-      const since = (at: string) => {
-        const ms = Date.parse(at)
-        return Number.isNaN(ms) ? undefined : ago(t, now - ms)
-      }
-      const stands = state === "OPEN" ? statusText(statusParts(t, ref.number, state, pullStatus(cached.pull, nicknames, ctx.language), since, true), false) : ""
-      if (stands !== "") lines.push(`  ${stands}`)
-      lines.push(`  ${t.lastCheckedRepo(ago(t, now - cached.at))}`)
-    }
-    const error = ctx.watchErrors.get(key)
-    if (error !== undefined) lines.push(`  ${t.error(error)}`)
-  }
+/** What watching a pull request, or stopping it, came to: whether it was done, and what to say of it. */
+type Watching = { isDone: boolean; text: string }
 
-  return lines.map(plain).join("\n")
-}
-
-async function watchCommand($: EngineInterface, ctx: Context, words: readonly string[]): Promise<string> {
+/** Starts watching the pull request `ref`, as GitHub spells it, where it is open and the list has room. */
+async function watchPull($: EngineInterface, ctx: Context, ref: PullRef): Promise<Watching> {
   const { t } = ctx
-  const usage = t.watchUsage(WATCHED_MAX)
-  const [action, ...rest] = words
-  if (action === undefined) return (await watchList($, ctx)) ?? `${t.noWatched}\n${usage}`
-  if (action !== "add" && action !== "remove") return usage
-  const arg = rest.join(" ")
-  if (arg === "") {
-    if (action === "remove") return usage
-    return (await openWatch($, ctx)) ? t.watchPaneOpened : t.paneNotOpened
-  }
-  const isBare = /^#?\d+$/.test(arg)
-  const ref = parsePullArg(arg, isBare ? await hereRepo($) : null)
-  if (ref === null) return isBare ? t.watchNoHereRepo : t.pullFormat
   const watched = await readWatched($)
   const held = findWatched(watched, pullKey(ref))
-  if (action === "remove") {
-    if (held === undefined) return t.notWatched(pullLabel(pullKey(ref)))
-    await stopWatching($, ctx, held)
-    return t.unwatched(pullLabel(held))
-  }
-  if (held !== undefined) return t.alreadyWatched(pullLabel(held))
-  if (Object.keys(watched).length >= WATCHED_MAX) return t.tooManyWatched(WATCHED_MAX)
+  if (held !== undefined) return { isDone: false, text: t.alreadyWatched(pullLabel(held)) }
+  if (Object.keys(watched).length >= WATCHED_MAX) return { isDone: false, text: t.tooManyWatched(WATCHED_MAX) }
   let pull: Pull
   try {
     pull = (await fetchPull($, ctx, ref, await $.clock.now())).pull
   } catch (error) {
-    return t.cannotRead(pullLabel(pullKey(ref)), message(error))
+    return { isDone: false, text: t.cannotRead(pullLabel(pullKey(ref)), message(error)) }
   }
   // Watched as GitHub spells it, the key the branch's own and a registered repository's notices go by, so each is told once.
   const key = pullKeyOfUrl(pull.url, ref)
   const named = findWatched(watched, key)
-  if (named !== undefined) return t.alreadyWatched(pullLabel(named))
-  if (pull.state !== "OPEN") return t.watchNotOpen(pullLabel(key), t.pullState(pull.state))
+  if (named !== undefined) return { isDone: false, text: t.alreadyWatched(pullLabel(named)) }
+  if (pull.state !== "OPEN") return { isDone: false, text: t.watchNotOpen(pullLabel(key), t.pullState(pull.state)) }
   await startWatching($, ctx, key, pull.title)
 
-  return t.watching(pullLabel(key), plain(pull.title))
+  return { isDone: true, text: t.watching(pullLabel(key), plain(pull.title)) }
 }
 
-/** Opens the pane of `/inbox watch` on the pull requests to choose from. */
-async function openWatch($: EngineInterface, ctx: Context) {
-  await update($, watchPick, (): GhWatchPick => ({ stage: "loading", message: ctx.t.searchingPulls }))
-  const opened = await $.ui.open({ id: WATCH_PANE, title: ctx.t.watchTitle, focus: true })
-  if (!opened.isPlaced) return false
-  let shown: GhWatchPick
-  try {
-    const found = await searchPulls($, ctx)
-    const watched = await readWatched($)
-    // Those watched that the search did not find (of another repository, or merged) are listed too, to stop watching them.
-    const others = Object.entries(watched)
-      .filter(([key]) => !found.pulls.some(pull => pull.key.toLowerCase() === key.toLowerCase()))
-      .map(([key, entry]): GhPickPull => ({ key, title: entry.title, author: null }))
-    const pulls = [...found.pulls, ...others]
-    const notes = [...found.errors.map(ctx.t.notSearched), ...found.notes]
-    shown =
-      pulls.length === 0 && found.errors.length > 0
-        ? { stage: "error", message: ctx.t.searchFailed(found.errors.join(" / ")) }
-        : { stage: "pulls", pulls, notes, chosen: pulls.filter(pull => findWatched(watched, pull.key) !== undefined).map(pull => pull.key) }
-  } catch (error) {
-    shown = { stage: "error", message: ctx.t.searchFailed(message(error)) }
-  }
-  await update($, watchPick, () => shown)
+/** Stops watching the pull request `ref`, whatever the case it is named in. */
+async function unwatchPull($: EngineInterface, ctx: Context, ref: PullRef): Promise<Watching> {
+  const held = findWatched(await readWatched($), pullKey(ref))
+  if (held === undefined) return { isDone: false, text: ctx.t.notWatched(pullLabel(pullKey(ref))) }
+  await stopWatching($, ctx, held)
 
-  return true
+  return { isDone: true, text: ctx.t.unwatched(pullLabel(held)) }
 }
 
 /**
- * The pull request a command names (`12`, `owner/repo#12`, its URL), or else the branch's; a string says why there
- * is none.
+ * The pull request `/inbox pr` names (`12`, `owner/repo#12`, its URL), or else the branch's; a string says why there is
+ * none. `action` is what it is named for, as the command words it ("" to show it).
  */
-async function namedPull($: EngineInterface, ctx: Context, arg: string, command: string): Promise<PullRef | string> {
+async function namedPull($: EngineInterface, ctx: Context, arg: string, action: string): Promise<PullRef | string> {
   const { t } = ctx
   if (arg !== "") {
     const isBare = /^#?\d+$/.test(arg)
     const ref = parsePullArg(arg, isBare ? await hereRepo($) : null)
-    return ref ?? (isBare ? t.actNoHereRepo(command) : t.pullFormat)
+    return ref ?? (isBare ? t.prNoHereRepo(action) : t.pullFormat)
   }
   const branch = await currentBranch($)
   if (branch === null) return t.noBranch
   try {
     const found = ctx.found?.branch === branch ? ctx.found : await lookUp($, ctx, branch, await $.clock.now())
-    return found.ref ?? t.noBranchPull(branch, command)
+    return found.ref ?? t.noBranchPull(branch, action)
   } catch (error) {
     return t.branchPullFailed(branch, message(error))
   }
 }
 
-/** The commands that change a pull request once the person confirms it in the pane. */
-type ActCommand = "merge" | "close" | "draft" | "approve" | "unapprove"
+/** What `/inbox pr` does to a pull request once the person confirms it in the pane. */
+type ActCommand = Extract<PrAction, "merge" | "close" | "draft" | "approve" | "unapprove">
 
 /**
- * `/inbox merge`, `/inbox close`, `/inbox draft`, `/inbox approve` and `/inbox unapprove`: reads the pull request
- * afresh and opens the pane that says what would be done, refusing at once what cannot be. Nothing is sent to GitHub
+ * Reads the pull request afresh and opens the pane that says what `command` would do to it, `named` the merge method
+ * asked for: undefined once it opened, else why not, what cannot be done refused at once. Nothing is sent to GitHub
  * before the person presses the pane's button.
  */
-async function actCommand($: EngineInterface, ctx: Context, command: ActCommand, words: readonly string[]): Promise<string> {
+async function openAct($: EngineInterface, ctx: Context, command: ActCommand, ref: PullRef, named: Method | undefined): Promise<string | undefined> {
   const { t } = ctx
-  const { method: named, rest } = command === "merge" ? parseMergeWords(words) : { method: undefined, rest: words }
-  const ref = await namedPull($, ctx, rest.join(" "), command)
-  if (typeof ref === "string") return ref
   let pull: Pull
   try {
     pull = (await fetchPull($, ctx, ref, await $.clock.now(), true)).pull
@@ -1901,7 +1781,7 @@ async function actCommand($: EngineInterface, ctx: Context, command: ActCommand,
     return t.paneNotOpened
   }
 
-  return t.actPaneOpened
+  return undefined
 }
 
 /** Sends to GitHub what the action pane confirmed: once, however often its button is pressed; the pane says why it failed. */
@@ -1938,28 +1818,222 @@ async function runAct($: EngineInterface, ctx: Context) {
       else if (!isBranchPull(ctx, held.pull) && findWatched(await readWatched($), held.pull) === undefined)
         $.ui.toast(ctx.t.actDone(held.kind, name), { timeoutMs: TOAST_MS })
     } else $.ui.toast(ctx.t.actDone(held.kind, name), { timeoutMs: TOAST_MS })
+    // The pull request `/inbox pr` shows says what was done to it.
+    const shown = await read($, prDetail)
+    if (ref !== null && shown?.pull.toLowerCase() === held.pull.toLowerCase()) await loadHeader($, ctx, ref)
     void check($, ctx, true)
   } finally {
     ctx.isActing = false
   }
 }
 
-/** Starts or stops watching one pull request of the pane, saved at once. */
-async function toggleWatched($: EngineInterface, ctx: Context, pull: GhPickPull) {
-  const held = await read($, watchPick)
-  if (held?.stage !== "pulls") return
-  const watched = await readWatched($)
-  const key = findWatched(watched, pull.key)
-  const isFull = key === undefined && Object.keys(watched).length >= WATCHED_MAX
-  if (key !== undefined) await stopWatching($, ctx, key)
-  else if (!isFull) await startWatching($, ctx, pull.key, pull.title)
-  const after = await readWatched($)
-  await update($, watchPick, one => {
-    if (one?.stage !== "pulls") return one
-    const { refusal: _, ...rest } = one
-    const chosen = one.pulls.filter(each => findWatched(after, each.key) !== undefined).map(each => each.key)
-    return { ...rest, chosen, ...(isFull ? { refusal: ctx.t.tooManyWatched(WATCHED_MAX) } : {}) }
-  })
+/**
+ * Reads where the pull request `ref` stands for the pane of `/inbox pr`: afresh where `isFresh`, else the answer kept
+ * younger than one interval. What it showed of the same pull request stays while it is asked.
+ */
+async function loadHeader($: EngineInterface, ctx: Context, ref: PullRef, isFresh = false) {
+  ctx.prShowings += 1
+  const showing = ctx.prShowings
+  const { t } = ctx
+  const name = pullLabel(pullKey(ref))
+  await update($, prDetail, (held): GhPrDetail =>
+    held?.stage === "pull" && held.pull.toLowerCase() === pullKey(ref).toLowerCase() ? held : { stage: "loading", pull: pullKey(ref), message: t.loadingPull(name) },
+  )
+  let shown: GhPrDetail
+  try {
+    const { pull, at } = await fetchPull($, ctx, ref, await $.clock.now(), isFresh)
+    const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
+    shown = {
+      stage: "pull",
+      pull: pullKeyOfUrl(pull.url, ref),
+      title: pull.title,
+      url: pull.url,
+      state: pull.state,
+      author: pull.author === null ? null : displayName(pull.author, nicknames, ctx.language),
+      isOwn: pull.viewer !== "" && pull.author === pull.viewer,
+      isApproved: pull.viewer !== "" && pull.verdicts.some(verdict => verdict.state === "APPROVED" && verdict.author === pull.viewer),
+      head: pull.head,
+      status: pullStatus(pull, nicknames, ctx.language),
+      at,
+    }
+  } catch (error) {
+    shown = { stage: "error", pull: pullKey(ref), message: t.cannotRead(name, message(error)) }
+  }
+  if (showing === ctx.prShowings) await update($, prDetail, () => shown)
+}
+
+/** Shows the pull request `ref` in the pane of `/inbox pr`: where it stands, and what it holds to hand to Claude. */
+async function showPull($: EngineInterface, ctx: Context, ref: PullRef, isFresh = false) {
+  await Promise.all([loadHeader($, ctx, ref, isFresh), loadItems($, ctx, ref)])
+}
+
+/** Opens the pane of `/inbox pr` on the pull request `ref`; whether it opened. */
+async function openPull($: EngineInterface, ctx: Context, ref: PullRef) {
+  await update($, prDetail, (): GhPrDetail => ({ stage: "loading", pull: pullKey(ref), message: ctx.t.loadingPull(pullLabel(pullKey(ref))) }))
+  if (!(await $.ui.open({ id: PR_PANE, title: ctx.t.prTitle, focus: true })).isPlaced) return false
+  await showPull($, ctx, ref)
+
+  return true
+}
+
+/**
+ * Looks for what the list of `/inbox pr` shows besides what the checks found: the open pull requests of this repository
+ * and those of the registered ones the person is involved in, and the person's own where the band does not search them.
+ */
+async function lookForList($: EngineInterface, ctx: Context) {
+  const listing = ctx.prListings
+  let found: GhPrFound
+  try {
+    const { pulls, notes, errors } = await searchPulls($, ctx)
+    const mineFound = ctx.mine ? undefined : await findMine($, ctx, null)
+    found = { stage: "found", pulls, notes: [...errors.map(ctx.t.notSearched), ...notes], ...(mineFound === undefined ? {} : { mine: mineFound }) }
+  } catch (error) {
+    found = { stage: "found", pulls: [], notes: [ctx.t.searchFailed(message(error))] }
+  }
+  if (listing === ctx.prListings) await update($, prFound, () => found)
+}
+
+/** Opens the pane of `/inbox pr` on the list of pull requests, looked for afresh; whether it opened. */
+async function openList($: EngineInterface, ctx: Context) {
+  ctx.prListings += 1
+  ctx.askedHeadings.clear()
+  await update($, prHeadings, () => ({}))
+  await update($, prFound, (): GhPrFound => ({ stage: "searching" }))
+  await update($, prDetail, () => null)
+  if (!(await $.ui.open({ id: PR_PANE, title: ctx.t.prTitle, focus: true })).isPlaced) return false
+  await lookForList($, ctx)
+
+  return true
+}
+
+/** The groups the list of `/inbox pr` puts pull requests in, in the order it shows them. */
+type PrGroup = "branch" | MineGroup | "watched" | "noticed" | "here"
+
+/** One row of the list of `/inbox pr`. */
+type PrRow = {
+  /** `host/owner/repo#number`. */
+  key: string
+  /** Its repository's short name (a registered one's alias, else its name) and its number: `tts#20`. */
+  label: string
+  title: string
+  state: PullState | null
+  /** Where it stands; null while it is not known. */
+  status: GhPullStatus | null
+  /** Who opened it, by the name the mod shows: for one found that the person did not open. */
+  author?: string
+  /** For one the log keeps notices of: how many, and when the newest happened. */
+  noticed?: { count: number; at: string }
+}
+
+/**
+ * The list of `/inbox pr`, a group each, every pull request once, in the first group it falls in: the branch's, the
+ * person's own, those asked of them to review, those watched, those the log keeps notices of (the newest few), and
+ * the rest found open in this repository and in the registered ones the person is involved in. `more` counts those
+ * a group leaves out.
+ */
+async function prList($: EngineInterface, ctx: Context): Promise<Array<{ group: PrGroup; rows: PrRow[]; more: number }>> {
+  const repos = await readRepos($)
+  const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
+  const headings = await read($, prHeadings)
+  const found = await read($, prFound)
+  const listed = new Set<string>()
+  const groups: Array<{ group: PrGroup; rows: PrRow[]; more: number }> = []
+  const add = (group: PrGroup, rows: readonly PrRow[], more = 0) => {
+    const fresh = rows.filter(row => !listed.has(row.key.toLowerCase()))
+    for (const row of fresh) listed.add(row.key.toLowerCase())
+    if (fresh.length > 0) groups.push({ group, rows: fresh, more })
+  }
+  const labelOf = (key: string) => {
+    const ref = refOfPullKey(key)
+    return ref === null ? key : watchLabel(repos, ref)
+  }
+  /** What GitHub said of a row found with nothing of where it stands, where it was asked. */
+  const headed = (key: string, title: string, author: string | null, noticed?: PrRow["noticed"]): PrRow => {
+    const heading = headings[key]
+    return {
+      key,
+      label: labelOf(key),
+      title: heading?.title || title,
+      state: heading?.state ?? null,
+      status: heading?.status ?? null,
+      ...(author === null ? {} : { author: displayName(author, nicknames, ctx.language) }),
+      ...(noticed === undefined ? {} : { noticed }),
+    }
+  }
+
+  const branch = await read($, watch)
+  const ref = ctx.found?.ref
+  if (ref != null && branch?.pull != null)
+    add("branch", [{ key: pullKey(ref), label: watchLabel(repos, ref), title: branch.title ?? "", state: branch.state, status: branch.status ?? null }])
+
+  const own = ctx.mine ? await read($, mine) : found?.stage === "found" ? (found.mine ?? null) : null
+  for (const group of MINE_GROUPS) {
+    const pulls = own?.[group]?.pulls ?? []
+    const rows = pulls.map(
+      (pull): PrRow => ({ key: pull.key, label: pull.label, title: pull.title, state: "OPEN", status: pull.status, ...(group === "requested" && pull.author !== undefined ? { author: pull.author } : {}) }),
+    )
+    add(group, rows, own?.[group]?.more ?? 0)
+  }
+
+  const watchedRows: PrRow[] = []
+  for (const [key, entry] of Object.entries(await readWatched($))) {
+    const one = refOfPullKey(key)
+    if (one === null) continue
+    const cached = await cachedPull($, ctx, one)
+    watchedRows.push({
+      key,
+      label: watchLabel(repos, one),
+      title: cached?.pull.title ?? entry.title,
+      state: cached?.pull.state ?? entry.done?.state ?? "OPEN",
+      status: cached === undefined ? null : pullStatus(cached.pull, nicknames, ctx.language),
+    })
+  }
+  add("watched", watchedRows)
+
+  // Those the log keeps notices of, the newest first: one GitHub says is no pull request is left off.
+  const history = await readHistory($)
+  const noticed = noticedPulls(latest(history, history.length).reverse()).flatMap(group =>
+    group.key === undefined || listed.has(group.key.toLowerCase()) || headings[group.key]?.isPull === false ? [] : [{ ...group, key: group.key }],
+  )
+  const shown = noticed.slice(0, NOTICED_SHOWN)
+  const searched = found?.stage === "found" ? found.pulls.filter(pull => headings[pull.key]?.isPull !== false) : []
+  const known = await knownTitles($, [...shown.map(group => group.key), ...searched.map(pull => pull.key)])
+  add(
+    "noticed",
+    shown.map(group => headed(group.key, known.get(group.key) ?? "", null, { count: group.events.length, at: group.events[0]?.at ?? "" })),
+    noticed.length - shown.length,
+  )
+  add(
+    "here",
+    searched.map(pull => {
+      const row = headed(pull.key, pull.title, pull.author)
+      // Found open by the search, it is open while GitHub has not said otherwise.
+      return { ...row, state: row.state ?? "OPEN" }
+    }),
+  )
+
+  return groups
+}
+
+/** What `/inbox pr` says it does with its words: shows a pull request or the list, does something to one. */
+async function prCommand($: EngineInterface, ctx: Context, words: readonly string[]): Promise<string> {
+  const { t } = ctx
+  if (words.length === 0) return (await openList($, ctx)) ? t.prListOpened : t.paneNotOpened
+  const said = parsePrWords(words)
+  if (said === undefined) return t.prUsage
+  const ref = await namedPull($, ctx, said.pull, said.action ?? "")
+  if (typeof ref === "string") return ref
+  switch (said.action) {
+    case undefined:
+    case "pick":
+      return (await openPull($, ctx, ref)) ? t.prOpened : t.paneNotOpened
+    case "watch":
+      return (await watchPull($, ctx, ref)).text
+    case "unwatch":
+      return (await unwatchPull($, ctx, ref)).text
+    default:
+      return (await openAct($, ctx, said.action, ref, said.method)) ?? t.actPaneOpened
+  }
 }
 
 export const register: Register = (on, options) => {
@@ -1989,10 +2063,12 @@ export const register: Register = (on, options) => {
     retries: new Map(),
     toggling: Promise.resolve(),
     picking: 0,
+    prShowings: 0,
+    prListings: 0,
     isEnded: false,
     askedLatest: new Set(),
     logOpenings: 0,
-    askedTitles: new Set(),
+    askedHeadings: new Set(),
     ci: undefined,
     isActing: false,
     teamless: new Set(),
@@ -2123,10 +2199,7 @@ export const register: Register = (on, options) => {
         // What the comments say now is asked for afresh each time the log opens.
         ctx.logOpenings += 1
         ctx.askedLatest.clear()
-        ctx.askedTitles.clear()
         await update($, logLatest, () => ({}))
-        await update($, logTitles, () => ({}))
-        await update($, logStands, () => ({}))
         if (!asText && (await $.ui.open({ id: LOG_PANE, title: t.logTitle, focus: true })).isPlaced)
           return { text: t.logOpened(all.length) }
         const list = latest(all, LOG_SHOWN)
@@ -2142,18 +2215,19 @@ export const register: Register = (on, options) => {
         await drawTray($, ctx)
         return { text }
       }
-      case "pick":
-        return { text: await pickCommand($, ctx, rest) }
-      case "watch":
-        return { text: await watchCommand($, ctx, rest) }
+      case "pr":
+        return { text: await prCommand($, ctx, rest) }
       case "tray":
         return { text: await trayCommand($, ctx, rest) }
+      // Each pull request's commands went under `/inbox pr`: where they went is said.
+      case "pick":
+      case "watch":
       case "merge":
       case "close":
       case "draft":
       case "approve":
       case "unapprove":
-        return { text: await actCommand($, ctx, action, rest) }
+        return { text: t.movedToPr(action) }
       case "clear": {
         const count = stagedCount(await read($, staged))
         await update($, staged, () => [])
@@ -2190,9 +2264,8 @@ export const register: Register = (on, options) => {
     ui: ReturnType<EngineInterface["ui"]["resolve"]>,
     row: LogRow,
     made: LogMade | undefined,
-    // The log pane's: what unfolds the row, what it says in full once unfolded, and whether its short name goes unsaid
-    // (the pane narrowed to its repository).
-    fold?: { mark: ReturnType<typeof ui.Button>; full?: readonly LatestItem[]; isUnlabelled?: boolean },
+    // The log pane's: what unfolds the row, and what it says in full once unfolded.
+    fold?: { mark: ReturnType<typeof ui.Button>; full?: readonly LatestItem[] },
     // What leads its first line, dim: a transcript row's `GitHub: `.
     lead?: string,
   ) => {
@@ -2222,7 +2295,7 @@ export const register: Register = (on, options) => {
     const head = (
       <Text>
         {lead === undefined ? null : <Text dimColor>{lead}</Text>}
-        {label === "" || fold?.isUnlabelled === true ? null : <Text color={LABEL_COLOR}>{label}</Text>}
+        {label === "" ? null : <Text color={LABEL_COLOR}>{label}</Text>}
         {who === "" && action === "" ? null : (
           <Text bold color={HEAD_COLOR}>
             {who}
@@ -2276,21 +2349,17 @@ export const register: Register = (on, options) => {
     return drawLogRow(ui, { text: row.text, url: row.url, when: "" }, row.made, undefined, "GitHub: ")
   })
 
-  // The log pane: every notice kept, newest first, a page at a time. Narrowed to one repository, its notices go
-  // together by pull request, each under a heading with its number and title, the short name left unsaid.
+  // The log pane: every notice kept, newest first, a page at a time; narrowed to one repository, its notices alone.
   on("ui.render", { component: "Pane", requestId: LOG_PANE }, async ($, e) => {
     const ui = $.ui.resolve(e)
-    const { Box, Text, Button, Link } = ui
+    const { Box, Text, Button } = ui
     const history = await readHistory($)
     const repos = await readLogRepos($, history)
     // A repository chosen whose notices are no longer kept shows them all.
     const narrowedTo = await read($, logRepo)
     const chosen = repos.find(one => one.repo === narrowedTo)
     const all = chosen === undefined ? history : history.filter(event => repoOfEvent(event) === chosen.repo)
-    const isByPull = chosen !== undefined
-    const newest = latest(all, all.length).reverse()
-    // The pull request with the newest notice first, each one's newest first.
-    const list = isByPull ? byPull(newest) : newest
+    const list = latest(all, all.length).reverse()
     const pages = Math.max(1, Math.ceil(list.length / LOG_PAGE))
     const page = Math.min(Math.max(0, await read($, logPage)), pages - 1)
     const shown = list.slice(page * LOG_PAGE, (page + 1) * LOG_PAGE)
@@ -2298,11 +2367,6 @@ export const register: Register = (on, options) => {
     const unfolded = await read($, logUnfolded)
     const latestOf = await read($, logLatest)
     void lookUpLatest($, ctx, shown)
-    const groups = isByPull ? pullGroups(shown, all) : []
-    // A title known without asking shows at once; where each stands now is asked for, the title with it.
-    const titles = await knownTitles($, groups)
-    const stands = await read($, logStands)
-    void lookUpHeadings($, ctx, groups)
     const turn = (to: number) => () => void update($, logPage, () => to)
     const narrow = (to: string | null) => async () => {
       await update($, logRepo, () => to)
@@ -2344,7 +2408,7 @@ export const register: Register = (on, options) => {
             onPress={() => void update($, logUnfolded, list => (list.includes(key) ? list.filter(one => one !== key) : [...list, key]))}
           />
         )
-      return <Box key={key}>{drawLogRow(ui, row, madeOf(event), { mark, full: isOpen ? full : undefined, isUnlabelled: isByPull })}</Box>
+      return <Box key={key}>{drawLogRow(ui, row, madeOf(event), { mark, full: isOpen ? full : undefined })}</Box>
     }
 
     return (
@@ -2366,52 +2430,8 @@ export const register: Register = (on, options) => {
             })}
           </Box>
         )}
-        <Text dimColor>{list.length === 0 ? t.noLog : (isByPull ? t.logRangeByPull : t.logRange)(page * LOG_PAGE + 1, page * LOG_PAGE + shown.length, list.length)}</Text>
-        {isByPull
-          ? groups.map((group, index) => {
-              const title = group.key === undefined ? "" : (titles.get(group.key) ?? "")
-              const standing = group.key === undefined ? "" : plain(stands[group.key] ?? "")
-              // Where it stands goes on the heading's row where the row holds it all; else a button unfolds it under the heading.
-              const isInline = cells(`#${group.number ?? ""} ${plain(title)}${standing}`) <= e.props.bodyColumns
-              const standsKey = `stands|${group.key ?? group.pull}`
-              const isStandsOpen = unfolded.includes(standsKey)
-              return (
-                <Box key={`group:${group.pull}`} flexDirection="column" marginTop={index === 0 ? 0 : 1}>
-                  <Box>
-                    <Text>
-                      <Text bold>
-                        {group.number === undefined ? (
-                          <Text color={LABEL_COLOR}>{t.logNoPull}</Text>
-                        ) : (
-                          <Text color={LABEL_COLOR}>
-                            <Link href={plain(group.url)}>{`#${group.number}`}</Link>
-                          </Text>
-                        )}
-                        {title === "" ? null : <Text>{` ${plain(title)}`}</Text>}
-                      </Text>
-                      {standing === "" || !isInline ? null : <Text>{standing}</Text>}
-                    </Text>
-                    {standing !== "" && !isInline && (
-                      <Button
-                        key={`stands:${group.key ?? group.pull}`}
-                        plain
-                        label={t.logStandsButton(isStandsOpen)}
-                        onPress={() => void update($, logUnfolded, list => (list.includes(standsKey) ? list.filter(one => one !== standsKey) : [...list, standsKey]))}
-                      />
-                    )}
-                  </Box>
-                  {standing !== "" && !isInline && isStandsOpen && (
-                    <Box paddingLeft={LOG_INDENT}>
-                      <Text>{standing.trim()}</Text>
-                    </Box>
-                  )}
-                  <Box flexDirection="column" paddingLeft={LOG_INDENT}>
-                    {group.events.map(event => drawPaneRow(event, shown.indexOf(event)))}
-                  </Box>
-                </Box>
-              )
-            })
-          : shown.map((event, index) => drawPaneRow(event, index))}
+        <Text dimColor>{list.length === 0 ? t.noLog : t.logRange(page * LOG_PAGE + 1, page * LOG_PAGE + shown.length, list.length)}</Text>
+        {shown.map((event, index) => drawPaneRow(event, index))}
         <Box>
           {page + 1 < pages && <Button key="older" hotkey="n" label={t.older} onPress={turn(page + 1)} />}
           {page > 0 && <Button key="newer" hotkey="p" label={t.newer} onPress={turn(page - 1)} />}
@@ -2419,49 +2439,10 @@ export const register: Register = (on, options) => {
         </Box>
       </Box>
     )
-
   })
 
-  on("ui.render", { component: "Pane", requestId: WATCH_PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
-    const held = await read($, watchPick)
-    const close = <Button key="close" hotkey="q" label={t.close} onPress={() => void $.ui.close({ id: WATCH_PANE })} />
-    if (held === null || held.stage !== "pulls")
-      return (
-        <Box flexDirection="column">
-          {held?.stage === "error" ? <Text>{plain(held.message)}</Text> : <Text dimColor>{held?.message ?? t.loading}</Text>}
-          {close}
-        </Box>
-      )
-
-    return (
-      <Box flexDirection="column">
-        <Text>{held.pulls.length === 0 ? t.noCandidates : t.watchHint}</Text>
-        {held.notes.map(note => (
-          <Text key={note} color="warning">
-            {plain(note)}
-          </Text>
-        ))}
-        {held.refusal !== undefined && <Text color="warning">{held.refusal}</Text>}
-        {held.pulls.map((pull, index) => (
-          <Button
-            key={pull.key}
-            hotkey={index < 9 ? String(index + 1) : undefined}
-            plain
-            label={`[${held.chosen.includes(pull.key) ? "x" : " "}] ${plain(pullLabel(pull.key))} ${plain(pull.title)}${pull.author === null ? "" : t.paren(plain(pull.author))}`}
-            onPress={() => {
-              // Keys pressed in a row each read what the one before saved.
-              ctx.toggling = ctx.toggling.then(() => toggleWatched($, ctx, pull)).catch(() => undefined)
-            }}
-          />
-        ))}
-        {close}
-      </Box>
-    )
-  })
-
-  // What `/inbox merge`, `/inbox close`, `/inbox draft`, `/inbox approve` and `/inbox unapprove` would do, done only by
-  // its button: no hotkey, nothing focused at first, so neither a key typed for the prompt nor an Enter sends it.
+  // What `/inbox pr`'s merge, close, draft, approve or unapprove would do, done only by its button: no hotkey, nothing
+  // focused at first, so neither a key typed for the prompt nor an Enter sends it.
   on("ui.render", { component: "Pane", requestId: ACT_PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const held = await read($, act)
@@ -2543,116 +2524,227 @@ export const register: Register = (on, options) => {
     )
   })
 
-  on("ui.render", { component: "Pane", requestId: PICK_PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
-    const held = await read($, pick)
+  // The pane of `/inbox pr`: the list of pull requests, a group each, a row each that opens it; or one of them, where it
+  // stands, what can be done to it, and what it holds to hand to Claude.
+  on("ui.render", { component: "Pane", requestId: PR_PANE }, async ($, e) => {
+    const { Box, Text, Button, Link } = $.ui.resolve(e)
+    const detail = await read($, prDetail)
+    const now = await $.clock.now()
+    const sinceAt = (at: string) => {
+      const ms = Date.parse(at)
+      return Number.isNaN(ms) ? undefined : ago(t, now - ms)
+    }
+    const close = <Button key="close" hotkey="q" label={t.close} onPress={() => void $.ui.close({ id: PR_PANE })} />
+    const toList = (
+      <Button
+        key="list"
+        hotkey="l"
+        label={t.prToList}
+        onPress={async () => {
+          ctx.prShowings += 1
+          await update($, prDetail, () => null)
+          if ((await read($, prFound)) === null) await lookForList($, ctx)
+        }}
+      />
+    )
+
+    if (detail === null) {
+      const groups = await prList($, ctx)
+      const found = await read($, prFound)
+      // Where those found with nothing of where they stand stand is asked for, the title with it.
+      void lookUpHeadings(
+        $,
+        ctx,
+        groups.flatMap(({ group, rows }) => (group === "noticed" || group === "here" ? rows.filter(row => row.status === null).map(row => row.key) : [])),
+      )
+      let index = 0
+      return (
+        <Box flexDirection="column">
+          {found?.stage === "found" &&
+            found.notes.map(note => (
+              <Text key={note} color="warning">
+                {plain(note)}
+              </Text>
+            ))}
+          {groups.length === 0 && found?.stage !== "searching" && <Text>{t.prNone}</Text>}
+          {groups.map(({ group, rows, more }) => (
+            <Box key={`group:${group}`} flexDirection="column">
+              <Text dimColor>{t.prGroup(group, rows.length, rows.length + more)}</Text>
+              {rows.map(row => {
+                const at = index
+                index += 1
+                const isEnded = row.state === "MERGED" || row.state === "CLOSED"
+                const marks =
+                  isEnded || row.status === null
+                    ? ""
+                    : statusText({ head: "", marks: statusMarks(t, row.status, { awaiting: group === "requested" ? "none" : "any" }), latest: undefined }, false)
+                const flag = isEnded ? t.paren(t.pullState(row.state)) : row.status?.isDraft === true ? t.paren(t.draft) : ""
+                const author = row.author === undefined ? "" : `  ${t.who(plain(row.author))}`
+                const when = row.noticed === undefined ? "" : `  ${t.prNoticed(row.noticed.count, sinceAt(row.noticed.at) ?? "")}`
+                const head = `${plain(row.label)}${flag}`
+                // A title not known yet (asked of GitHub, or none to be had) leaves no gap.
+                const title = row.title === "" ? "" : `  ${plain(row.title)}`
+                const text = `${head}${author}${marks === "" ? "" : `  ${marks}`}${title}${when}`
+                return (
+                  <Box key={`row:${row.key}`} paddingLeft={2}>
+                    <Button
+                      key={`pr:${row.key}`}
+                      hotkey={at < 9 ? String(at + 1) : undefined}
+                      plain
+                      label={text}
+                      onPress={() => {
+                        const ref = refOfPullKey(row.key)
+                        if (ref !== null) void showPull($, ctx, ref)
+                      }}
+                    >
+                      <Text color={LABEL_COLOR}>{head}</Text>
+                      {author}
+                      {marks === "" ? "" : `  ${marks}`}
+                      <Text dimColor>{`${title}${when}`}</Text>
+                    </Button>
+                  </Box>
+                )
+              })}
+            </Box>
+          ))}
+          <Text dimColor>{found?.stage === "searching" ? t.searchingPulls : groups.length === 0 ? "" : t.prListHint}</Text>
+          {close}
+        </Box>
+      )
+    }
+
+    const ref = refOfPullKey(detail.pull)
+    const isWatched = findWatched(await readWatched($), detail.pull) !== undefined
+    /** Says on the pane why what was pressed could not be done; with nothing to say, takes back what it said before. */
+    const say = (note: string | undefined) =>
+      update($, prDetail, held => {
+        if (held?.stage !== "pull" || held.pull !== detail.pull) return held
+        const { note: _, ...rest } = held
+        return note === undefined ? rest : { ...rest, note }
+      })
+    const doing = (command: ActCommand) => async () => {
+      if (ref !== null) await say(await openAct($, ctx, command, ref, undefined))
+    }
+    const toggleWatch = async () => {
+      if (ref === null) return
+      const done = isWatched ? await unwatchPull($, ctx, ref) : await watchPull($, ctx, ref)
+      await say(done.isDone ? undefined : done.text)
+    }
+    const items = await read($, pick)
     const unfolded = await read($, pickUnfolded)
-    const close = <Button key="close" hotkey="q" label={t.close} onPress={() => void $.ui.close({ id: PICK_PANE })} />
-    const toPulls = <Button key="pulls" hotkey="p" label={t.otherPull} onPress={() => void loadPulls($, ctx)} />
-    if (held === null || held.stage === "loading")
+    // What can be handed to Claude is that of the pull request shown: one still loading, or another's, is not. What it
+    // holds shows even where where it stands could not be read, and a failure the same as that one's is said once.
+    const isItems = items?.stage === "items" && items.pull.toLowerCase() === detail.pull.toLowerCase()
+    const itemsFailed = items?.stage === "error" && !(detail.stage === "error" && detail.message === items.message) ? items.message : undefined
+
+    /** Where the pull request stands, and the buttons that do something to it. */
+    const head = (shown: Extract<GhPrDetail, { stage: "pull" }>) => {
+      const isOpen = shown.state === "OPEN"
+      const said = shown.status.latest
+      const latestSaid = said === null ? undefined : t.latestComment(t.who(plain(said.name)), plain(said.body), sinceAt(said.at))
+      const about = [
+        ...(shown.author === null ? [] : [t.prBy(t.who(plain(shown.author)))]),
+        ...(isOpen ? (shown.status.isDraft === true ? [t.draft] : []) : [t.pullState(shown.state)]),
+        ...(isWatched ? [t.prWatchedNow] : []),
+        ...(isBranchPull(ctx, shown.pull) ? [t.prIsBranch] : []),
+      ]
       return (
         <Box flexDirection="column">
-          <Text dimColor>{held?.message ?? t.loading}</Text>
-          {close}
-        </Box>
-      )
-    if (held.stage === "error")
-      return (
-        <Box flexDirection="column">
-          <Text>{plain(held.message)}</Text>
-          {toPulls}
-          {close}
-        </Box>
-      )
-    if (held.stage === "pulls")
-      return (
-        <Box flexDirection="column">
-          <Text>
-            {held.pulls.length === 0 ? t.noPulls : t.choosePull}
+          <Text bold>
+            <Text color={LABEL_COLOR}>
+              <Link href={plain(shown.url)}>{plain(pullLabel(shown.pull))}</Link>
+            </Text>{" "}
+            {plain(shown.title)}
           </Text>
-          {held.notes.map(note => (
-            <Text key={note} color="warning">
-              {plain(note)}
-            </Text>
-          ))}
-          {held.pulls.map((pull, index) => (
-            <Button
-              key={pull.key}
-              hotkey={index < 9 ? String(index + 1) : undefined}
-              plain
-              label={`${plain(pullLabel(pull.key))} ${plain(pull.title)}${pull.author === null ? "" : t.paren(plain(pull.author))}`}
-              onPress={() => {
-                const ref = refOfPullKey(pull.key)
-                if (ref !== null) void loadItems($, ctx, ref)
-              }}
-            />
-          ))}
-          {close}
+          {about.length > 0 && <Text dimColor>{about.join(t.listSeparator)}</Text>}
+          {isOpen && <Text>{statusText({ head: shown.head.slice(0, 7), marks: statusMarks(t, shown.status, { withNames: true }), latest: latestSaid })}</Text>}
+          {shown.note !== undefined && <Text color="warning">{plain(shown.note)}</Text>}
+          <Box flexWrap="wrap">
+            {(isOpen || isWatched) && <Button key="pr:watch" hotkey="w" label={isWatched ? t.prUnwatch : t.prWatch} onPress={() => void toggleWatch()} />}
+            {isOpen && <Button key="pr:merge" hotkey="m" label={shown.status.autoMerge === true ? t.prDisableAuto : t.prMerge} onPress={() => void doing("merge")()} />}
+            {isOpen && <Button key="pr:draft" hotkey="d" label={shown.status.isDraft === true ? t.prReady : t.prToDraft} onPress={() => void doing("draft")()} />}
+            {isOpen && !shown.isOwn && (
+              <Button key="pr:approve" hotkey="v" label={shown.isApproved ? t.prUnapprove : t.prApprove} onPress={() => void doing(shown.isApproved ? "unapprove" : "approve")()} />
+            )}
+            {isOpen && <Button key="pr:close" hotkey="x" label={t.prClose} onPress={() => void doing("close")()} />}
+          </Box>
         </Box>
       )
+    }
 
     return (
       <Box flexDirection="column">
-        <Text>
-          {plain(pullLabel(held.pull))} {plain(held.title)}
-        </Text>
-        {held.notes.map(note => (
-          <Text key={note} dimColor>
-            {note}
-          </Text>
-        ))}
-        <Text dimColor>
-          {held.items.length === 0 ? t.noItems : t.itemsHint}
-        </Text>
-        {held.items.map((item, index) => {
-          // A review shows whether it is chosen with all its threads, in part, or not at all.
-          const ids = idsOf(held.items, item.id)
-          const count = ids.filter(id => held.chosen.includes(id)).length
-          const mark = count === ids.length ? "x" : count > 0 ? "-" : " "
-          const isOpen = unfolded.includes(item.id)
-          return (
-            <Box key={`row:${item.id}`} flexDirection="column" paddingLeft={item.parent === undefined ? 0 : 4}>
-              <Box>
-              <Button
-                key={`unfold:${item.id}`}
-                plain
-                label={isOpen ? "▾ " : "▸ "}
-                onPress={() => void update($, pickUnfolded, list => (list.includes(item.id) ? list.filter(one => one !== item.id) : [...list, item.id]))}
-              />
-              <Button
-                key={item.id}
-                hotkey={index < 9 ? String(index + 1) : undefined}
-                plain
-                label={`[${mark}] ${plain(item.label)}`}
-                onPress={() => {
-                  // Keys pressed in a row each read what the one before wrote.
-                  ctx.toggling = ctx.toggling.then(() => toggleItem($, item.id)).catch(() => undefined)
-                }}
-              />
-              </Box>
-              {isOpen && (
-                <Box paddingLeft={LOG_INDENT} flexDirection="column">
-                  {shownContext(item.context).map((line, i) => (
-                    <Text key={`said:${item.id}:${i}`} dimColor={line.isMeta}>
-                      {plain(line.text) || " "}
-                    </Text>
-                  ))}
-                </Box>
-              )}
-            </Box>
+        {detail.stage === "pull" ? head(detail) : detail.stage === "error" ? <Text>{plain(detail.message)}</Text> : <Text dimColor>{detail.message}</Text>}
+        {!isItems ? (
+          itemsFailed !== undefined ? (
+            <Text>{plain(itemsFailed)}</Text>
+          ) : items?.stage === "error" ? null : (
+            <Text dimColor>{items?.stage === "loading" ? items.message : t.loading}</Text>
           )
-        })}
-        <Button
-          key="stage"
-          hotkey="a"
-          label={t.attach(held.chosen.length)}
-          onPress={() => {
-            // After the toggles pressed before it, so it stages what they chose.
-            ctx.toggling = ctx.toggling.then(() => stageChosen($, ctx)).catch(() => undefined)
-          }}
-        />
-        {toPulls}
-        {close}
+        ) : (
+          <Box flexDirection="column">
+            {items.notes.map(note => (
+              <Text key={note} dimColor>
+                {note}
+              </Text>
+            ))}
+            <Text dimColor>{items.items.length === 0 ? t.noItems : t.itemsHint}</Text>
+            {items.items.map((item, index) => {
+              // A review shows whether it is chosen with all its threads, in part, or not at all.
+              const ids = idsOf(items.items, item.id)
+              const count = ids.filter(id => items.chosen.includes(id)).length
+              const mark = count === ids.length ? "x" : count > 0 ? "-" : " "
+              const isUnfolded = unfolded.includes(item.id)
+              return (
+                <Box key={`row:${item.id}`} flexDirection="column" paddingLeft={item.parent === undefined ? 0 : 4}>
+                  <Box>
+                    <Button
+                      key={`unfold:${item.id}`}
+                      plain
+                      label={isUnfolded ? "▾ " : "▸ "}
+                      onPress={() => void update($, pickUnfolded, list => (list.includes(item.id) ? list.filter(one => one !== item.id) : [...list, item.id]))}
+                    />
+                    <Button
+                      key={item.id}
+                      hotkey={index < 9 ? String(index + 1) : undefined}
+                      plain
+                      label={`[${mark}] ${plain(item.label)}`}
+                      onPress={() => {
+                        // Keys pressed in a row each read what the one before wrote.
+                        ctx.toggling = ctx.toggling.then(() => toggleItem($, item.id)).catch(() => undefined)
+                      }}
+                    />
+                  </Box>
+                  {isUnfolded && (
+                    <Box paddingLeft={LOG_INDENT} flexDirection="column">
+                      {shownContext(item.context).map((line, i) => (
+                        <Text key={`said:${item.id}:${i}`} dimColor={line.isMeta}>
+                          {plain(line.text) || " "}
+                        </Text>
+                      ))}
+                    </Box>
+                  )}
+                </Box>
+              )
+            })}
+          </Box>
+        )}
+        <Box flexWrap="wrap">
+          {isItems && (
+            <Button
+              key="stage"
+              hotkey="a"
+              label={t.attach(items.chosen.length)}
+              onPress={() => {
+                // After the toggles pressed before it, so it stages what they chose.
+                ctx.toggling = ctx.toggling.then(() => stageChosen($, ctx)).catch(() => undefined)
+              }}
+            />
+          )}
+          {ref !== null && <Button key="reload" hotkey="r" label={t.prReload} onPress={() => void showPull($, ctx, ref, true)} />}
+          {toList}
+          {close}
+        </Box>
       </Box>
     )
   })
@@ -2694,7 +2786,14 @@ export const register: Register = (on, options) => {
             <Text>{t.staged(what)}</Text>
             {size > CONTEXT_LIMIT && <Text color="warning">{t.oversize(Math.round(size / 1000), CONTEXT_LIMIT / 1000)}</Text>}
             <Box>
-              <Button key="gh-inbox-repick" label={t.repick} onPress={() => void openPick($, ctx, refOfPullKey(held[0]?.pull ?? ""))} />
+              <Button
+                key="gh-inbox-repick"
+                label={t.repick}
+                onPress={() => {
+                  const ref = refOfPullKey(held[0]?.pull ?? "")
+                  void (ref === null ? openList($, ctx) : openPull($, ctx, ref))
+                }}
+              />
               <Button key="gh-inbox-clear" label={t.detach} onPress={() => void update($, staged, () => [])} />
             </Box>
           </Box>

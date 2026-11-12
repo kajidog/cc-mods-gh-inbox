@@ -34,7 +34,7 @@ export function toSettings(options: Record<string, unknown>): Settings {
 const ownerRepo = (repo: string) => repo.split("/").slice(-2).join("/")
 
 /**
- * A word names the repository by `owner/repo`, `host/owner/repo` or its alias. A pull request `/inbox watch` chose is
+ * A word names the repository by `owner/repo`, `host/owner/repo` or its alias. A pull request `/inbox pr` watches is
  * labelled with its number (`tts#12`): the alias is what comes before it, and the whole label names that one alone.
  */
 function isNamed(word: string, notice: InboxNotice) {

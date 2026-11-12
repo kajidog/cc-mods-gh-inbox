@@ -1,5 +1,5 @@
-// What `/inbox merge`, `/inbox close`, `/inbox draft`, `/inbox approve` and `/inbox unapprove` do to a pull request:
-// whether it can be done now, and the `gh` command that does it once the person confirms it in the pane.
+// What `/inbox pr` merges, closes, drafts, approves or unapproves does to a pull request: whether it can be done now,
+// and the `gh` command that does it once the person confirms it in the pane.
 
 import type { GhActKind, GhPullStatus } from "../types"
 
@@ -194,10 +194,4 @@ export function actArgv(kind: GhActKind, url: string, head: string, method: stri
     case "unapprove":
       return [...api, "graphql", "--silent", "-f", `query=${DISMISS_MUTATION}`, "-f", `id=${review?.id ?? ""}`, "-f", `message=${review?.message ?? ""}`]
   }
-}
-
-/** What `/inbox merge`'s words say apart from the pull request: a method named (`merge`, `squash`, `rebase`), and the rest. */
-export function parseMergeWords(words: readonly string[]): { method: Method | undefined; rest: string[] } {
-  const named = words.map(word => word.toUpperCase()).find(isMethod)
-  return { method: named, rest: words.filter(word => !isMethod(word.toUpperCase())) }
 }

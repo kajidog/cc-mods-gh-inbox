@@ -30,7 +30,7 @@ export type GhEvent = {
   head?: string
   /**
    * What the line starts with in brackets, before its head: the registered repository's short name, or for a pull
-   * request `/inbox watch` chose, that name and its number (`tts#20`).
+   * request `/inbox pr` watches, that name and its number (`tts#20`).
    */
   label?: string
 }
@@ -130,29 +130,63 @@ export type GhMine = {
   checkedAt: number
 }
 
-/** What the pane of `/inbox watch` shows: pull requests to start or stop watching. */
-export type GhWatchPick =
-  | { stage: "loading"; message: string }
-  | { stage: "error"; message: string }
-  | {
-      stage: "pulls"
-      /** Those found open, then those watched that were not found. */
-      pulls: GhPickPull[]
-      /** The hosts that could not be searched and what was left out, said in a line each. */
-      notes: string[]
-      /** The `host/owner/repo#number` of those watched. */
-      chosen: string[]
-      /** Why the last one pressed could not be watched; absent where it could. */
-      refusal?: string
-    }
-
-/** An open pull request `/inbox pick` lists to choose from. */
+/** An open pull request `/inbox pr` finds in this repository, or in a registered one the person is involved in. */
 export type GhPickPull = {
   /** `host/owner/repo#number`. */
   key: string
   title: string
   author: string | null
 }
+
+/**
+ * What GitHub says of a pull request the list of `/inbox pr` shows that nothing else tells of (one the log keeps notices
+ * of, one found in this repository): its title, and where it stands; a number that is no pull request (an issue) is
+ * none, so it is left off.
+ */
+export type GhPrHeading = { title: string; isPull: boolean; state: "OPEN" | "CLOSED" | "MERGED" | null; status: GhPullStatus | null }
+
+/**
+ * What the list of `/inbox pr` looks for as it opens: the open pull requests of this repository and those in registered
+ * ones the person is involved in, and the person's own and those asked of them where the band above the prompt does not
+ * search for them.
+ */
+export type GhPrFound =
+  | { stage: "searching" }
+  | {
+      stage: "found"
+      pulls: GhPickPull[]
+      /** The hosts that could not be searched and what was left out, said in a line each. */
+      notes: string[]
+      /** The person's own open pull requests and those asked of them, searched for the list alone. */
+      mine?: GhMine
+    }
+
+/** The pull request the pane of `/inbox pr <PR>` shows, above what of it can be handed to Claude. */
+export type GhPrDetail =
+  | { stage: "loading"; pull: string; message: string }
+  | { stage: "error"; pull: string; message: string }
+  | {
+      stage: "pull"
+      /** `host/owner/repo#number`, as GitHub spells it. */
+      pull: string
+      title: string
+      url: string
+      state: "OPEN" | "CLOSED" | "MERGED"
+      /** Who opened it, by the name the mod shows; null where GitHub names no one. */
+      author: string | null
+      /** Whether the account `gh` uses opened it: GitHub does not let it approve it. */
+      isOwn: boolean
+      /** Whether the account `gh` uses approves it, by its last say. */
+      isApproved: boolean
+      /** The head commit, in full; "" where GitHub gave none. */
+      head: string
+      /** Where it stands, with the reviewers named. */
+      status: GhPullStatus
+      /** Why what the last button pressed asked for could not be done. */
+      note?: string
+      /** When it was asked of GitHub, ms since the epoch. */
+      at: number
+    }
 
 /** One thing of a pull request the person can hand to Claude: a review, a thread of line comments, a comment. */
 export type GhPickItem = {
@@ -170,12 +204,6 @@ export type GhPickItem = {
 export type GhPick =
   | { stage: "loading"; message: string }
   | { stage: "error"; message: string }
-  | {
-      stage: "pulls"
-      pulls: GhPickPull[]
-      /** The hosts that could not be searched, said in a line each. */
-      notes: string[]
-    }
   | {
       stage: "items"
       /** `host/owner/repo#number`. */
@@ -208,16 +236,10 @@ export type GhStaged = {
   at?: number
 }
 
-/**
- * What `/inbox merge`, `/inbox close`, `/inbox draft`, `/inbox approve` and `/inbox unapprove` do to a pull request
- * once the person confirms it.
- */
+/** What `/inbox pr` merges, closes, drafts, approves or unapproves does to a pull request once the person confirms it. */
 export type GhActKind = "merge" | "auto" | "disable-auto" | "close" | "ready" | "draft" | "approve" | "unapprove"
 
-/**
- * What the pane of `/inbox merge`, `/inbox close`, `/inbox draft`, `/inbox approve` and `/inbox unapprove` shows: what
- * is about to be done, to confirm.
- */
+/** What the pane that confirms `/inbox pr`'s merge, close, draft, approve or unapprove shows: what is about to be done. */
 export type GhAct = {
   /** confirm: waiting for the person. running: under way. failed: GitHub refused it, `message` saying why. */
   stage: "confirm" | "running" | "failed"
@@ -256,13 +278,13 @@ export type GhPlaced = {
 /** One notice about to be shown, as `$.inbox.notify` takes it. */
 export type InboxNotice = {
   event: GhEvent
-  /** pull: the checked-out branch's pull request. watch: a pull request `/inbox watch` chose. repo: a registered repository. */
+  /** pull: the checked-out branch's pull request. watch: a pull request `/inbox pr` watches. repo: a registered repository. */
   source: "pull" | "watch" | "repo"
   /** `host/owner/repo`. */
   repo: string
   /**
    * What leads `text` in brackets: the registered repository's alias or its name, with the number of a pull
-   * request `/inbox watch` chose (`tts#20`); null for the branch's pull request.
+   * request `/inbox pr` watches (`tts#20`); null for the branch's pull request.
    */
   label: string | null
   /** Whether the account `gh` is logged in as did it. */
@@ -304,6 +326,7 @@ declare module "claude-code" {
       /** The ids this session has seen, by `host/owner/repo#number`, and by `repo:host/owner/repo` for a registered repository. */
       seen: Record<string, string[]>
       picker: GhPicker | null
+      /** What the pull request `/inbox pr` shows holds that can be handed to Claude. */
       pick: GhPick | null
       /** What the next prompt the person sends carries to the model. */
       staged: GhStaged[]
@@ -325,20 +348,14 @@ declare module "claude-code" {
             isComplete?: boolean
           }
       >
-      /**
-       * The titles of the pull requests and issues the log pane narrowed to one repository heads its notices with, by
-       * `host/owner/repo#number`; "" for a number GitHub knows nothing of.
-       */
-      logTitles: Record<string, string>
-      /**
-       * Where each pull request the log pane narrowed to one repository heads its notices with stands now, as its heading
-       * says it after the title, by `host/owner/repo#number`.
-       */
-      logStands: Record<string, string>
-      /** The pick pane's items unfolded to say in full what they say, by id. */
+      /** The items of the pull request `/inbox pr` shows unfolded to say in full what they say, by id. */
       pickUnfolded: string[]
-      /** What the pane of `/inbox watch` shows. */
-      watchPick: GhWatchPick | null
+      /** The pull request the pane of `/inbox pr` shows; null while it shows the list. */
+      prDetail: GhPrDetail | null
+      /** What the list of `/inbox pr` looked for as it opened; null before it did. */
+      prFound: GhPrFound | null
+      /** What GitHub says of the pull requests the list of `/inbox pr` shows that nothing else tells of, by `host/owner/repo#number`. */
+      prHeadings: Record<string, GhPrHeading>
       /**
        * The open pull requests the band above the prompt shows (those the person opened, those asked of them to review);
        * null while none were searched for.
@@ -352,7 +369,7 @@ declare module "claude-code" {
       ciToldAt: number
       /** The rows the `row` channel placed in the transcript, oldest first, the newest kept. */
       placed: GhPlaced[]
-      /** What the pane of `/inbox merge`, `/inbox close`, `/inbox draft`, `/inbox approve` and `/inbox unapprove` shows. */
+      /** What the pane that confirms `/inbox pr`'s merge, close, draft, approve or unapprove shows. */
       act: GhAct | null
     }
   }
