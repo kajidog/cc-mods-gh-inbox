@@ -1037,6 +1037,48 @@ test("the tray can be turned off", { options: { language: "ja", tray: false } },
   expect(lines.every(line => line === undefined)).toBe(true)
 })
 
+test(
+  "/inbox alone tells where things stand, each setting as it is now and the commands; /inbox status where things stand alone",
+  { options: { language: "ja", channel: "row", intervalSeconds: 10, myPulls: false } },
+  async ($, on) => {
+    mock.store(on, { repos: { [KEY]: { kinds: ["comment"] } } })
+    mock.clock(on, { now: 1_000_000 })
+    fakeGitHub(on, [[]])
+    on("ui.status", async () => ({ value: undefined }))
+
+    await $.command.run(CHECK)
+    await $.command.run({ ...CHECK, args: "tray repos" })
+    const status = (await $.command.run({ ...CHECK, args: "status" }))?.text ?? ""
+    expect(status).toContain("\n登録したリポジトリ: 1件（/inbox repo）")
+    expect(status).not.toContain("設定")
+    // Each value where the longest name ends, as a terminal draws them, Japanese two cells a letter.
+    expect(await $.command.run({ ...CHECK, args: "" })).toEqual({
+      text: [
+        status,
+        "",
+        "設定（/config の「GitHub: …」で変えます）",
+        "  確認の間隔                 30秒",
+        "  通知の出し方               row",
+        "  言語                       ja",
+        "  プロンプトの下の行         オン・登録したリポジトリ（/inbox tray で切り替え）",
+        "  入力欄の上の PR            オフ",
+        "  CI の結果を Claude に渡す  オン",
+        "  自分の操作も通知           オフ",
+        "  登録できるリポジトリ       20件",
+        "",
+        "コマンド",
+        "  /inbox check  今すぐ確認する",
+        "  /inbox log    通知の一覧",
+        "  /inbox pr     PR の一覧・詳細・操作",
+        "  /inbox repo   リポジトリの登録",
+        "  /inbox nick   表示名を短くする",
+        "  /inbox tray   プロンプトの下の行を切り替える",
+        "  /inbox clear  添付を外す",
+      ].join("\n"),
+    })
+  },
+)
+
 test("notices and commands speak English by default", async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: ["comment"], alias: "r" } } })
   const clock = mock.clock(on, { now: 1_000_000 })
@@ -1049,6 +1091,11 @@ test("notices and commands speak English by default", async ($, on) => {
   expect(await $.command.run({ ...CHECK, args: "repo" })).toMatchObject({ text: expect.stringContaining("o/r [r]: Comments on PRs and issues") })
   expect(await $.command.run({ ...CHECK, args: "repo add owner/repo comment,push" })).toEqual({ text: "Registered Owner/Repo (Comments on PRs and issues, Pushes)." })
   expect(await $.command.run({ ...CHECK, args: "nick" })).toEqual({ text: "No nicknames yet. Add one with /inbox nick <login> <nickname>." })
+  expect(await $.command.run({ ...CHECK, args: "" })).toMatchObject({
+    text: expect.stringContaining(
+      '\n\nSettings (change them as "GitHub: …" in /config)\n  Check interval                  60s\n  Where notices show              toast\n',
+    ),
+  })
 })
 
 test("a session that has ended is not marked alive again by a check still under way", JA, async ($, on) => {
@@ -1688,7 +1735,7 @@ test("/inbox pr close and draft ask in the pane too, and cancelling sends nothin
   // One ready for review goes back to a draft.
   // `/inbox` says it is a draft beside what it is watched as.
   await $.command.run(CHECK)
-  expect(await $.command.run({ ...CHECK, args: "status" })).toMatchObject({ text: expect.stringContaining("o/r#12 Add things（下書き、通知中）") })
+  expect(await $.command.run({ ...CHECK, args: "status" })).toMatchObject({ text: expect.stringContaining("o/r#12 Add things（下書き）\n") })
 
   says = { mergeState: "BLOCKED", reviewDecision: "REVIEW_REQUIRED" }
   await $.command.run({ ...CHECK, args: "pr draft 12" })
@@ -2162,7 +2209,7 @@ test("the band above the prompt shows the person's open pull requests, the most 
     "  b#12  aliceさん  ◐ CI 1/2  Add search",
   ])
   expect((await band.find({ type: "Link", text: "r#3" }))?.props).toMatchObject({ href: "https://github.com/o/r/pull/3" })
-  expect(await $.command.run({ ...CHECK, args: "status" })).toMatchObject({ text: expect.stringContaining("\n自分の PR: 12件、レビュー依頼: 2件（入力欄の上）\n") })
+  expect(await $.command.run({ ...CHECK, args: "status" })).toMatchObject({ text: expect.stringContaining("\n自分の PR: 12件、レビュー依頼: 2件（/inbox pr）\n") })
 
   // Within the interval the answer kept is used; after it, GitHub is searched again.
   await $.command.run(CHECK)

@@ -204,7 +204,8 @@ asked to review
 
 | Command | What it does |
 | --- | --- |
-| `/inbox` | The pull request watched, where it stands (CI, reviews with who gave or owes them, whether it can be merged, the newest comment) and when it was last checked |
+| `/inbox` | The pull request watched, where it stands (CI, reviews with who gave or owes them, whether it can be merged, the newest comment) and when it was last checked; then each setting as it is now with how to change it, and the commands |
+| `/inbox status` | Where things stand alone, without the settings and commands |
 | `/inbox check` | Check now |
 | `/inbox log [repository]` | Opens a pane of the notices of every window kept, newest first, 10 a page (`n` older, `p` newer, `q` close). Each shows on its first line the repository's short name in color, who did what in bold and color (a link to it on GitHub) and when; what was said goes under it, indented. A notice that says more than fits gets a `▸`: press it (or the digit of its place on the page, `1`–`9`, `0`) to unfold all of it, line comments with their file and line (kept up to 2,000 characters a notice). With notices of more than one repository, buttons above the list narrow it to one (`r` goes to the next); `/inbox log <repository>` opens it narrowed, by the short name, the name or `owner/repo`. The notices of a pull request together, with where it stands, are in `/inbox pr`. A comment, review or line comment edited or deleted on GitHub since it was told is marked `(…, edited 5m ago)` or `(…, deleted)`, and an edited one unfolds to what it says now (see below). Nothing is added to the transcript |
 | `/inbox log text` | Lists the newest 20 in the transcript instead, for Claude to read |

@@ -1358,8 +1358,11 @@ async function trayCommand($: EngineInterface, ctx: Context, words: readonly str
   return ctx.tray ? t.trayShows(view) : t.trayOff
 }
 
-/** What `/inbox` says after a pull request's title: watched, merged or closed, and whether it is a draft. */
-const stateOf = (t: Messages, state: string | null, isDraft: boolean) => t.paren([...(isDraft ? [t.draft] : []), t.pullState(state)].join(t.listSeparator))
+/** What `/inbox` says after a pull request's title: whether it is a draft, and merged or closed; nothing else of an open one. */
+function stateOf(t: Messages, state: string | null, isDraft: boolean) {
+  const said = [...(isDraft ? [t.draft] : []), ...(state === "OPEN" ? [] : [t.pullState(state)])]
+  return said.length === 0 ? "" : t.paren(said.join(t.listSeparator))
+}
 
 async function status($: EngineInterface, ctx: Context) {
   const { value: held } = await $.state.get({ plugin: "gh-inbox", key: "watch" })
@@ -1375,18 +1378,48 @@ async function status($: EngineInterface, ctx: Context) {
     const stands = parts === undefined ? "" : statusText(parts, false)
     if (stands !== "") lines.push(`  ${stands}`)
   }
-  if (held?.checkedAt != null) lines.push(t.lastChecked(ago(t, now - held.checkedAt), ctx.intervalSeconds))
+  if (held?.checkedAt != null) lines.push(t.lastChecked(ago(t, now - held.checkedAt)))
   if (held?.error != null) lines.push(t.error(held.error))
   const watched = Object.keys(await readWatched($)).length
-  if (watched > 0) lines.push(t.watchedCount(watched))
-  const repos = Object.keys(toRepos(await $.store.get(REPOS_KEY))).length
-  if (repos > 0) lines.push(t.registeredCount(repos))
   const found = ctx.mine ? await read($, mine) : null
   const count = (group: MineGroup) => (found?.[group] === undefined ? 0 : found[group].pulls.length + found[group].more)
-  if (count("opened") + count("requested") > 0) lines.push(t.mineCount(count("opened"), count("requested")))
-  lines.push((await isShowing($, ctx, now)) ? t.showsHere : t.showsElsewhere)
+  const [opened, requested] = [count("opened"), count("requested")]
+  if (opened + requested + watched > 0) lines.push(t.pullCounts(opened + requested > 0 ? { opened, requested } : undefined, watched))
+  const repos = Object.keys(toRepos(await $.store.get(REPOS_KEY))).length
+  if (repos > 0) lines.push(t.registeredCount(repos))
+  // Where they show goes without saying, but for when it is another window.
+  if (!(await isShowing($, ctx, now))) lines.push(t.showsElsewhere)
 
   return lines.map(plain).join("\n")
+}
+
+/** The commands `/inbox` alone names, each with what it does. */
+const COMMANDS_ABOUT = ["check", "log", "pr", "repo", "nick", "tray", "clear"] as const
+
+/** Rows of `pairs`, indented, each one's second part where the longest first one ends. */
+function aligned(pairs: readonly (readonly [string, string])[]): string[] {
+  const width = Math.max(...pairs.map(([name]) => cells(name)))
+  return pairs.map(([name, value]) => `  ${name}${" ".repeat(width - cells(name) + 2)}${value}`)
+}
+
+/** What `/inbox` alone says: what `/inbox status` says, then each setting as it is now and how to change it, then the commands. */
+async function overview($: EngineInterface, ctx: Context) {
+  const { t } = ctx
+  const names = t.settingNames
+  const settings: [string, string][] = [
+    [names.intervalSeconds, t.seconds(ctx.intervalSeconds)],
+    // What is not one of the others is a toast.
+    [names.channel, ["log", "row", "notify"].includes(ctx.channel) ? ctx.channel : "toast"],
+    [names.language, ctx.language],
+    [names.tray, ctx.tray ? t.trayIs(toTrayView(await $.store.get(TRAY_VIEW_KEY))) : t.isOn(false)],
+    [names.myPulls, t.isOn(ctx.mine)],
+    [names.ciToClaude, t.isOn(ctx.ciToClaude)],
+    [names.notifySelf, t.isOn(ctx.notifySelf)],
+    [names.maxRepos, t.repoLimit(ctx.maxRepos)],
+  ]
+  const commands = COMMANDS_ABOUT.map(name => [`/inbox ${name}`, t.commandsAbout[name]] as const)
+
+  return [await status($, ctx), "", t.settingsHeading, ...aligned(settings), "", t.commandsHeading, ...aligned(commands)].join("\n")
 }
 
 const kindList = (t: Messages, kinds: readonly Kind[]) => (kinds.length === 0 ? t.noKinds : kinds.map(kind => t.kinds[kind]).join(t.listSeparator))
@@ -2210,9 +2243,11 @@ export const register: Register = (on, options) => {
 
   on("command.run", { command: COMMAND }, async ($, e) => {
     await touch($, ctx, true).catch(() => undefined)
-    const [action = "status", ...rest] = e.args.trim().split(/\s+/).filter(word => word !== "")
+    const [action, ...rest] = e.args.trim().split(/\s+/).filter(word => word !== "")
 
     switch (action) {
+      case undefined:
+        return { text: await overview($, ctx) }
       case "status":
         return { text: await status($, ctx) }
       case "check":

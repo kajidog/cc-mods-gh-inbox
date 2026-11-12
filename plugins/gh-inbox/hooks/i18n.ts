@@ -171,18 +171,51 @@ const en = {
 
   // `/inbox`
   commandDescription:
-    "GitHub notices for this branch's pull request, pull requests you watch and registered repositories: status, check now, recent notices, pull requests (list them, show one to hand its reviews to Claude, watch, merge, close, draft or approve it), repositories, nicknames, what the line under the prompt shows",
+    "GitHub notices for this branch's pull request, pull requests you watch and registered repositories: status with the settings and commands, check now, recent notices, pull requests (list them, show one to hand its reviews to Claude, watch, merge, close, draft or approve it), repositories, nicknames, what the line under the prompt shows",
   commandHint:
     "[status|check|log [repo] [text]|pr [pr] [show|merge [merge|squash|rebase]|close|draft|approve|unapprove|watch|unwatch]|clear|repo [add|set|remove|alias ...]|nick [login [nickname]]|tray [pull|repos]]",
   noBranch: "The branch is not known (outside a git repository, or a detached HEAD).",
   noPull: (branch: string) => `${branch} has no pull request.`,
   pullState: (state: string | null): string => (state === "OPEN" ? "watching" : state === "MERGED" ? "merged" : "closed"),
-  lastChecked: (ago: string, interval: number) => `Last checked ${ago}; checked every ${interval}s.`,
+  lastChecked: (ago: string) => `Last checked ${ago}.`,
   error: (message: string) => `Error: ${message}`,
   registeredCount: (n: number) => `Registered repositories: ${n} (/inbox repo)`,
-  watchedCount: (n: number) => `Watched pull requests: ${n} (/inbox pr)`,
-  showsHere: "Notices show in this window.",
+  /** How many pull requests `/inbox pr` lists of the person's own and those asked of them, if any, and of those watched. */
+  pullCounts: (mine: { opened: number; requested: number } | undefined, watched: number) => {
+    const said = [
+      ...(mine === undefined ? [] : [`your open pull requests: ${mine.opened}`, `asked to review: ${mine.requested}`]),
+      ...(watched === 0 ? [] : [`watched pull requests: ${watched}`]),
+    ].join("; ")
+    return `${said.charAt(0).toUpperCase()}${said.slice(1)} (/inbox pr)`
+  },
   showsElsewhere: "Notices show in the other window used last (/inbox log lists them here too).",
+  // `/inbox` alone: each setting as it is now, and the commands
+  settingsHeading: 'Settings (change them as "GitHub: …" in /config)',
+  settingNames: {
+    intervalSeconds: "Check interval",
+    channel: "Where notices show",
+    language: "Language",
+    tray: "Tray",
+    myPulls: "Pull requests above the prompt",
+    ciToClaude: "Tell Claude about CI",
+    notifySelf: "Notify my own activity",
+    maxRepos: "Repositories checked",
+  },
+  isOn: (is: boolean): string => (is ? "on" : "off"),
+  seconds: (n: number) => `${n}s`,
+  repoLimit: (n: number) => `${n}`,
+  /** The tray turned on, and what it shows: the branch's pull request (`pull`) or every registered repository. */
+  trayIs: (view: string): string => `on: ${view === "pull" ? "this branch's pull request" : "registered repositories"} (/inbox tray switches it)`,
+  commandsHeading: "Commands",
+  commandsAbout: {
+    check: "Check now",
+    log: "The notices kept, in a pane",
+    pr: "List pull requests, show one, act on it",
+    repo: "Register repositories",
+    nick: "Shorter names for people",
+    tray: "Switch what the line under the prompt shows",
+    clear: "Detach what is attached",
+  },
   noLog: "No notices yet.",
   logTitle: "GitHub notices",
   logOpened: (n: number) => `Opened the log in a pane (${count(n, "notice")}).`,
@@ -414,7 +447,6 @@ const en = {
   /** A group's heading: `opened` or `requested`, and how many of all it shows. */
   mineHeading: (group: string, shown: number, total: number) =>
     `${group === "requested" ? "asked to review" : "your pull requests"}${shown < total ? ` (${shown} of ${total})` : ""}`,
-  mineCount: (opened: number, requested: number) => `Your open pull requests: ${opened}; asked to review: ${requested} (above the prompt)`,
 
   // What `/inbox pr` lists, and what Claude reads of a pull request
   searchedHere: "Pull requests of this repository",
@@ -578,18 +610,46 @@ const ja: Messages = {
   noKinds: "なし",
 
   commandDescription:
-    "このブランチの PR、選んだ PR、登録したリポジトリの GitHub 通知: 状態、すぐに確認、最近の通知、PR（一覧、開いて Claude にレビューを渡す、通知・マージ・クローズ・下書きの切り替え・承認）、リポジトリ、ニックネーム、プロンプトの下の表示",
+    "このブランチの PR、選んだ PR、登録したリポジトリの GitHub 通知: 状態と設定・コマンドの案内、すぐに確認、最近の通知、PR（一覧、開いて Claude にレビューを渡す、通知・マージ・クローズ・下書きの切り替え・承認）、リポジトリ、ニックネーム、プロンプトの下の表示",
   commandHint:
     "[status|check|log [リポジトリ] [text]|pr [PR] [show|merge [merge|squash|rebase]|close|draft|approve|unapprove|watch|unwatch]|clear|repo [add|set|remove|alias ...]|nick [login [ニックネーム]]|tray [pull|repos]]",
   noBranch: "ブランチが分かりません（git リポジトリの外か、detached HEAD です）。",
   noPull: branch => `${branch} の PR はありません。`,
   pullState: state => (state === "OPEN" ? "通知中" : state === "MERGED" ? "マージ済み" : "クローズ済み"),
-  lastChecked: (ago, interval) => `最後の確認: ${ago}、${interval}秒ごとに確認します。`,
+  lastChecked: ago => `最後の確認: ${ago}`,
   error: message => `エラー: ${message}`,
   registeredCount: n => `登録したリポジトリ: ${n}件（/inbox repo）`,
-  watchedCount: n => `通知する PR: ${n}件（/inbox pr）`,
-  showsHere: "通知はこの窓に出します。",
+  pullCounts: (mine, watched) =>
+    `${[
+      ...(mine === undefined ? [] : [`自分の PR: ${mine.opened}件`, `レビュー依頼: ${mine.requested}件`]),
+      ...(watched === 0 ? [] : [`通知する PR: ${watched}件`]),
+    ].join("、")}（/inbox pr）`,
   showsElsewhere: "通知は最後に操作した別の窓に出します（/inbox log で一覧を見られます）。",
+  settingsHeading: "設定（/config の「GitHub: …」で変えます）",
+  settingNames: {
+    intervalSeconds: "確認の間隔",
+    channel: "通知の出し方",
+    language: "言語",
+    tray: "プロンプトの下の行",
+    myPulls: "入力欄の上の PR",
+    ciToClaude: "CI の結果を Claude に渡す",
+    notifySelf: "自分の操作も通知",
+    maxRepos: "登録できるリポジトリ",
+  },
+  isOn: is => (is ? "オン" : "オフ"),
+  seconds: n => `${n}秒`,
+  repoLimit: n => `${n}件`,
+  trayIs: view => `オン・${view === "pull" ? "今のブランチの PR" : "登録したリポジトリ"}（/inbox tray で切り替え）`,
+  commandsHeading: "コマンド",
+  commandsAbout: {
+    check: "今すぐ確認する",
+    log: "通知の一覧",
+    pr: "PR の一覧・詳細・操作",
+    repo: "リポジトリの登録",
+    nick: "表示名を短くする",
+    tray: "プロンプトの下の行を切り替える",
+    clear: "添付を外す",
+  },
   noLog: "通知はまだありません。",
   logTitle: "GitHub の通知",
   logOpened: n => `ログをペインで開きました（${n}件）。`,
@@ -798,7 +858,6 @@ const ja: Messages = {
   detach: "外す",
 
   mineHeading: (group, shown, total) => `${group === "requested" ? "レビュー依頼" : "自分の PR"}${shown < total ? `（${total}件中${shown}件）` : ""}`,
-  mineCount: (opened, requested) => `自分の PR: ${opened}件、レビュー依頼: ${requested}件（入力欄の上）`,
 
   searchedHere: "このリポジトリの PR",
   searchedMine: "登録したリポジトリで自分が関わる PR",
