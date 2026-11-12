@@ -167,13 +167,16 @@ const PRESSING: readonly string[] = [MARKS.failed, MARKS.ready, MARKS.running, M
 
 /**
  * `list` with what asks most of its author first: by the most pressing of its marks (what fails, then what can be
- * merged now, then what runs, what waits, what passed), drafts last; alike, the one updated last first.
+ * merged now, then what runs, what waits, what passed), drafts last; alike, the one updated last first. Every mark is
+ * weighed, not the first: the line leads with what waits before what can be merged now, a review asked aside.
  */
 export function byPressing<T extends { status: GhPullStatus; updatedAt: string }>(t: Messages, list: readonly T[]): T[] {
   const rank = (one: T) => {
     if (one.status.isDraft === true) return PRESSING.length + 1
-    const at = PRESSING.indexOf(statusMarks(t, one.status)[0]?.charAt(0) ?? "")
-    return at === -1 ? PRESSING.length : at
+    const ranks = statusMarks(t, one.status)
+      .map(part => PRESSING.indexOf(part.charAt(0)))
+      .filter(at => at !== -1)
+    return ranks.length === 0 ? PRESSING.length : Math.min(...ranks)
   }
   return [...list].sort((a, b) => rank(a) - rank(b) || b.updatedAt.localeCompare(a.updatedAt))
 }

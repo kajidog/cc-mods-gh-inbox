@@ -2,7 +2,7 @@ import { describe, expect, test } from "claude-code/testing"
 
 import type { Pull } from "../hooks/github"
 import { MESSAGES } from "../hooks/i18n"
-import { pullStatus, statusMarks, statusParts, statusText } from "../hooks/status"
+import { byPressing, pullStatus, statusMarks, statusParts, statusText } from "../hooks/status"
 
 const ref = { host: "github.com", owner: "o", repo: "r", number: 7 }
 
@@ -159,6 +159,17 @@ describe("pullStatus, statusMarks and statusText", () => {
     expect(
       marks(pullWith({ requested: asked, verdicts: [approved("a")], reviewDecision: "APPROVED", mergeState: "CLEAN", mergeable: "MERGEABLE" })),
     ).toEqual(["○ レビュー待ち", "● マージ可", "✓ 承認1"])
+  })
+
+  test("byPressing ranks by the most pressing of all its marks: one that can be merged now goes before one still running, a review awaited beside it", async () => {
+    const one = (changes: Partial<Pull>, updatedAt: string) => ({ status: pullStatus(pullWith(changes), {}, "ja"), updatedAt })
+    // Ready to merge, though someone asked has not answered: its marks lead with the review awaited.
+    const ready = one({ requested: [{ login: "d", isTeam: false }], mergeState: "CLEAN", mergeable: "MERGEABLE" }, "2026-01-01T00:00:00Z")
+    expect(statusMarks(MESSAGES.ja, ready.status)).toEqual(["○ レビュー待ち", "● マージ可"])
+    const running = one({ checks: [check("a", false, true)], ciState: "PENDING" }, "2026-01-03T00:00:00Z")
+    const failing = one({ checks: [check("a", true)], ciState: "FAILURE" }, "2026-01-02T00:00:00Z")
+    const draft = one({ isDraft: true, checks: [check("a", true)], ciState: "FAILURE" }, "2026-01-04T00:00:00Z")
+    expect(byPressing(MESSAGES.ja, [draft, running, ready, failing])).toEqual([failing, ready, running, draft])
   })
 
   test("a draft says so after its number, and is not marked ready", async () => {
