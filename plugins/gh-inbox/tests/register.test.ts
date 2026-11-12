@@ -1888,6 +1888,36 @@ test("/inbox pr lists pull requests a group each, every one once, those the log 
   expect((await narrow.find({ key: "pr:github.com/o/r#3" }))?.props.label).toBe("rr#3  ○ レビュー待ち  ✓ 承認1  Add things  通知2件・30分前")
 })
 
+test("/inbox pr asks where more of one repository's pull requests stand than one request holds in as many requests, each once", JA, async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: 1_000_000 })
+  on("ui.open", async () => ({ value: { isPlaced: true } }))
+  const found = Array.from({ length: 55 }, (_, index) => ({
+    number: index + 1,
+    title: `Pull ${index + 1}`,
+    url: `https://github.com/o/r/pull/${index + 1}`,
+    updatedAt: "2026-10-15T00:00:00Z",
+    author: { login: "alice" },
+  }))
+  const github = fakeGitHub(on, [[]], argv => {
+    if (argv.includes("repo") && argv.includes("view")) return { stdout: "https://github.com/o/r\n" }
+    const query = argv.find(word => word.startsWith("query=")) ?? ""
+    if (query.includes("here: search(")) return { stdout: JSON.stringify({ data: { here: { issueCount: found.length, nodes: found } } }) }
+    if (!query.includes("issueOrPullRequest")) return undefined
+    const asked = [...query.matchAll(/n(\d+): issueOrPullRequest/g)].map(match => Number(match[1]))
+    const heading = (number: number) => ({ __typename: "PullRequest", title: `Pull ${number}`, state: "OPEN", mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" })
+    return { stdout: JSON.stringify({ data: { repository: Object.fromEntries(asked.map(number => [`n${number}`, heading(number)])) } }) }
+  })
+
+  await $.command.run({ ...CHECK, args: "pr" })
+  const pane = await $.ui.mount(PR_PANE)
+  const label = async (number: number) => (await pane.find({ key: `pr:github.com/o/r#${number}` }))?.props.label
+  for (let tries = 0; tries < 100 && !String(await label(55)).includes("マージ可"); tries += 1) await pane.find({ key: "close" })
+  expect(await label(1)).toBe("r#1  aliceさん  ● マージ可  Pull 1")
+  expect(await label(55)).toBe("r#55  aliceさん  ● マージ可  Pull 55")
+  expect(github.asked.filter(argv => argv.some(word => word.includes("issueOrPullRequest")))).toHaveLength(2)
+})
+
 test("the pane of /inbox pr <PR> says where it stands and what can be done to it, and why what was pressed cannot be", JA, async ($, on) => {
   mock.store(on, {})
   mock.clock(on, { now: 1_000_000 })

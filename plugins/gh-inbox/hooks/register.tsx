@@ -79,7 +79,7 @@ import {
   stagedCount,
   stagedSize,
 } from "./pick"
-import { cells, fitCells, headingsArgv, headingsWanted, noticedPulls, type PrAction, type PrHeading, parseHeadings, parsePrWords } from "./pr-list"
+import { cells, fitCells, HEADINGS_AT_ONCE, headingsArgv, headingsWanted, noticedPulls, type PrAction, type PrHeading, parseHeadings, parsePrWords } from "./pr-list"
 import { PRESENCE_PREFIX, type Presence, pickActive, toPresence } from "./presence"
 import {
   ACTIONS_PRIMED,
@@ -591,7 +591,11 @@ async function lookUpHeadings($: EngineInterface, ctx: Context, keys: readonly s
   const wanted = headingsWanted(keys, ctx.askedHeadings)
   if (wanted.size === 0) return
   const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
-  for (const [repo, numbers] of wanted) {
+  // As many as one request asks for at a time: each is taken as asked only as its request goes.
+  const batches = [...wanted].flatMap(([repo, all]) =>
+    Array.from({ length: Math.ceil(all.length / HEADINGS_AT_ONCE) }, (_, at) => [repo, all.slice(at * HEADINGS_AT_ONCE, (at + 1) * HEADINGS_AT_ONCE)] as const),
+  )
+  for (const [repo, numbers] of batches) {
     for (const number of numbers) ctx.askedHeadings.add(`${repo}#${number}`)
     // A number GitHub does not know fails the request, but the answer still holds the others.
     const host = repo.slice(0, repo.indexOf("/"))

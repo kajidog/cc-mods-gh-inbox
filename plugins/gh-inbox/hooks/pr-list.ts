@@ -40,8 +40,8 @@ export function parsePrWords(words: readonly string[]): PrWords | undefined {
   return { pull: rest[0] ?? "", action, method }
 }
 
-/** Headings asked for in one GraphQL request at most. */
-const HEADINGS_AT_ONCE = 50
+/** Headings asked for in one GraphQL request at most: more are asked in as many requests as they take. */
+export const HEADINGS_AT_ONCE = 50
 
 // A URL on a repository's own pages: its host, `owner/repo`, and the pull request's or issue's page it points into, if
 // it does (a comment, a review, a commit of it).
