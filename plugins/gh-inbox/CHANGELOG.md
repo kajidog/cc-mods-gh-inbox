@@ -1,5 +1,16 @@
 # gh-inbox
 
+## 0.15.0
+
+### Minor Changes
+
+- 22a3df5: `/inbox approve` approves a pull request and `/inbox unapprove` withdraws your approval, each once you confirm it in the pane, as `/inbox merge` does. The approval is of the head commit the pane showed. Your own pull request, one you have approved already, and withdrawing an approval you have not given are refused before any pane. Withdrawing dismisses your approving review, which GitHub keeps on the pull request with why.
+  
+  `/inbox approve` で PR を承認し、`/inbox unapprove` で自分の承認を取り消せるようにしました。`/inbox merge` と同じく、ペインで確かめてから行います。承認するのは、ペインに出した先頭のコミットです。自分の PR、もう承認している PR、承認していない PR の取り消しは、ペインを開く前に断ります。取り消しは自分の承認レビューの却下（dismiss）として行い、GitHub の PR に理由と一緒に残ります。
+- 22a3df5: Narrowed to one repository, the `/inbox log` pane puts its notices together by pull request (or issue), each under a heading with its number, a link to it on GitHub, and its title: the one with the newest notice first, each one's newest first. What is on no pull request (pushes, branches, CI) goes under a heading of its own, and the rows leave out the repository's short name. A title not known already is asked for once each time the log opens, one GraphQL request a page.
+  
+  `/inbox log` のペインを1つのリポジトリに絞り込むと、通知を PR（Issue）ごとにまとめ、番号（GitHub へのリンク）とタイトルの見出しの下に並べるようにしました。最新の通知が新しい PR から順に、PR の中も新しい順です。push・ブランチ・CI など PR に付かないものは1つの見出しにまとめ、各行の先頭のリポジトリの短い名前は出しません。まだ分からないタイトルは、ログを開くたびに1回、ページごとに GraphQL 1回で問い合わせます。
+
 ## 0.14.0
 
 ### Minor Changes
