@@ -129,9 +129,9 @@ describe("pullStatus, statusMarks and statusText", () => {
       reviewDecision: "CHANGES_REQUESTED",
     })
     const status = pullStatus(pull, { "long-name": "ロン" }, "ja")
-    expect(statusMarks(MESSAGES.ja, status, true)).toEqual(["✗ 変更依頼（cさん）", "○ レビュー待ち（dさん、@o/core）", "✓ 承認（aさん、ロンさん）"])
+    expect(statusMarks(MESSAGES.ja, status, { withNames: true })).toEqual(["✗ 変更依頼（cさん）", "○ レビュー待ち（dさん、@o/core）", "✓ 承認（aさん、ロンさん）"])
     expect(statusMarks(MESSAGES.ja, status)).toEqual(["✗ 変更依頼1", "○ レビュー待ち", "✓ 承認2"])
-    expect(statusMarks(MESSAGES.en, pullStatus(pull, {}, "en"), true)).toEqual([
+    expect(statusMarks(MESSAGES.en, pullStatus(pull, {}, "en"), { withNames: true })).toEqual([
       "✗ changes requested by c",
       "○ awaiting review from d, @o/core",
       "✓ approved by a, long-name",
@@ -141,15 +141,21 @@ describe("pullStatus, statusMarks and statusText", () => {
     )
     // Past three, the last named gives way to how many more.
     const many = pullStatus(pullWith({ verdicts: ["a", "b", "c", "d"].map(approved) }), {}, "ja")
-    expect(statusMarks(MESSAGES.ja, many, true)).toEqual(["✓ 承認（aさん、bさん ほか2人）"])
+    expect(statusMarks(MESSAGES.ja, many, { withNames: true })).toEqual(["✓ 承認（aさん、bさん ほか2人）"])
     // A status kept from before the reviewers were asked for counts them.
     const { approvedBy: _, ...kept } = many
-    expect(statusMarks(MESSAGES.ja, kept, true)).toEqual(["✓ 承認4"])
+    expect(statusMarks(MESSAGES.ja, kept, { withNames: true })).toEqual(["✓ 承認4"])
   })
 
   test("a review asked of someone the base does not require still waits, and leaves a block it does not explain said", async () => {
     const asked = [{ login: "d", isTeam: false }]
     expect(marks(pullWith({ requested: asked, mergeState: "BLOCKED" }))).toEqual(["○ レビュー待ち", "○ ルールでブロック中"])
+    // What holds a merge back awaits the base's review alone; a list of reviews asked of the person awaits none.
+    const blocked = pullStatus(pullWith({ requested: asked, mergeState: "BLOCKED" }), {}, "ja")
+    expect(statusMarks(MESSAGES.ja, blocked, { awaiting: "required" })).toEqual(["○ ルールでブロック中"])
+    const required = pullStatus(pullWith({ requested: asked, reviewDecision: "REVIEW_REQUIRED", mergeState: "BLOCKED" }), {}, "ja")
+    expect(statusMarks(MESSAGES.ja, required, { awaiting: "required" })).toEqual(["○ レビュー待ち"])
+    expect(statusMarks(MESSAGES.ja, required, { awaiting: "none" })).toEqual([])
     expect(
       marks(pullWith({ requested: asked, verdicts: [approved("a")], reviewDecision: "APPROVED", mergeState: "CLEAN", mergeable: "MERGEABLE" })),
     ).toEqual(["○ レビュー待ち", "● マージ可", "✓ 承認1"])

@@ -98,7 +98,7 @@ export type GhWatch = {
   status?: GhPullStatus | null
 }
 
-/** One of the open pull requests the person opened, as the band above the prompt shows it. */
+/** One of the open pull requests the band above the prompt shows: one the person opened, or one asked of them to review. */
 export type GhMinePull = {
   /** `host/owner/repo#number`. */
   key: string
@@ -108,14 +108,24 @@ export type GhMinePull = {
   url: string
   /** When it was updated last, ISO. */
   updatedAt: string
+  /** Who opened it, by the name the mod shows; absent where GitHub names no one. */
+  author?: string
   status: GhPullStatus
 }
 
-/** The open pull requests the person opened, as the last check found them, the most pressing first. */
-export type GhMine = {
+/** One group of the band above the prompt: those found, in the order it shows them, and how many more there are. */
+export type GhMineGroup = {
   pulls: GhMinePull[]
   /** How many more are open than were found. */
   more: number
+}
+
+/** The open pull requests the band above the prompt shows, as the last check found them. */
+export type GhMine = {
+  /** Those the person opened, the most pressing first. */
+  opened: GhMineGroup
+  /** Those asked of the person to review, updated last first. */
+  requested: GhMineGroup
   /** When the last check that searched finished, ms since the epoch. */
   checkedAt: number
 }
@@ -329,7 +339,10 @@ declare module "claude-code" {
       pickUnfolded: string[]
       /** What the pane of `/inbox watch` shows. */
       watchPick: GhWatchPick | null
-      /** The open pull requests the person opened, as the band above the prompt shows them; null while none were searched for. */
+      /**
+       * The open pull requests the band above the prompt shows (those the person opened, those asked of them to review);
+       * null while none were searched for.
+       */
       mine: GhMine | null
       /** When each watched pull request (`host/owner/repo#number`) was added, as this session last checked it. */
       watchedSince: Record<string, number>

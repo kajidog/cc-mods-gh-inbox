@@ -104,22 +104,31 @@ export function reviewerNames(t: Messages, reviewers: readonly GhReviewer[]) {
 }
 
 /**
+ * How `statusMarks` tells the reviews. `withNames`: who gave them and who is still asked (the line under the prompt
+ * counts them alone). `awaiting`: which review not given yet it says is awaited: `any` (one the base requires, or one
+ * asked of someone who has not answered), `required` (the base's alone: what holds a merge back), `none` (a list of
+ * those the person is asked to review, where it goes without saying).
+ */
+export type MarksOptions = { withNames?: boolean; awaiting?: "any" | "required" | "none" }
+
+/**
  * Where an open pull request stands, a mark leading each part, the most pressing first: what fails (✗), what runs (◐),
  * what waits (○), that it can be merged now (●), what passed (✓). What a later part would only say again is left out.
- * `withNames`, the reviews say who gave them and who is still asked (the line under the prompt counts them alone);
- * a status kept from before they were asked for counts them either way.
+ * The reviews are told as `options` say; a status kept from before the reviewers were asked for counts them either way.
  */
-export function statusMarks(t: Messages, status: GhPullStatus, withNames = false): string[] {
+export function statusMarks(t: Messages, status: GhPullStatus, options: MarksOptions = {}): string[] {
+  const { withNames = false, awaiting: awaited = "any" } = options
   const { ci } = status
   // Named only where every one of them is known; else counted, as the line under the prompt counts them.
   const named = (reviewers: readonly GhReviewer[] | undefined, count: number) =>
     withNames && reviewers !== undefined && reviewers.length > 0 && reviewers.length === count ? reviewerNames(t, reviewers) : undefined
   const approvedBy = named(status.approvedBy, status.approvals)
   const changesRequestedBy = named(status.changesRequestedBy, status.changesRequested)
-  const awaiting = status.awaiting ?? []
+  const awaiting = awaited === "any" ? (status.awaiting ?? []) : []
   const awaitingFrom = named(awaiting, awaiting.length)
   // Asked of someone who has not answered, or asked for by the base: waiting either way.
   const isRequired = status.reviewDecision === "REVIEW_REQUIRED"
+  const isSaid = awaited !== "none" && (isRequired || awaiting.length > 0)
   const stands: CiStanding | null =
     ci === null ? null : ci.failed > 0 ? "failed" : ci.pending > 0 || ci.state === "PENDING" || ci.state === "EXPECTED" ? "running" : "passed"
   const ready = isReady(status)
@@ -132,7 +141,7 @@ export function statusMarks(t: Messages, status: GhPullStatus, withNames = false
   const running = ci !== null && stands === "running" ? [t.ciRunning(ci.total - ci.pending, ci.total)] : []
   const waiting = [
     // Approved by some but not by as many as the base asks for, or asked of someone who has not answered: still waiting.
-    ...(isRequired || awaiting.length > 0 ? [awaitingFrom === undefined ? t.reviewRequired : t.awaitingFrom(awaitingFrom)] : []),
+    ...(isSaid ? [awaitingFrom === undefined ? t.reviewRequired : t.awaitingFrom(awaitingFrom)] : []),
     ...(status.autoMerge === true ? [t.autoMergeOn] : []),
   ]
   // Blocked by what no other part tells (a conversation to resolve, a signature): said so, rather than nothing. A review
@@ -190,7 +199,7 @@ export function statusParts(
   const said = status.latest
   const latest = said === null ? undefined : t.latestComment(t.who(said.name), said.body, ago(said.at))
 
-  return { head, marks: statusMarks(t, status, withNames), latest }
+  return { head, marks: statusMarks(t, status, { withNames }), latest }
 }
 
 /** The parts as one line: the number (`withHead`), the marks, and after a bar the newest comment. */

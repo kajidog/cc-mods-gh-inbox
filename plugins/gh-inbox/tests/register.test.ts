@@ -26,7 +26,7 @@ type Answer = { stdout?: string; stderr?: string; exitCode?: number }
 /** Whether `argv` searches a host for the open pull requests the person opened, for the band above the prompt. */
 const isMineSearch = (argv: readonly string[]) => (argv.at(-1) ?? "").includes("author:@me")
 /** The search for the person's open pull requests finding none. */
-const NO_PULLS_OF_MINE = JSON.stringify({ data: { viewer: { login: "me" }, search: { issueCount: 0, nodes: [] } } })
+const NO_PULLS_OF_MINE = JSON.stringify({ data: { viewer: { login: "me" }, opened: { issueCount: 0, nodes: [] }, requested: { issueCount: 0, nodes: [] } } })
 
 /**
  * Answers `gh` as GitHub would for o/r: the events in `answers` one call after
@@ -687,13 +687,14 @@ test("narrowed to one repository, the log pane puts its notices together by pull
   on("ui.open", async () => ({ value: { isPlaced: true } }))
 
   await $.command.run({ ...CHECK, args: "log rr" })
-  const pane = await $.ui.mount({
+  const LOG_PANE_WIDE = {
     plugin: "gh-inbox",
     surface: "terminal",
     component: "Pane",
     requestId: "gh-inbox-log",
     props: { title: "", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 20 }, view: {} },
-  })
+  } as const
+  let pane = await $.ui.mount(LOG_PANE_WIDE)
   expect(await pane.find({ type: "Text", text: "4件中 1〜4件目（PR ごと、新しい順）" })).toBeDefined()
   if (!answered) expect(await pane.find({ type: "Text", text: "#5 Known title" })).toBeDefined()
   // Each heading says where its pull request stands now, the reviewers named, after its title.
@@ -706,6 +707,20 @@ test("narrowed to one repository, the log pane puts its notices together by pull
   const asked = github.asked.filter(argv => argv.some(word => word.includes("issueOrPullRequest")))
   expect(asked).toHaveLength(1)
   expect(asked[0]?.find(word => word.startsWith("query="))).toContain("n5:")
+  // In a narrow pane, where a heading's row cannot hold where it stands, a button unfolds it under the heading.
+  await pane.unmount()
+  const narrow = await $.ui.mount({ ...LOG_PANE_WIDE, props: { ...LOG_PANE_WIDE.props, bodyColumns: 30 } })
+  expect(await narrow.find({ type: "Text", text: "#5 Known title（マージ済み）" })).toBeDefined()
+  expect(await narrow.find({ type: "Text", text: "○ レビュー待ち" })).toBeUndefined()
+  expect((await narrow.find({ key: "stands:github.com/o/r#3" }))?.props.label).toBe(" ▸ 状態")
+  expect(await narrow.find({ key: "stands:github.com/o/r#5" })).toBeUndefined()
+  await narrow.press({ key: "stands:github.com/o/r#3" })
+  expect((await narrow.find({ type: "Text", text: "○ レビュー待ち" }))?.text).toBe("○ レビュー待ち（carolさん）  ✓ 承認（bobさん）")
+  expect((await narrow.find({ key: "stands:github.com/o/r#3" }))?.props.label).toBe(" ▾ 状態")
+  await narrow.press({ key: "stands:github.com/o/r#3" })
+  expect(await narrow.find({ type: "Text", text: "○ レビュー待ち" })).toBeUndefined()
+  await narrow.unmount()
+  pane = await $.ui.mount(LOG_PANE_WIDE)
   // The pull request with the newest notice first, each one's newest first; each heading links to its pull request.
   expect((await pane.findAll({ type: "Link" })).map(link => link.props.href)).toEqual([
     "https://github.com/o/r/pull/3",
@@ -1902,11 +1917,28 @@ const mineChecks = (...went: string[]) => ({
     },
   ],
 })
-// Found updated last first, as the search sorts them; 12 open in all.
+// Found updated last first, as the searches sort them: 12 the person opened in all, 2 asked of them to review.
 const MINE_ANSWER = JSON.stringify({
   data: {
     viewer: { login: "me" },
-    search: {
+    requested: {
+      issueCount: 2,
+      nodes: [
+        minePull("https://github.com/a/b/pull/15", "Bump deps", "2026-10-16T04:30:00Z", {
+          author: { login: "bob" },
+          reviewDecision: "REVIEW_REQUIRED",
+          reviewRequests: { nodes: [{ requestedReviewer: { __typename: "User", login: "me" } }] },
+          latest: mineChecks("SUCCESS"),
+        }),
+        minePull("https://github.com/a/b/pull/12", "Add search", "2026-10-16T02:30:00Z", {
+          author: { login: "alice" },
+          reviewDecision: "REVIEW_REQUIRED",
+          reviewRequests: { nodes: [{ requestedReviewer: { __typename: "User", login: "me" } }] },
+          latest: mineChecks("IN_PROGRESS", "SUCCESS"),
+        }),
+      ],
+    },
+    opened: {
       issueCount: 12,
       nodes: [
         minePull("https://github.com/o/r/pull/4", "Draft thing", "2026-10-16T04:00:00Z", { isDraft: true, mergeStateStatus: "DRAFT", latest: mineChecks("IN_PROGRESS") }),
@@ -1924,7 +1956,7 @@ const MINE_ANSWER = JSON.stringify({
   },
 })
 
-test("the band above the prompt shows where the person's open pull requests stand, the most pressing first, each linked from its number", JA, async ($, on) => {
+test("the band above the prompt shows the person's open pull requests, the most pressing first, then those asked of them to review, a row each linked from its number", JA, async ($, on) => {
   mock.store(on, { repos: { [KEY]: { kinds: [], alias: "r" } } })
   const clock = mock.clock(on, { now: Date.parse("2026-10-16T05:00:00Z") })
   let isDown = false
@@ -1934,17 +1966,22 @@ test("the band above the prompt shows where the person's open pull requests stan
   await $.command.run(CHECK)
   const band = await $.ui.mount(BAND)
   expect(await band.find({ type: "Text", text: "GitHub: 自分の PR（12件中4件）" })).toBeDefined()
+  // The second heading goes without saying whose band it is.
+  expect((await band.find({ type: "Text", text: "レビュー依頼" }))?.text).toBe("レビュー依頼")
   // Each row as the person reads it: the test's drawing writes a link's URL before its text.
   const rows = (await band.findAll({ type: "Text", text: /^ {2}\S+#\d/ })).map(row => row.text.replace(/https:\/\/github\.com\/\S+?\/pull\/\d+/, ""))
-  // What fails first, then what can be merged now, what waits; the draft last. A registered repository by its alias.
   expect(rows).toEqual([
+    // What fails first, then what can be merged now, what waits; the draft last. A registered repository by its alias.
     "  r#3  ✗ CI 1/2  ✓ 承認1  Fix the build",
     "  y#7  ● マージ可  Ready one",
     "  y#9  ○ レビュー待ち  Waiting one",
     "  r#4（下書き）  ◐ CI 0/1  Draft thing",
+    // Those asked of the person, updated last first, with who opened each; that each awaits their review goes unsaid.
+    "  b#15  bobさん  ✓ CI  Bump deps",
+    "  b#12  aliceさん  ◐ CI 1/2  Add search",
   ])
   expect((await band.find({ type: "Link", text: "r#3" }))?.props).toMatchObject({ href: "https://github.com/o/r/pull/3" })
-  expect(await $.command.run({ ...CHECK, args: "status" })).toMatchObject({ text: expect.stringContaining("\n自分の PR: 12件（入力欄の上）\n") })
+  expect(await $.command.run({ ...CHECK, args: "status" })).toMatchObject({ text: expect.stringContaining("\n自分の PR: 12件、レビュー依頼: 2件（入力欄の上）\n") })
 
   // Within the interval the answer kept is used; after it, GitHub is searched again.
   await $.command.run(CHECK)
@@ -1958,13 +1995,13 @@ test("the band above the prompt shows where the person's open pull requests stan
   expect(github.logs).toContain("gh-inbox: pull requests on github.com: HTTP 502: Bad Gateway")
 })
 
-test("with none open, the band shows none of the person's pull requests", async ($, on) => {
+test("with none open or asked, the band shows no pull requests", async ($, on) => {
   mock.store(on, {})
   mock.clock(on, { now: 1_000_000 })
   const github = fakeGitHub(on, [])
   await $.command.run(CHECK)
   expect(github.asked.filter(isMineSearch)).toHaveLength(1)
-  expect(await (await $.ui.mount(BAND)).find({ type: "Text", text: /your pull requests/ })).toBeUndefined()
+  expect(await (await $.ui.mount(BAND)).find({ type: "Text", text: /your pull requests|asked to review/ })).toBeUndefined()
 })
 
 test("turned off, the band shows none of the person's pull requests and GitHub is not searched", { options: { myPulls: false } }, async ($, on) => {
@@ -1973,7 +2010,7 @@ test("turned off, the band shows none of the person's pull requests and GitHub i
   const github = fakeGitHub(on, [], undefined, () => ({ stdout: MINE_ANSWER }))
   await $.command.run(CHECK)
   expect(github.asked.filter(isMineSearch)).toHaveLength(0)
-  expect(await (await $.ui.mount(BAND)).find({ type: "Text", text: /your pull requests/ })).toBeUndefined()
+  expect(await (await $.ui.mount(BAND)).find({ type: "Text", text: /your pull requests|asked to review/ })).toBeUndefined()
 })
 
 test("the band speaks English by default", async ($, on) => {
@@ -1984,6 +2021,20 @@ test("the band speaks English by default", async ($, on) => {
   const band = await $.ui.mount(BAND)
   expect(await band.find({ type: "Text", text: "GitHub: your pull requests (4 of 12)" })).toBeDefined()
   expect(await band.find({ type: "Text", text: "r#4 (draft)  ◐ CI 0/1  Draft thing" })).toBeDefined()
+  expect((await band.find({ type: "Text", text: "asked to review" }))?.text).toBe("asked to review")
+  expect(await band.find({ type: "Text", text: "b#12  alice  ◐ CI 1/2  Add search" })).toBeDefined()
+})
+
+test("with none of the person's own open, the band heads those asked of them as its own", async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: Date.parse("2026-10-16T05:00:00Z") })
+  const answer = JSON.parse(MINE_ANSWER)
+  answer.data.opened = { issueCount: 0, nodes: [] }
+  fakeGitHub(on, [], undefined, () => ({ stdout: JSON.stringify(answer) }))
+  await $.command.run(CHECK)
+  const band = await $.ui.mount(BAND)
+  expect(await band.find({ type: "Text", text: "GitHub: asked to review" })).toBeDefined()
+  expect(await band.find({ type: "Text", text: /your pull requests/ })).toBeUndefined()
 })
 
 test("a token that may not read the teams asked to review is asked again without them, and so from then on", JA, async ($, on) => {

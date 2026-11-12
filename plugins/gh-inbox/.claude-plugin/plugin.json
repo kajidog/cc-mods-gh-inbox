@@ -1,7 +1,7 @@
 {
   "name": "gh-inbox",
   "version": "0.15.0",
-  "description": "Shows GitHub events (comments, reviews, commits, CI failures, merges) for the checked-out branch's pull request, for pull requests you choose to watch and for repositories you register, to read and hand to Claude; shows where the pull requests you opened stand above the prompt; merges, closes, drafts or approves a pull request once you confirm it in a pane.",
+  "description": "Shows GitHub events (comments, reviews, commits, CI failures, merges) for the checked-out branch's pull request, for pull requests you choose to watch and for repositories you register, to read and hand to Claude; shows above the prompt where the pull requests you opened, and those you are asked to review, stand; merges, closes, drafts or approves a pull request once you confirm it in a pane.",
   "author": {
     "name": "kajidog"
   },
@@ -49,8 +49,8 @@
     },
     "myPulls": {
       "type": "boolean",
-      "title": "GitHub: My pull requests above the prompt",
-      "description": "Show the open pull requests you opened above the prompt, the most pressing first, each with where it stands as the line under the prompt tells it (✗ fails, ◐ runs, ○ waits, ● ready to merge, ✓ passed). One search a host each check, shared by every window.",
+      "title": "GitHub: Pull requests above the prompt",
+      "description": "Show above the prompt, a row each, the open pull requests you opened (the most pressing first) and, apart, those you are asked to review, each with where it stands as the line under the prompt tells it (✗ fails, ◐ runs, ○ waits, ● ready to merge, ✓ passed). One request a host each check, shared by every window.",
       "default": true
     },
     "ciToClaude": {

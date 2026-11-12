@@ -1,7 +1,7 @@
 import type { GhEvent } from "../types"
 import { describe, expect, test } from "claude-code/testing"
 
-import { byPull, headingsWanted, logHeadingsArgv, numberOf, parseLogHeadings, pullGroups } from "../hooks/log-groups"
+import { byPull, cells, headingsWanted, logHeadingsArgv, numberOf, parseLogHeadings, pullGroups } from "../hooks/log-groups"
 
 const event = (id: string, pull: string, url = ""): GhEvent => ({ id, kind: "comment", pull, author: "a", at: "", text: id, url, items: [] })
 
@@ -97,4 +97,11 @@ test("parseLogHeadings reads each title and where a pull request stands, a numbe
   expect(headings.get(4)).toEqual({ title: "A bug" })
   expect(headings.get(9)).toEqual({ title: "" })
   expect(parseLogHeadings(JSON.stringify({ data: { repository: null } }))).toEqual(new Map())
+})
+
+test("cells counts what a terminal draws two cells wide (kana, kanji, fullwidth brackets) as two, the marks as one", () => {
+  expect(cells("#3 Add things")).toBe(13)
+  expect(cells("（マージ済み）")).toBe(14)
+  expect(cells("✓ 承認  ◐ CI 1/2")).toBe(16)
+  expect(cells("한글 😀")).toBe(7)
 })

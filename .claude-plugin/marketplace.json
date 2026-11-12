@@ -1,6 +1,6 @@
 {
   "name": "cc-mods-gh-inbox",
-  "description": "Claude Code mods by kajidog: gh-inbox shows GitHub events on your pull request, hands the ones you pick to Claude, shows where your own pull requests stand, and merges, closes, drafts or approves a pull request once you confirm it; gh-inbox-tts reads its notices aloud through tts.",
+  "description": "Claude Code mods by kajidog: gh-inbox shows GitHub events on your pull request, hands the ones you pick to Claude, shows where your own pull requests and review requests stand, and merges, closes, drafts or approves a pull request once you confirm it; gh-inbox-tts reads its notices aloud through tts.",
   "owner": {
     "name": "kajidog"
   },

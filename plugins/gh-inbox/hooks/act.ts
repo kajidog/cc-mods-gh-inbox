@@ -61,9 +61,12 @@ export const methodName = (t: Messages, method: string) => t.methods[method] ?? 
 /** What a merge asked for comes to: done now, auto-merge turned on or off, or refused with why. */
 export type MergePlan = { kind: Extract<GhActKind, "merge" | "auto" | "disable-auto">; notes: string[] } | { refusal: string }
 
-/** What still keeps it from being merged, as the line under the prompt marks it: the failed, running and waiting parts. */
+/**
+ * What still keeps it from being merged, as the line under the prompt marks it: the failed, running and waiting parts;
+ * a review is awaited only where the base requires it.
+ */
 const holdingBack = (t: Messages, status: GhPullStatus) => {
-  const parts = statusMarks(t, status).filter(part => [MARKS.failed, MARKS.running, MARKS.waiting].some(mark => part.startsWith(`${mark} `)))
+  const parts = statusMarks(t, status, { awaiting: "required" }).filter(part => [MARKS.failed, MARKS.running, MARKS.waiting].some(mark => part.startsWith(`${mark} `)))
   return parts.length === 0 ? "" : t.paren(parts.join(t.listSeparator))
 }
 

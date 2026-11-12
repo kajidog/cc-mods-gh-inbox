@@ -191,6 +191,8 @@ const en = {
   logRangeByPull: (from: number, to: number, total: number) => `${from}–${to} of ${total}, by pull request, newest first`,
   /** The heading of a narrowed log's notices on no pull request or issue. */
   logNoPull: "Not on a pull request (pushes, branches, CI)",
+  /** The button that unfolds where a pull request stands under its heading, where the heading's row cannot hold it. */
+  logStandsButton: (isOpen: boolean) => `${isOpen ? " ▾" : " ▸"} status`,
   older: "Older",
   logAll: "All",
   logNoRepo: (name: string, names: readonly string[]) =>
@@ -374,9 +376,11 @@ const en = {
   repick: "Pick again",
   detach: "Detach",
 
-  // The band above the prompt: the person's open pull requests
-  mineHeading: (shown: number, total: number) => `GitHub: your pull requests${shown < total ? ` (${shown} of ${total})` : ""}`,
-  mineCount: (n: number) => `Your open pull requests: ${n} (above the prompt)`,
+  // The band above the prompt: the open pull requests the person opened, and those asked of them to review
+  /** A group's heading: `opened` or `requested`, and how many of all it shows. */
+  mineHeading: (group: string, shown: number, total: number) =>
+    `${group === "requested" ? "asked to review" : "your pull requests"}${shown < total ? ` (${shown} of ${total})` : ""}`,
+  mineCount: (opened: number, requested: number) => `Your open pull requests: ${opened}; asked to review: ${requested} (above the prompt)`,
 
   // What `/inbox pick` lists, and what Claude reads of it
   searchedHere: "Pull requests of this repository",
@@ -558,6 +562,7 @@ const ja: Messages = {
   logRange: (from, to, total) => `${total}件中 ${from}〜${to}件目（新しい順）`,
   logRangeByPull: (from, to, total) => `${total}件中 ${from}〜${to}件目（PR ごと、新しい順）`,
   logNoPull: "PR に付かないもの（push・ブランチ・CI）",
+  logStandsButton: isOpen => `${isOpen ? " ▾" : " ▸"} 状態`,
   older: "古い方へ",
   logAll: "すべて",
   logNoRepo: (name, names) => `${name} というリポジトリの通知は保存されていません。${names.length === 0 ? "" : `保存されているもの: ${names.join("、")}`}`,
@@ -728,8 +733,8 @@ const ja: Messages = {
   repick: "選び直す",
   detach: "外す",
 
-  mineHeading: (shown, total) => `GitHub: 自分の PR${shown < total ? `（${total}件中${shown}件）` : ""}`,
-  mineCount: n => `自分の PR: ${n}件（入力欄の上）`,
+  mineHeading: (group, shown, total) => `${group === "requested" ? "レビュー依頼" : "自分の PR"}${shown < total ? `（${total}件中${shown}件）` : ""}`,
+  mineCount: (opened, requested) => `自分の PR: ${opened}件、レビュー依頼: ${requested}件（入力欄の上）`,
 
   searchedHere: "このリポジトリの PR",
   searchedMine: "登録したリポジトリで自分が関わる PR",

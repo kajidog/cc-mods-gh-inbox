@@ -9,6 +9,14 @@ import { repoOfEvent } from "./history"
 /** Headings asked for in one GraphQL request at most. */
 const HEADINGS_AT_ONCE = 50
 
+// What a terminal draws two cells wide: East Asian wide and fullwidth letters (kana, kanji, hangul, fullwidth forms) and
+// most emoji. Anything else is taken for one, a combining mark too, so a heading is never taken for shorter than it is.
+const WIDE =
+  /[\u1100-\u115F\u2E80-\u303E\u3041-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uA000-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6]|[\u{1F300}-\u{1F64F}\u{1F900}-\u{1F9FF}\u{20000}-\u{3FFFD}]/u
+
+/** How many cells a terminal draws `text` in, as near as can be told without drawing it. */
+export const cells = (text: string) => [...text].reduce((sum, char) => sum + (WIDE.test(char) ? 2 : 1), 0)
+
 // A URL on a repository's own pages: its host, `owner/repo`, and the pull request's or issue's page it points into, if
 // it does (a comment, a review, a commit of it).
 const ON_REPO = /^https?:\/\/([^/]+)\/([^/]+\/[^/]+)(?:\/(pull|issues)\/(\d+))?(?:[/?#]|$)/

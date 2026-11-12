@@ -61,8 +61,8 @@ import {
 } from "./history"
 import { type Language, MESSAGES, type Messages, splitNotice, toLanguage } from "./i18n"
 import { changeOf, type Latest, type LatestItem, latestArgv, latestKey, latestWanted, parseLatest } from "./latest"
-import { byPull, headingsWanted, type LogHeading, logHeadingsArgv, type PullGroup, parseLogHeadings, pullGroups } from "./log-groups"
-import { mineArgv, parseMine } from "./mine"
+import { byPull, cells, headingsWanted, type LogHeading, logHeadingsArgv, type PullGroup, parseLogHeadings, pullGroups } from "./log-groups"
+import { type MineGroup, mineArgv, parseMine } from "./mine"
 import {
   CONTEXT_LIMIT,
   idsOf,
@@ -183,8 +183,10 @@ const TOUCH_MS = 10 * 1000
 const CACHE_PREFIX = "cache:"
 /** Where every session keeps a host's answer to the search for the person's open pull requests, under `CACHE_PREFIX` so it is tidied alike. */
 const MINE_CACHE_PREFIX = `${CACHE_PREFIX}mine:`
-/** The person's open pull requests the band above the prompt shows at most, the most pressing. */
+/** The pull requests the band above the prompt shows at most in each of its groups. */
 const MINE_SHOWN = 5
+/** The band's groups, in the order it shows them: those the person opened, then those asked of them to review. */
+const MINE_GROUPS: readonly MineGroup[] = ["opened", "requested"]
 // Left behind by a session that never ended cleanly.
 const PRESENCE_KEPT_MS = 24 * 60 * 60 * 1000
 const CACHE_KEPT_MS = 60 * 60 * 1000
@@ -938,8 +940,8 @@ async function fetchMine($: EngineInterface, ctx: Context, host: string, now: nu
 }
 
 /**
- * Searches each host for the open pull requests the person opened, for the band above the prompt; a host that cannot
- * be searched for now keeps what it showed. Turned off, the band shows none.
+ * Searches each host for the open pull requests the person opened and those asked of them to review, for the band
+ * above the prompt; a host that cannot be searched for now keeps what it showed. Turned off, the band shows none.
  */
 async function checkMine($: EngineInterface, ctx: Context) {
   if (!ctx.mine) {
@@ -950,27 +952,38 @@ async function checkMine($: EngineInterface, ctx: Context) {
   const held = await read($, mine)
   const nicknames = toNicknames(await $.store.get(NICKNAMES_KEY))
   const repos = await readRepos($)
-  const pulls: GhMinePull[] = []
-  let more = 0
+  const groups: Record<MineGroup, { pulls: GhMinePull[]; more: number }> = { opened: { pulls: [], more: 0 }, requested: { pulls: [], more: 0 } }
   for (const host of await mineHosts($, ctx)) {
     try {
       const found = await fetchMine($, ctx, host, now)
-      for (const pull of found.pulls)
-        pulls.push({
-          key: pullKey(pull.ref),
-          label: watchLabel(repos, pull.ref),
-          title: pull.title,
-          url: pull.url,
-          updatedAt: pull.updatedAt,
-          status: standingStatus(pull, nicknames, ctx.language),
-        })
-      more += found.total - found.pulls.length
+      for (const group of MINE_GROUPS) {
+        for (const pull of found[group].pulls) {
+          const author = pull.author === null ? undefined : displayName(pull.author, nicknames, ctx.language)
+          groups[group].pulls.push({
+            key: pullKey(pull.ref),
+            label: watchLabel(repos, pull.ref),
+            title: pull.title,
+            url: pull.url,
+            updatedAt: pull.updatedAt,
+            ...(author === undefined ? {} : { author }),
+            status: standingStatus(pull, nicknames, ctx.language),
+          })
+        }
+        groups[group].more += found[group].total - found[group].pulls.length
+      }
     } catch (error) {
-      pulls.push(...(held?.pulls ?? []).filter(pull => pull.key.toLowerCase().startsWith(`${host}/`)))
+      for (const group of MINE_GROUPS)
+        groups[group].pulls.push(...(held?.[group]?.pulls ?? []).filter(pull => pull.key.toLowerCase().startsWith(`${host}/`)))
       $.ui.log(`gh-inbox: pull requests on ${host}: ${message(error)}`, { to: "debug" })
     }
   }
-  await update($, mine, (): GhMine => ({ pulls: byPressing(ctx.t, pulls), more, checkedAt: now }))
+  // Those the person opened, the most pressing first; those asked of them, as GitHub found them, updated last first.
+  const byUpdate = [...groups.requested.pulls].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  await update($, mine, (): GhMine => ({
+    opened: { pulls: byPressing(ctx.t, groups.opened.pulls), more: groups.opened.more },
+    requested: { pulls: byUpdate, more: groups.requested.more },
+    checkedAt: now,
+  }))
 }
 
 /** Runs a conditional `gh api -i`; a `304` answers with nothing changed. */
@@ -1360,9 +1373,9 @@ async function status($: EngineInterface, ctx: Context) {
   if (watched > 0) lines.push(t.watchedCount(watched))
   const repos = Object.keys(toRepos(await $.store.get(REPOS_KEY))).length
   if (repos > 0) lines.push(t.registeredCount(repos))
-  const opened = ctx.mine ? await read($, mine) : null
-  const openedCount = opened === null ? 0 : opened.pulls.length + opened.more
-  if (openedCount > 0) lines.push(t.mineCount(openedCount))
+  const found = ctx.mine ? await read($, mine) : null
+  const count = (group: MineGroup) => (found?.[group] === undefined ? 0 : found[group].pulls.length + found[group].more)
+  if (count("opened") + count("requested") > 0) lines.push(t.mineCount(count("opened"), count("requested")))
   lines.push((await isShowing($, ctx, now)) ? t.showsHere : t.showsElsewhere)
 
   return lines.map(plain).join("\n")
@@ -1868,7 +1881,7 @@ async function actCommand($: EngineInterface, ctx: Context, command: ActCommand,
     method = plan.kind === "disable-auto" ? null : (named ?? settings.preferred)
   }
 
-  const stands = statusText({ head: pull.head.slice(0, 7), marks: statusMarks(t, status, true), latest: undefined })
+  const stands = statusText({ head: pull.head.slice(0, 7), marks: statusMarks(t, status, { withNames: true }), latest: undefined })
   await update($, act, (): GhAct => ({
     stage: "confirm",
     kind,
@@ -2357,22 +2370,41 @@ export const register: Register = (on, options) => {
         {isByPull
           ? groups.map((group, index) => {
               const title = group.key === undefined ? "" : (titles.get(group.key) ?? "")
-              const standing = group.key === undefined ? "" : (stands[group.key] ?? "")
+              const standing = group.key === undefined ? "" : plain(stands[group.key] ?? "")
+              // Where it stands goes on the heading's row where the row holds it all; else a button unfolds it under the heading.
+              const isInline = cells(`#${group.number ?? ""} ${plain(title)}${standing}`) <= e.props.bodyColumns
+              const standsKey = `stands|${group.key ?? group.pull}`
+              const isStandsOpen = unfolded.includes(standsKey)
               return (
                 <Box key={`group:${group.pull}`} flexDirection="column" marginTop={index === 0 ? 0 : 1}>
-                  <Text>
-                    <Text bold>
-                      {group.number === undefined ? (
-                        <Text color={LABEL_COLOR}>{t.logNoPull}</Text>
-                      ) : (
-                        <Text color={LABEL_COLOR}>
-                          <Link href={plain(group.url)}>{`#${group.number}`}</Link>
-                        </Text>
-                      )}
-                      {title === "" ? null : <Text>{` ${plain(title)}`}</Text>}
+                  <Box>
+                    <Text>
+                      <Text bold>
+                        {group.number === undefined ? (
+                          <Text color={LABEL_COLOR}>{t.logNoPull}</Text>
+                        ) : (
+                          <Text color={LABEL_COLOR}>
+                            <Link href={plain(group.url)}>{`#${group.number}`}</Link>
+                          </Text>
+                        )}
+                        {title === "" ? null : <Text>{` ${plain(title)}`}</Text>}
+                      </Text>
+                      {standing === "" || !isInline ? null : <Text>{standing}</Text>}
                     </Text>
-                    {standing === "" ? null : <Text>{plain(standing)}</Text>}
-                  </Text>
+                    {standing !== "" && !isInline && (
+                      <Button
+                        key={`stands:${group.key ?? group.pull}`}
+                        plain
+                        label={t.logStandsButton(isStandsOpen)}
+                        onPress={() => void update($, logUnfolded, list => (list.includes(standsKey) ? list.filter(one => one !== standsKey) : [...list, standsKey]))}
+                      />
+                    )}
+                  </Box>
+                  {standing !== "" && !isInline && isStandsOpen && (
+                    <Box paddingLeft={LOG_INDENT}>
+                      <Text>{standing.trim()}</Text>
+                    </Box>
+                  )}
                   <Box flexDirection="column" paddingLeft={LOG_INDENT}>
                     {group.events.map(event => drawPaneRow(event, shown.indexOf(event)))}
                   </Box>
@@ -2625,19 +2657,35 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // The band above the prompt: what is attached for the next prompt, then where the person's open pull requests stand,
-  // each a row its number links from.
+  // The band above the prompt: what is attached for the next prompt, then the open pull requests the person opened and
+  // those asked of them to review, each group under its heading, each pull request a row its number links from.
   on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
     const held = await read($, staged)
     const found = ctx.mine ? await read($, mine) : null
-    const pulls = found?.pulls ?? []
-    if (e.props.hasSurvey || (held.length === 0 && pulls.length === 0)) return next(e)
+    // A group kept from before the band had groups is none.
+    const groups = MINE_GROUPS.map(group => ({ group, pulls: found?.[group]?.pulls ?? [], more: found?.[group]?.more ?? 0 })).filter(one => one.pulls.length > 0)
+    if (e.props.hasSurvey || (held.length === 0 && groups.length === 0)) return next(e)
     const { Box, Text, Button, Link } = $.ui.resolve(e)
     const what = held.map(one => t.stagedOf(plain(pullLabel(one.pull)), one.items.length)).join(t.listSeparator)
     const size = stagedSize(held, ctx.language)
-    const shown = pulls.slice(0, MINE_SHOWN)
     // What the other mods draw stays, under this.
     const below = await next(e)
+    /** One pull request's row: its number, who opened one asked of the person, where it stands, its title. */
+    const row = (group: MineGroup, pull: GhMinePull) => {
+      // That one asked of the person awaits their review goes without saying.
+      const marks = statusText({ head: "", marks: statusMarks(t, pull.status, { awaiting: group === "requested" ? "none" : "any" }), latest: undefined }, false)
+      const author = group === "requested" && pull.author !== undefined ? `  ${t.who(plain(pull.author))}` : ""
+      return (
+        <Text key={`${group}:${pull.key}`} wrap="truncate-end">
+          {"  "}
+          <Link href={plain(pull.url)}>{plain(pull.label)}</Link>
+          {pull.status.isDraft === true ? t.paren(t.draft) : ""}
+          {author}
+          {marks === "" ? "" : `  ${marks}`}
+          <Text dimColor>{`  ${plain(pull.title)}`}</Text>
+        </Text>
+      )
+    }
 
     return (
       <Box flexDirection="column">
@@ -2651,23 +2699,16 @@ export const register: Register = (on, options) => {
             </Box>
           </Box>
         )}
-        {shown.length > 0 && (
-          <Box flexDirection="column">
-            <Text dimColor>{t.mineHeading(shown.length, pulls.length + (found?.more ?? 0))}</Text>
-            {shown.map(pull => {
-              const marks = statusText({ head: "", marks: statusMarks(t, pull.status), latest: undefined }, false)
-              return (
-                <Text key={`mine:${pull.key}`} wrap="truncate-end">
-                  {"  "}
-                  <Link href={plain(pull.url)}>{plain(pull.label)}</Link>
-                  {pull.status.isDraft === true ? t.paren(t.draft) : ""}
-                  {marks === "" ? "" : `  ${marks}`}
-                  <Text dimColor>{`  ${plain(pull.title)}`}</Text>
-                </Text>
-              )
-            })}
-          </Box>
-        )}
+        {groups.map(({ group, pulls, more }, index) => {
+          const shown = pulls.slice(0, MINE_SHOWN)
+          return (
+            <Box key={`gh-inbox-${group}`} flexDirection="column">
+              {/* The first heading says whose band it is. */}
+              <Text dimColor>{`${index === 0 ? "GitHub: " : ""}${t.mineHeading(group, shown.length, pulls.length + more)}`}</Text>
+              {shown.map(pull => row(group, pull))}
+            </Box>
+          )
+        })}
         {below}
       </Box>
     )
