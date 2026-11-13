@@ -190,6 +190,41 @@ export type GhPrDetail =
       at: number
     }
 
+/** One reply of a thread of line comments, as the card of the thread shows it. */
+export type GhPickReply = {
+  /** Who wrote it, by the name the mod shows. */
+  who: string
+  /** What they wrote, as GitHub shows it (Markdown, its HTML comments and images left out). */
+  body: string
+}
+
+/**
+ * What the pane of `/inbox pr <PR>` draws of an item, a card each, to read it as GitHub shows it: who wrote it and how
+ * it stands above what they wrote.
+ */
+export type GhPickCard = {
+  kind: "ci" | "description" | "review" | "thread" | "comment"
+  /** Who wrote it, by the name the mod shows; "" for CI. */
+  who: string
+  /** When it was written or submitted, ISO; "" where not known. */
+  at: string
+  /** What they wrote, as GitHub shows it (Markdown, its HTML comments and images left out); "" for none. */
+  body: string
+  url: string
+  /**
+   * A review's state as GitHub says it (`APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED`); CI's as its mark
+   * says it (`failed`, `running`, `passed`).
+   */
+  state?: string
+  /** A thread's file and line (`src/a.ts:12`). */
+  place?: string
+  isResolved?: boolean
+  isOutdated?: boolean
+  /** A thread's replies, oldest first, those left out counted in `repliesLeftOut`. */
+  replies?: GhPickReply[]
+  repliesLeftOut?: number
+}
+
 /** One thing of a pull request the person can hand to Claude: a review, a thread of line comments, a comment. */
 export type GhPickItem = {
   /** GitHub's node id; for the head commit's CI, `ci:` and how it stood (its commit, what failed). */
@@ -200,7 +235,15 @@ export type GhPickItem = {
   context: string
   /** The review a thread came with: its item's id. Pressing the review chooses its threads too. */
   parent?: string
+  /** What the pane draws of it to read; absent on one kept from before it was drawn so, and on one staged. */
+  card?: GhPickCard
 }
+
+/**
+ * Which screen the pane of `/inbox pr <PR>` shows: where it stands and what it holds, to read alone (`status`); what
+ * of it to hand to Claude (`pick`); or what can be done to it, each opening the pane that confirms it (`actions`).
+ */
+export type GhPrScreen = "status" | "pick" | "actions"
 
 /** What the pick pane shows. */
 export type GhPick =
@@ -354,6 +397,8 @@ declare module "claude-code" {
       pickUnfolded: string[]
       /** The pull request the pane of `/inbox pr` shows; null while it shows the list. */
       prDetail: GhPrDetail | null
+      /** Which screen the pane of `/inbox pr` shows of the pull request it shows. */
+      prScreen: GhPrScreen
       /** What the list of `/inbox pr` looked for as it opened; null before it did. */
       prFound: GhPrFound | null
       /** What GitHub says of the pull requests the list of `/inbox pr` shows that nothing else tells of, by `host/owner/repo#number`. */

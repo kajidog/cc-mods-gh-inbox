@@ -5,7 +5,7 @@ English | [日本語](README.ja.md)
 A Claude Code mod.
 It shows GitHub events on the checked-out branch's pull request, on pull requests you choose to watch and on repositories you register inside Claude Code, and lets you hand the ones you pick to Claude. Above the prompt, it shows where the pull requests you opened, and those you are asked to review, stand.
 
-`/inbox pr` lists pull requests, and shows one: where it stands, what of it to hand to Claude, and what to do to it ([Pull requests](#pull-requests-inbox-pr)).
+`/inbox pr` lists pull requests, and shows one to read, its reviews and comments a card each; what to hand to Claude, and what to do to it, each have a screen of their own ([Pull requests](#pull-requests-inbox-pr)).
 
 It writes to GitHub only to merge, close or draft a pull request, or to approve one or withdraw your approval, and only once you confirm it in a pane ([Merging, closing and drafts](#merging-closing-and-drafts), [Approving](#approving)). Posting comments, labelling and the like are out of its scope.
 
@@ -97,9 +97,20 @@ Each row tells its repository's short name and number, where it stands as the ba
 
 ### One pull request
 
-`/inbox pr 12` (or a row pressed) shows the pull request: its number (a link to it on GitHub) and title, who opened it, whether it is a draft, merged, closed or watched, where it stands with the reviewers named and who wrote last, and buttons that do something to it: **Watch** / **Stop watching** (`w`), **Merge** (`m`), **Convert to draft** / **Mark ready for review** (`d`), **Approve** / **Withdraw approval** (`v`, not on your own) and **Close PR** (`x`). Merging, closing, drafting and approving open the pane that confirms them ([Merging, closing and drafts](#merging-closing-and-drafts), [Approving](#approving)); what cannot be done is said on the pane instead. `r` reads it again, `l` goes back to the list, `q` closes the pane.
+`/inbox pr 12` (or a row pressed) shows the pull request on a screen to read: nothing on it changes the pull request or what goes with your next prompt, so a key pressed by mistake does no harm. It shows, a card each:
 
-Under that come the description, reviews and comments, to hand to Claude: press an item's `▸` to unfold all it says. Choose some and press **Attach** (`a`): they go to Claude with the next prompt you send. Write your request in the prompt as usual.
+- at the top, its number (a link to it on GitHub) and title, its repository, who opened it, whether it is a draft, merged, closed or watched, and where it stands with the reviewers named, each part in its mark's color (`✗` red, `◐` yellow, `○` blue, `●` and `✓` green); the card's border is colored by the most pressing part (purple once merged, grey closed or a draft),
+- under a rule each, the CI of its head commit (**Details** unfolds what failed and how to read its log), its description, and its reviews and comments, newest first,
+- each review with who gave it, what it says (approved in green, changes requested in red) and how long ago (a link to it), what was written drawn as Markdown, and its threads of line comments in it, each with its file and line, open (yellow) or resolved (grey). A long body shows its first lines, a thread its first comment: **▸ N more lines / replies** unfolds the rest.
+
+Two buttons go to the screens that do something, and **Back** (`b`) comes back:
+
+- **Hand to Claude…** (`c`): the description, CI, reviews and comments to choose from, as below.
+- **Actions…** (`o`): **Merge** (`m`), **Convert to draft** / **Mark ready for review** (`d`), **Approve** / **Withdraw approval** (`v`, not on your own) and **Close PR** (`x`), under "Sent to GitHub": each opens the pane that confirms it ([Merging, closing and drafts](#merging-closing-and-drafts), [Approving](#approving)), and what cannot be done is said on this screen instead. Under "Notices", **Watch** / **Stop watching** (`w`), which switches at once. Once what was confirmed is done, the pane goes back to where the pull request stands, read again.
+
+`r` reads it again, `l` goes back to the list, `q` closes the pane.
+
+On **Hand to Claude…**, press an item's `▸` to unfold all Claude reads of it. Choose some (the first nine also by their digit) and press **Attach** (`a`): they go to Claude with the next prompt you send. Write your request in the prompt as usual.
 
 - The items are fetched from GitHub as the pull request shows. What was never notified, or came while the window was closed, can be chosen too.
 - Each review has its threads of line comments listed under it. Choosing a review chooses its threads too; a thread can also be chosen alone. A thread comes with its replies.
@@ -114,7 +125,7 @@ Under that come the description, reviews and comments, to hand to Claude: press 
 
 ### Watching a pull request
 
-Pull requests other than the branch's can be notified the same way as the branch's: each is asked about at every check (every 60 seconds by default) with one GraphQL request, not through the Events API, so its notices come without that API's delay. Watch one with `/inbox pr 12 watch` or its pane's **Watch**; `/inbox pr 12 unwatch` stops it. The list is shared across the machine: every window watches the same ones, and `/inbox pr` lists them.
+Pull requests other than the branch's can be notified the same way as the branch's: each is asked about at every check (every 60 seconds by default) with one GraphQL request, not through the Events API, so its notices come without that API's delay. Watch one with `/inbox pr 12 watch` or **Watch** on its **Actions…** screen; `/inbox pr 12 unwatch` stops it. The list is shared across the machine: every window watches the same ones, and `/inbox pr` lists them.
 
 - Its notices are those of the branch's pull request ([What it notifies](#what-it-notifies)), led by the repository's short name and the number: `[tts#20] reviewer approved.` The short name is a registered repository's alias, else the repository's name.
 - On a pull request the window watches for the first time, what is already there is not notified. Removed and added again, it starts over from then in every window.
@@ -125,7 +136,7 @@ Pull requests other than the branch's can be notified the same way as the branch
 
 ### Merging, closing and drafts
 
-`/inbox pr [PR] merge`, `close` and `draft` (or the buttons of a pull request shown) merge a pull request, close it, or switch it between a draft and ready for review. Each reads the pull request afresh and opens a pane that says what would be done; nothing is sent to GitHub until you press its button.
+`/inbox pr [PR] merge`, `close` and `draft` (or the buttons on a pull request's **Actions…** screen) merge a pull request, close it, or switch it between a draft and ready for review. Each reads the pull request afresh and opens a pane that says what would be done; nothing is sent to GitHub until you press its button.
 
 - The pane shows the head commit and where the pull request stands, as the line under the prompt does with the reviewers named, and what to know before going on. Its button has no hotkey and nothing is focused as the pane opens, so neither a key typed for the prompt nor Enter sends it: move to it with Tab and press Enter, or click it. `q` cancels.
 - A merge goes only while the head is still the commit the pane showed (`gh pr merge --match-head-commit`): pushed to meanwhile, GitHub refuses it and the pane says why.
@@ -136,7 +147,7 @@ Pull requests other than the branch's can be notified the same way as the branch
 
 ### Approving
 
-`/inbox pr [PR] approve` approves a pull request, and `unapprove` withdraws your approval (or the button of a pull request shown). As with a merge, each reads the pull request afresh and opens a pane that says what would be done; nothing is sent to GitHub until you press its button.
+`/inbox pr [PR] approve` approves a pull request, and `unapprove` withdraws your approval (or the button on a pull request's **Actions…** screen). As with a merge, each reads the pull request afresh and opens a pane that says what would be done; nothing is sent to GitHub until you press its button.
 
 - What is approved is the head commit the pane showed: pushed to meanwhile, the approval is still of the commit you saw (depending on the repository's settings, GitHub may count it as an approval of an older commit).
 - Your own pull request, and one you have approved already, are refused before any pane; so is withdrawing an approval you have not given.
@@ -210,7 +221,7 @@ asked to review
 | `/inbox log [repository]` | Opens a pane of the notices of every window kept, newest first, 10 a page (`n` older, `p` newer, `q` close). Each shows on its first line the repository's short name in color, who did what in bold and color (a link to it on GitHub) and when; what was said goes under it, indented. A notice that says more than fits gets a `▸`: press it (or the digit of its place on the page, `1`–`9`, `0`) to unfold all of it, line comments with their file and line (kept up to 2,000 characters a notice). With notices of more than one repository, buttons above the list narrow it to one (`r` goes to the next); `/inbox log <repository>` opens it narrowed, by the short name, the name or `owner/repo`. The notices of a pull request together, with where it stands, are in `/inbox pr`. A comment, review or line comment edited or deleted on GitHub since it was told is marked `(…, edited 5m ago)` or `(…, deleted)`, and an edited one unfolds to what it says now (see below). Nothing is added to the transcript |
 | `/inbox log text` | Lists the newest 20 in the transcript instead, for Claude to read |
 | `/inbox pr` | The list of pull requests: this branch's, yours, those asked of you, watched, with notices, this repository's ([Pull requests](#pull-requests-inbox-pr)) |
-| `/inbox pr PR` | Show a pull request (`12`, `owner/repo#12` or its URL): where it stands, buttons to watch, merge, draft, approve or close it, and its description, threads, reviews and comments to hand to Claude |
+| `/inbox pr PR` | Show a pull request (`12`, `owner/repo#12` or its URL) to read: where it stands, its CI, description, reviews and threads and comments, a card each; from there, a screen to choose what to hand to Claude, and one to watch, merge, draft, approve or close it |
 | `/inbox pr show` | The same, for this branch's pull request (`pick` works too) |
 | `/inbox pr [PR] merge [merge\|squash\|rebase]` | Merge a pull request once you confirm it in a pane; auto-merge while a required review or check is missing ([Merging, closing and drafts](#merging-closing-and-drafts)) |
 | `/inbox pr [PR] close` | Close a pull request without merging, once you confirm it in a pane |

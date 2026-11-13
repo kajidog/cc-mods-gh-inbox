@@ -1,7 +1,7 @@
 // What `/inbox pr` asks GitHub and hands to Claude: the open pull requests to choose
 // from, and what a pull request holds now (its description, reviews with their threads, comments).
 
-import type { GhPickItem, GhPickPull, GhStaged } from "../types"
+import type { GhPickCard, GhPickItem, GhPickPull, GhStaged } from "../types"
 
 import { ciItem } from "./ci"
 import { displayName, fence, type Nicknames, snippet } from "./events"
@@ -29,7 +29,7 @@ export const PICK_QUERY = `query($owner: String!, $repo: String!, $number: Int!)
     pullRequest(number: $number) {
       id title url headRefOid body createdAt author { login }
       reviewThreads(last: ${THREADS_LISTED}) { totalCount nodes { id isResolved isOutdated path line originalLine resolvedBy { login }
-        root: comments(first: 1) { nodes { id author { login } body url state diffHunk originalCommit { abbreviatedOid } pullRequestReview { id } } }
+        root: comments(first: 1) { nodes { id author { login } body url createdAt state diffHunk originalCommit { abbreviatedOid } pullRequestReview { id } } }
         replies: comments(last: ${REPLIES_LISTED}) { totalCount nodes { id author { login } body state } } } }
       reviews(last: ${REVIEWS_LISTED}) { totalCount nodes { id author { login } state body url submittedAt commit { abbreviatedOid } } }
       comments(last: ${COMMENTS_LISTED}) { totalCount nodes { id author { login } body url createdAt } }
@@ -202,6 +202,7 @@ function descriptionItem(t: Messages, pull: Json, who: (value: unknown) => strin
     id: text(pull.id) || `description:${text(pull.url)}`,
     label: `${name}: ${label(body)}`,
     context: [`## ${name}${source(t, text(pull.createdAt), text(pull.url))}`, quoted(body)].join("\n"),
+    card: { kind: "description", who: who(pull.author), at: text(pull.createdAt), body: shownText(body).trim(), url: text(pull.url) },
   }
 }
 
@@ -258,12 +259,25 @@ export function parsePicked(ref: PullRef, answer: string, nicknames: Nicknames, 
       ...replies.flatMap(reply => [t.reply(who(reply.author)), quoted(text(reply.body))]),
       text(first.url),
     ].join("\n")
+    const card: GhPickCard = {
+      kind: "thread",
+      who: who(first.author),
+      at: text(first.createdAt),
+      body: shownText(text(first.body)).trim(),
+      url: text(first.url),
+      place,
+      isResolved,
+      isOutdated: thread.isOutdated === true,
+      replies: replies.map(reply => ({ who: who(reply.author), body: shownText(text(reply.body)).trim() })),
+      ...(replyCount > replies.length ? { repliesLeftOut: replyCount - replies.length } : {}),
+    }
     const item: GhPickItem = {
       id: text(thread.id),
       // Under its review the author goes without saying.
       label: `${place} ${parent === undefined ? `${who(first.author)}: ` : ""}${label(text(first.body))}${marks.length === 0 ? "" : t.marks(marks)}`,
       context,
       ...(parent === undefined ? {} : { parent }),
+      card,
     }
     return [{ item, isResolved }]
   })
@@ -289,6 +303,14 @@ export function parsePicked(ref: PullRef, answer: string, nicknames: Nicknames, 
             ...(oid(review.commit) === "" ? [] : [t.reviewOf(oid(review.commit))]),
             ...(body === "" ? [] : [quoted(body)]),
           ].join("\n"),
+          card: {
+            kind: "review",
+            who: who(review.author),
+            at: text(review.submittedAt),
+            body: shownText(body).trim(),
+            url: text(review.url),
+            state: text(review.state),
+          },
         },
         ...own.map(thread => thread.item),
       ],
@@ -302,7 +324,14 @@ export function parsePicked(ref: PullRef, answer: string, nicknames: Nicknames, 
     const name = t.commentName(who(comment.author))
     entries.push({
       at: text(comment.createdAt),
-      items: [{ id: text(comment.id), label: `${name}: ${label(body)}`, context: [`## ${name}${source(t, text(comment.createdAt), text(comment.url))}`, quoted(body)].join("\n") }],
+      items: [
+        {
+          id: text(comment.id),
+          label: `${name}: ${label(body)}`,
+          context: [`## ${name}${source(t, text(comment.createdAt), text(comment.url))}`, quoted(body)].join("\n"),
+          card: { kind: "comment", who: who(comment.author), at: text(comment.createdAt), body: shownText(body).trim(), url: text(comment.url) },
+        },
+      ],
     })
   }
   entries.sort((a, b) => b.at.localeCompare(a.at))

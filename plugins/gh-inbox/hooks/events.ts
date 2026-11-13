@@ -22,6 +22,13 @@ const UNSAFE = /[\u0000-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/g
 /** `text` with no control characters, safe to show as one line. */
 export const plain = (text: string) => text.replace(UNSAFE, "")
 
+// The same, newlines and tabs aside: what a block of several lines keeps.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
+const UNSAFE_IN_BLOCK = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/g
+
+/** `text` with no control characters but its newlines and tabs, safe to show as a block of lines (Markdown). */
+export const plainBlock = (text: string) => text.replace(/\r\n?/g, "\n").replace(UNSAFE_IN_BLOCK, "")
+
 /** The first readable line of a Markdown body, cut to a toast's length. */
 export function snippet(body: string, length = SNIPPET_LENGTH): string {
   const line =

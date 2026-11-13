@@ -295,7 +295,7 @@ const en = {
   ].join("\n"),
   prTitle: "Pull requests",
   prListOpened: "Opened the pull requests in a pane: press one to show it.",
-  prOpened: 'Showed it in the pane: choose what to hand to Claude and press "Attach", or press what to do to it.',
+  prOpened: 'Showed it in the pane, to read. "Hand to Claude" chooses what goes with your next prompt; "Actions" merges, closes or approves it.',
   prNone: "No pull requests to list. Show one with /inbox pr owner/repo#12.",
   /** A group's heading in the list, and how many of all it shows. */
   prGroup: (group: string, shown: number, total: number) =>
@@ -330,6 +330,31 @@ const en = {
   /** Closing the pull request, not the pane: told apart from `close`. */
   prClose: "Close PR",
   prReload: "Reload",
+  /** The buttons that go from where a pull request stands to the screen that hands it to Claude, or that acts on it, and back. */
+  prToPick: "Hand to Claude…",
+  prToActions: "Actions…",
+  prBack: "Back",
+  /** A section of where a pull request stands, under a rule: its CI, its description, its reviews and comments. */
+  prSection: (section: string, n = 0) =>
+    section === "ci" ? "CI" : section === "description" ? "Description" : `Reviews and comments${n > 0 ? ` (${n})` : ""}`,
+  /** What a card says it is, beside who wrote it. */
+  cardComment: "comment",
+  cardDescription: "description",
+  /** What a card holds back, folded: lines past the first few, a thread's replies. */
+  cardMore: (lines: number, replies: number) =>
+    `▸ ${[...(lines > 0 ? [count(lines, "more line")] : []), ...(replies > 0 ? [count(replies, "reply", "replies")] : [])].join(", ")}`,
+  cardFold: "▾ Fold",
+  /** What CI's card holds back, folded: what failed and how to look into it, the rest by name. */
+  cardDetails: "▸ Details",
+  /** Replies not fetched, of a thread with more than are asked for. */
+  cardRepliesLeftOut: (n: number) => `${count(n, "earlier reply", "earlier replies")} not shown`,
+  prPickHeading: "Choose what to hand to Claude",
+  prActionsHeading: "What to do to it",
+  /** The two kinds of what can be done to it, each under a rule: what is sent to GitHub once confirmed, and watching it. */
+  prActionsGitHub: "Sent to GitHub",
+  prActionsGitHubHint: "Each opens a pane that says what it does: nothing is sent to GitHub before you press its button there.",
+  prActionsWatch: "Notices",
+  prActionsWatchHint: "Switches at once; GitHub is not changed.",
   /** What the pane says while what a button pressed is asked of GitHub. */
   prAsking: "Asking GitHub…",
   prNoHereRepo: (action: string) => `The repository of this directory is not known. Name it with /inbox pr owner/repo#12${action === "" ? "" : ` ${action}`}.`,
@@ -721,7 +746,7 @@ const ja: Messages = {
   ].join("\n"),
   prTitle: "PR",
   prListOpened: "PR の一覧をペインで開きました。押すとその PR を開きます。",
-  prOpened: "ペインで開きました。Claude に渡すものを選んで「添付する」を押すか、操作のボタンを押します。",
+  prOpened: "ペインで開きました（見るだけの画面です）。「Claude に渡す」で次のプロンプトに添えるものを選び、「操作」でマージ・クローズ・承認などをします。",
   prNone: "出せる PR はありません。/inbox pr owner/repo#12 で開けます。",
   prGroup: (group, shown, total) =>
     `${
@@ -753,6 +778,22 @@ const ja: Messages = {
   prUnapprove: "承認を取り消す",
   prClose: "クローズする",
   prReload: "読み直す",
+  prToPick: "Claude に渡す…",
+  prToActions: "操作…",
+  prBack: "戻る",
+  prSection: (section, n = 0) => (section === "ci" ? "CI" : section === "description" ? "説明文" : `レビュー・コメント${n > 0 ? `（${n}件）` : ""}`),
+  cardComment: "コメント",
+  cardDescription: "説明文",
+  cardMore: (lines, replies) => `▸ ${[...(lines > 0 ? [`続き${lines}行`] : []), ...(replies > 0 ? [`返信${replies}件`] : [])].join("・")}`,
+  cardFold: "▾ たたむ",
+  cardDetails: "▸ 詳しく",
+  cardRepliesLeftOut: n => `前の返信${n}件は出していません`,
+  prPickHeading: "Claude に渡すものを選ぶ",
+  prActionsHeading: "操作",
+  prActionsGitHub: "GitHub に送るもの",
+  prActionsGitHubHint: "何をするかを確かめるペインを開きます。そこでボタンを押すまで、GitHub には何も送りません。",
+  prActionsWatch: "通知",
+  prActionsWatchHint: "その場で切り替わります。GitHub は変わりません。",
   prAsking: "GitHub に確かめています…",
   prNoHereRepo: action => `このディレクトリのリポジトリが分かりません。/inbox pr owner/repo#12${action === "" ? "" : ` ${action}`} で指定します。`,
 
