@@ -1,5 +1,5 @@
 import type { On, RenderElement } from "claude-code"
-import { expect, mock, test } from "claude-code/testing"
+import { type Engine, expect, mock, test } from "claude-code/testing"
 
 import { parsePicked, parsePullArg, parsePulls, pullsArgv, shownContext, stagedContext } from "../hooks/pick"
 
@@ -111,6 +111,13 @@ const PULL_ANSWER = JSON.stringify({
 })
 
 type Answer = { stdout?: string; stderr?: string; exitCode?: number }
+
+/** The pane of `/inbox pr`, gone from where the pull request stands to the screen that hands it to Claude. */
+async function pickScreen($: Engine) {
+  const pane = await $.ui.mount(PANE)
+  await pane.press({ key: "to:pick" })
+  return pane
+}
 
 /** Answers `git` and `gh` for o/r, the branch given having no pull request when `branch` is `main`. */
 function fakeGh(on: On, branch: string) {
@@ -252,8 +259,8 @@ test("a review chosen goes with its threads and their replies in the next prompt
     return h(Text, null, "other band") as RenderElement
   })
 
-  expect(await $.command.run(PICK)).toMatchObject({ text: expect.stringContaining("添付する") })
-  const pane = await $.ui.mount(PANE)
+  expect(await $.command.run(PICK)).toMatchObject({ text: expect.stringContaining("「Claude に渡す」") })
+  const pane = await pickScreen($)
   await pane.press({ key: "R1" })
   expect((await pane.find({ key: "T2" }))?.props.label).toBe("[x] src/b.ts:3 Rename this（解決済み・古い差分）")
   await pane.press({ key: "stage" })
@@ -275,6 +282,74 @@ test("a review chosen goes with its threads and their replies in the next prompt
   expect(contexts[1]).toBeUndefined()
 })
 
+test("each item carries what its card draws to read: who wrote it, how it stands, what they wrote as GitHub shows it", () => {
+  const json = JSON.parse(PULL_ANSWER)
+  Object.assign(json.data.repository.pullRequest, { id: "PR1", body: "<!-- template -->\nAdds pick", createdAt: "2026-10-15T09:00:00Z", author: { login: "me" } })
+  const items = parsePicked(REF, JSON.stringify(json), { rev: "レビューさん" }, "ja").items
+  const card = (id: string) => items.find(item => item.id === id)?.card
+  expect(card("PR1")).toEqual({ kind: "description", who: "me", at: "2026-10-15T09:00:00Z", body: "Adds pick", url: "https://github.com/o/r/pull/5" })
+  expect(card("R1")).toEqual({ kind: "review", who: "レビューさん", at: "2026-10-16T10:00:00Z", body: "Please split this", url: "u4", state: "CHANGES_REQUESTED" })
+  expect(card("C1")).toEqual({ kind: "comment", who: "bot", at: "2026-10-17T00:00:00Z", body: "Coverage dropped", url: "u6" })
+  // What GitHub does not show is not drawn either; a draft reply is left out of the replies.
+  expect(card("T1")).toEqual({
+    kind: "thread",
+    who: "レビューさん",
+    at: "",
+    body: "**<sub></sub>  This null check is not needed**",
+    url: "https://github.com/o/r/pull/5#r1",
+    place: "src/a.ts:12",
+    isResolved: false,
+    isOutdated: false,
+    replies: [{ who: "me", body: "Why?" }],
+  })
+  expect(card("T2")).toMatchObject({ place: "src/b.ts:3", isResolved: true, isOutdated: true, replies: [] })
+})
+
+test("where the pull request stands is a screen to read alone: a card each, a review with its threads, nothing on it to choose or change", JA, async ($, on) => {
+  mock.store(on, {})
+  mock.clock(on, { now: Date.parse("2026-10-17T01:00:00Z") })
+  fakeGh(on, "feat/x")
+
+  await $.command.run(PICK)
+  const pane = await $.ui.mount(PANE)
+  const texts = async () => (await pane.findAll({ type: "Text" })).map(one => one.text)
+  const markdown = async () => (await pane.findAll({ type: "Markdown" })).map(one => one.props.text)
+  // Nothing to choose: that is the screen that hands it to Claude.
+  for (const key of ["R1", "T1", "C1", "stage", "unfold:T1"]) expect(await pane.find({ key })).toBeUndefined()
+  expect(await texts()).toContainEqual(expect.stringMatching(/^── レビュー・コメント（2件） ─+$/))
+
+  // A review's card is colored by what it says, its threads in it, each colored by whether it is still open.
+  const review = await pane.find({ key: "card:R1" })
+  expect(review?.props).toMatchObject({ borderStyle: "round", borderColor: "error" })
+  expect(review?.text).toContain("rev  変更依頼  ")
+  expect((await pane.find({ key: "card:T1" }))?.props).toMatchObject({ borderColor: "warning" })
+  expect((await pane.find({ key: "card:T2" }))?.props).toMatchObject({ borderColor: "inactive" })
+  expect((await pane.find({ key: "card:C1" }))?.props).toMatchObject({ borderColor: "subtle" })
+  expect(await texts()).toContain("src/b.ts:3  解決済み、古い差分")
+  // What was written is drawn as GitHub shows it: Markdown, its HTML comments left out; when it was written links to it.
+  expect(await markdown()).toEqual(expect.arrayContaining(["Please split this", "Coverage dropped", "**<sub></sub>  This null check is not needed**"]))
+  expect((await markdown()).join("\n")).not.toContain("hidden")
+  expect((await pane.findAll({ type: "Link" })).map(link => link.props.href)).toEqual(expect.arrayContaining(["u4", "u6"]))
+
+  // A thread's replies, and the rest of a long body, wait folded.
+  expect(await markdown()).not.toContain("Why?")
+  expect((await pane.find({ key: "fold:T1" }))?.props.label).toBe("▸ 返信1件")
+  expect((await pane.find({ key: "fold:T2" }))?.props.label).toBe("▸ 続き17行")
+  await pane.press({ key: "fold:T1" })
+  expect(await markdown()).toContain("Why?")
+  expect((await pane.find({ key: "fold:T1" }))?.props.label).toBe("▾ たたむ")
+  await pane.press({ key: "fold:T1" })
+  expect(await markdown()).not.toContain("Why?")
+
+  // What goes with a prompt is what Claude reads: what the cards draw is not kept with it.
+  await pane.press({ key: "to:pick" })
+  expect(await pane.find({ type: "Text", text: "Claude に渡すものを選ぶ" })).toBeDefined()
+  await pane.press({ key: "C1" })
+  await pane.press({ key: "stage" })
+  const band = await $.ui.mount(BAND)
+  expect(await band.find({ text: "o/r#5 の1件を添付中" })).toBeDefined()
+})
+
 test("shownContext drops the fences and the context's heading marks, and keeps what was written inside as it is", () => {
   expect(shownContext("## rev\n```markdown\n# keep_this()\n## not a heading\n```\n```diff\n@@\n```")).toEqual([
     { text: "rev", isMeta: true },
@@ -290,7 +365,7 @@ test("an item of the pane of /inbox pr unfolds to all it says, without the fence
   fakeGh(on, "feat/x")
 
   await $.command.run(PICK)
-  const pane = await $.ui.mount(PANE)
+  const pane = await pickScreen($)
   expect((await pane.find({ key: "unfold:T2" }))?.props.label).toBe("▸ ")
   expect(await pane.find({ type: "Text", text: "after" })).toBeUndefined()
 
@@ -312,7 +387,7 @@ test("one thread can be chosen alone, its review shown as partly chosen", JA, as
   const contexts = sentContexts(on)
 
   await $.command.run(PICK)
-  const pane = await $.ui.mount(PANE)
+  const pane = await pickScreen($)
   await pane.press({ key: "R1" })
   await pane.press({ key: "T2" })
   expect((await pane.find({ key: "R1" }))?.props.label).toMatch(/^\[-\] /)
@@ -339,7 +414,8 @@ test("on a branch with no pull request, /inbox pr show says so, and the list has
   await $.command.run({ ...PICK, args: "pr" })
   const pane = await $.ui.mount(PANE)
   await pane.press({ key: "pr:github.com/o/r#5" })
-  for (let tries = 0; tries < 100 && (await pane.find({ key: "C1" })) === undefined; tries += 1) await pane.find({ key: "close" })
+  for (let tries = 0; tries < 100 && (await pane.find({ key: "to:pick" })) === undefined; tries += 1) await pane.find({ key: "close" })
+  await pane.press({ key: "to:pick" })
   expect((await pane.find({ key: "C1" }))?.props.label).toBe("[ ] bot のコメント: Coverage dropped")
 })
 
@@ -366,7 +442,7 @@ test("/inbox clear takes back what was staged", JA, async ($, on) => {
   const contexts = sentContexts(on)
 
   await $.command.run(PICK)
-  const pane = await $.ui.mount(PANE)
+  const pane = await pickScreen($)
   await pane.press({ key: "C1" })
   await pane.press({ key: "stage" })
   expect(await $.command.run({ ...PICK, args: "clear" })).toEqual({ text: "添付していた1件を外しました。" })
@@ -385,7 +461,7 @@ test("a prompt that does not go keeps what was staged for the next one", JA, asy
   })
 
   await $.command.run(PICK)
-  const pane = await $.ui.mount(PANE)
+  const pane = await pickScreen($)
   await pane.press({ key: "C1" })
   await pane.press({ key: "stage" })
   await $.prompt.submit({ text: "直して", wait: false, origin: { kind: "composer" } })
@@ -400,10 +476,11 @@ test("a pull request typed in another case is staged once, as GitHub spells it",
   const contexts = sentContexts(on)
 
   await $.command.run({ ...PICK, args: "pr O/R#5" })
-  const pane = await $.ui.mount(PANE)
+  const pane = await pickScreen($)
   await pane.press({ key: "C1" })
   await pane.press({ key: "stage" })
   await $.command.run(PICK)
+  await pane.press({ key: "to:pick" })
   expect((await pane.find({ key: "C1" }))?.props.label).toMatch(/^\[x\] /)
   await pane.press({ key: "R1" })
   await pane.press({ key: "stage" })
@@ -477,8 +554,8 @@ test("the pane of /inbox pr and the band speak English by default", async ($, on
     return h(Text, null, "other band") as RenderElement
   })
 
-  expect(await $.command.run(PICK)).toMatchObject({ text: expect.stringContaining('"Attach"') })
-  const pane = await $.ui.mount(PANE)
+  expect(await $.command.run(PICK)).toMatchObject({ text: expect.stringContaining('"Hand to Claude"') })
+  const pane = await pickScreen($)
   await pane.press({ key: "R1" })
   expect((await pane.find({ key: "stage" }))?.props.label).toBe("Attach (3)")
   await pane.press({ key: "stage" })

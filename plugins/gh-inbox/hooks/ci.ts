@@ -124,6 +124,7 @@ export function ciItem(t: Messages, ref: PullRef, ci: Ci): GhPickItem | null {
     id: `${CI_ITEM_PREFIX}${key}`,
     label: `${status} ${ci.oid.slice(0, 7)}${failed.length === 0 ? "" : `: ${names(t, failed, false)}`}`,
     context: ciContext(t, ref, ci),
+    card: { kind: "ci", who: "", at: "", body: "", url: "", state: stands === "done" ? "passed" : stands },
   }
 }
 

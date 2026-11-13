@@ -1463,13 +1463,12 @@ test("the branch's own pull request, watched too, is asked about once a check, a
   await $.command.run({ ...CHECK, args: "pr" })
   const pane = await $.ui.mount(PR_PANE)
   expect((await pane.find({ key: "pr:github.com/o/r#12" }))?.props.label).toBe("r#12  ✗ コンフリクト  ✗ CI 1/2  ✓ 承認2  Add things")
-  expect(await pane.find({ type: "Text", text: "今のブランチ" })).toBeDefined()
+  expect(await pane.find({ type: "Text", text: /^── 今のブランチ ─+$/ })).toBeDefined()
   expect(await pane.find({ type: "Text", text: "通知している PR" })).toBeUndefined()
-  // Shown, it says where it stands with the reviewers named, who wrote last, and that it is watched as the branch's.
+  // Shown, it says where it stands with the reviewers named, and that it is watched as the branch's.
   await pane.press({ key: "pr:github.com/o/r#12" })
-  const stands = { type: "Text", text: "  ✗ コンフリクト  ✗ CI 1/2  ✓ 承認（bobさん、carolさん） | aliceさん「Looks good」5分前" } as const
-  for (let tries = 0; tries < 100 && (await pane.find({ key: "pr:merge" })) === undefined; tries += 1) await pane.find({ key: "close" })
-  expect((await pane.findAll({ type: "Text" })).map(one => one.text)).toContainEqual(expect.stringContaining(stands.text))
+  for (let tries = 0; tries < 100 && (await pane.find({ key: "to:actions" })) === undefined; tries += 1) await pane.find({ key: "close" })
+  expect((await pane.findAll({ type: "Text" })).map(one => one.text)).toContainEqual(expect.stringContaining("✗ コンフリクト  ✗ CI 1/2  ✓ 承認（bobさん、carolさん）"))
   expect(await pane.find({ type: "Text", text: "通知中、今のブランチの PR" })).toBeDefined()
 })
 
@@ -1915,7 +1914,8 @@ test("/inbox pr lists pull requests a group each, every one once, those the log 
   // An issue's notices, and a push's, are no pull request's.
   expect(await row("github.com/o/r#7")).toBeUndefined()
   const texts = (await pane.findAll({ type: "Text" })).map(one => one.text)
-  expect(texts.filter(text => text.endsWith("PR"))).toEqual(["通知している PR", "ログに残っている PR", "このリポジトリと登録したリポジトリの PR"])
+  // Each group is headed on a rule across the pane.
+  expect(texts.flatMap(text => /^── (.+) ─*$/.exec(text)?.[1] ?? [])).toEqual(["通知している PR", "ログに残っている PR", "このリポジトリと登録したリポジトリの PR"])
   // One request for those that say nothing of where they stand: the watched one's is the check's.
   const asked = github.asked.filter(argv => argv.some(word => word.includes("issueOrPullRequest")))
   expect(asked).toHaveLength(1)
@@ -1965,52 +1965,71 @@ test("/inbox pr asks where more of one repository's pull requests stand than one
   expect(github.asked.filter(argv => argv.some(word => word.includes("issueOrPullRequest")))).toHaveLength(2)
 })
 
-test("the pane of /inbox pr <PR> says where it stands and what can be done to it, and why what was pressed cannot be", JA, async ($, on) => {
+test("the pane of /inbox pr <PR> says where it stands to read alone, and goes to a screen of what can be done to it, which says why what was pressed cannot be", JA, async ($, on) => {
   mock.store(on, {})
   mock.clock(on, { now: 1_000_000 })
   let says: PullSays = { mergeState: "BLOCKED", reviewDecision: "REVIEW_REQUIRED" }
   const github = actingGitHub(on, () => says)
 
-  expect(await $.command.run({ ...CHECK, args: "pr 12" })).toEqual({ text: "ペインで開きました。Claude に渡すものを選んで「添付する」を押すか、操作のボタンを押します。" })
+  expect(await $.command.run({ ...CHECK, args: "pr 12" })).toEqual({
+    text: "ペインで開きました（見るだけの画面です）。「Claude に渡す」で次のプロンプトに添えるものを選び、「操作」でマージ・クローズ・承認などをします。",
+  })
   expect(github.opened).toEqual(["gh-inbox-pr"])
   const pane = await $.ui.mount(PR_PANE)
   const label = async (key: string) => (await pane.find({ key }))?.props.label
-  // Named as the list names it, its repository in full under it.
+  const texts = async () => (await pane.findAll({ type: "Text" })).map(one => one.text)
+  // Named as the list names it, its repository in full under it, in a card colored by where it stands.
   expect((await pane.find({ type: "Link" }))?.props.href).toBe("https://github.com/o/r/pull/12")
   // (A Link's text as found leads with its address.)
   expect((await pane.find({ type: "Link" }))?.text).toBe("https://github.com/o/r/pull/12r#12")
   expect(await pane.find({ type: "Text", text: "o/r、aliceさんの PR" })).toBeDefined()
-  expect(await pane.find({ type: "Text", text: "abc1234  ○ レビュー待ち" })).toBeDefined()
+  expect(await texts()).toContain("abc1234  ○ レビュー待ち")
+  expect((await pane.find({ key: "header" }))?.props).toMatchObject({ borderStyle: "round", borderColor: "permission" })
+  expect(await pane.find({ type: "Text", text: "レビュー・コメントはありません。" })).toBeDefined()
+  // Nothing on it changes the pull request or what goes with the next prompt: it goes to the screens that do.
+  for (const key of ["pr:watch", "pr:merge", "pr:draft", "pr:approve", "pr:close", "stage", "R1"]) expect(await pane.find({ key })).toBeUndefined()
+  expect(await label("to:pick")).toBe("Claude に渡す…")
+  expect(await label("to:actions")).toBe("操作…")
+
+  await pane.press({ key: "to:actions" })
   expect(await label("pr:watch")).toBe("通知する")
   expect(await label("pr:merge")).toBe("マージする")
   expect(await label("pr:draft")).toBe("下書きに戻す")
   expect(await label("pr:approve")).toBe("承認する")
   expect(await label("pr:close")).toBe("クローズする")
-  expect(await pane.find({ type: "Text", text: "レビュー・コメントはありません。" })).toBeDefined()
+  expect(await texts()).toContain("abc1234  ○ レビュー待ち")
 
   // Watching is saved at once; a merge opens the pane that confirms it, nothing sent before its button.
   await pane.press({ key: "pr:watch" })
   expect(await label("pr:watch")).toBe("通知をやめる")
-  expect(await pane.find({ type: "Text", text: "o/r、aliceさんの PR、通知中" })).toBeDefined()
   await pane.press({ key: "pr:merge" })
   for (let tries = 0; tries < 100 && !github.opened.includes("gh-inbox-act"); tries += 1) await pane.find({ key: "close" })
   expect(github.opened).toEqual(["gh-inbox-pr", "gh-inbox-act"])
   expect(changes(github.asked)).toEqual([])
+  await pane.press({ key: "back" })
+  expect(await pane.find({ type: "Text", text: "o/r、aliceさんの PR、通知中" })).toBeDefined()
 
   // Read again: one's own draft has no button to approve it or to merge it, marking it ready a button of its own; the
   // head commit alone, with nothing of where it stands, is no line.
   says = { isDraft: true, mergeState: "DRAFT", author: "me" }
   await pane.press({ key: "reload" })
-  for (let tries = 0; tries < 100 && (await label("pr:draft")) !== "レビュー待ちにする"; tries += 1) await pane.find({ key: "close" })
+  for (let tries = 0; tries < 100 && !(await texts()).some(text => text.includes("下書き")); tries += 1) await pane.find({ key: "close" })
+  expect((await pane.find({ key: "header" }))?.props).toMatchObject({ borderColor: "inactive" })
+  await pane.press({ key: "to:actions" })
+  expect(await label("pr:draft")).toBe("レビュー待ちにする")
   expect(await pane.find({ key: "pr:approve" })).toBeUndefined()
   expect(await pane.find({ key: "pr:merge" })).toBeUndefined()
-  expect((await pane.findAll({ type: "Text" })).map(one => one.text)).not.toContain("abc1234")
+  expect(await texts()).not.toContain("abc1234")
 
-  // Made a draft again before the pane knew: why it cannot be merged is said on the pane, with no command for what its
+  // Made a draft again before the pane knew: why it cannot be merged is said on the screen, with no command for what its
   // own button does, and it is read again, so the buttons follow.
   says = { mergeState: "CLEAN", author: "me" }
+  await pane.press({ key: "back" })
   await pane.press({ key: "reload" })
-  for (let tries = 0; tries < 100 && (await label("pr:merge")) !== "マージする"; tries += 1) await pane.find({ key: "close" })
+  for (let tries = 0; tries < 100 && !(await texts()).includes("abc1234  ● マージ可"); tries += 1) await pane.find({ key: "close" })
+  expect((await pane.find({ key: "header" }))?.props).toMatchObject({ borderColor: "success" })
+  await pane.press({ key: "to:actions" })
+  expect(await label("pr:merge")).toBe("マージする")
   says = { isDraft: true, mergeState: "DRAFT", author: "me" }
   await pane.press({ key: "pr:merge" })
   const refused = { type: "Text", text: "o/r#12: 下書きです。先にレビュー待ちにします。" } as const
@@ -2020,6 +2039,9 @@ test("the pane of /inbox pr <PR> says where it stands and what can be done to it
   expect(await pane.find({ key: "pr:merge" })).toBeUndefined()
   expect(await pane.find({ type: "Text", text: "GitHub に確かめています…" })).toBeUndefined()
   expect(github.opened).toEqual(["gh-inbox-pr", "gh-inbox-act"])
+  // What was pressed is said where it was pressed: back where it stands, it is not.
+  await pane.press({ key: "back" })
+  expect(await pane.find(refused)).toBeUndefined()
 
   // Back on the list, it is there, watched and the branch's.
   await pane.press({ key: "list" })
@@ -2037,12 +2059,16 @@ test("the pane of /inbox pr <PR> asks whether the person approves it where as ma
   await $.command.run({ ...CHECK, args: "pr 12" })
   const pane = await $.ui.mount(PR_PANE)
   const label = async () => (await pane.find({ key: "pr:approve" }))?.props.label
+  await pane.press({ key: "to:actions" })
   expect(await label()).toBe("承認を取り消す")
   expect(asked()).toBe(1)
 
   // With fewer, whether the person approves it is read from those that came: not asked.
   says = { mergeState: "BLOCKED", othersApproving: 3 }
+  await pane.press({ key: "back" })
   await pane.press({ key: "reload" })
+  for (let tries = 0; tries < 100 && (await pane.find({ key: "to:actions" })) === undefined; tries += 1) await pane.find({ key: "close" })
+  await pane.press({ key: "to:actions" })
   for (let tries = 0; tries < 100 && (await label()) !== "承認する"; tries += 1) await pane.find({ key: "close" })
   expect(await label()).toBe("承認する")
   expect(asked()).toBe(1)
@@ -2093,11 +2119,20 @@ test("/inbox pr speaks English by default", async ($, on) => {
   const github = actingGitHub(on, () => ({ mergeState: "CLEAN" }))
 
   expect(await $.command.run({ ...CHECK, args: "pick" })).toEqual({ text: "/inbox pick is now part of /inbox pr: /inbox pr show for this branch's pull request, /inbox pr 12 for another." })
-  expect(await $.command.run({ ...CHECK, args: "pr pick" })).toEqual({ text: 'Showed it in the pane: choose what to hand to Claude and press "Attach", or press what to do to it.' })
+  expect(await $.command.run({ ...CHECK, args: "pr pick" })).toEqual({
+    text: 'Showed it in the pane, to read. "Hand to Claude" chooses what goes with your next prompt; "Actions" merges, closes or approves it.',
+  })
   const pane = await $.ui.mount(PR_PANE)
   expect(await pane.find({ type: "Text", text: "opened by alice" })).toBeDefined()
-  expect(await pane.find({ type: "Text", text: "abc1234  ● ready to merge" })).toBeDefined()
+  expect((await pane.findAll({ type: "Text" })).map(one => one.text)).toContain("abc1234  ● ready to merge")
+  expect(await pane.find({ type: "Text", text: /^── Reviews and comments ─+$/ })).toBeDefined()
+  expect((await pane.find({ key: "to:pick" }))?.props.label).toBe("Hand to Claude…")
+  expect((await pane.find({ key: "to:actions" }))?.props.label).toBe("Actions…")
+  await pane.press({ key: "to:actions" })
   expect((await pane.find({ key: "pr:merge" }))?.props.label).toBe("Merge")
+  expect((await pane.find({ key: "back" }))?.props.label).toBe("Back")
+  await pane.press({ key: "back" })
+  await pane.press({ key: "to:pick" })
   expect((await pane.find({ key: "stage" }))?.props.label).toBe("Attach (0)")
   expect(github.opened).toEqual(["gh-inbox-pr"])
 })

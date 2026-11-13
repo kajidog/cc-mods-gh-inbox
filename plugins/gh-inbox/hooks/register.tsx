@@ -9,12 +9,15 @@ import type {
   GhMine,
   GhMinePull,
   GhPick,
+  GhPickCard,
   GhPicker,
+  GhPickItem,
   GhPickPull,
   GhPlaced,
   GhPrDetail,
   GhPrFound,
   GhPrHeading,
+  GhPrScreen,
   GhPullStatus,
   GhStaged,
   GhWatch,
@@ -35,7 +38,7 @@ import {
   viewerReviewArgv,
 } from "./act"
 import { type Ci, CI_ITEM_PREFIX, ciForPrompt, ciKey, isResult } from "./ci"
-import { CLOSED_ID, displayName, MERGED_ID, mergeSeen, newEvents, type Nicknames, plain, pullIds, snippet } from "./events"
+import { CLOSED_ID, displayName, MERGED_ID, mergeSeen, newEvents, type Nicknames, plain, plainBlock, pullIds, snippet } from "./events"
 import { isRefused, type Pull, type PullRef, type PullState, parsePull, parsePullUrl, pullArgv, pullName, VERDICTS_ASKED } from "./github"
 import {
   addSharedSeen,
@@ -81,6 +84,7 @@ import {
 } from "./pick"
 import { cells, fitCells, HEADINGS_AT_ONCE, headingsArgv, headingsWanted, noticedPulls, type PrAction, type PrHeading, parseHeadings, parsePrWords } from "./pr-list"
 import { PRESENCE_PREFIX, type Presence, pickActive, toPresence } from "./presence"
+import { cardColor, conversationOf, cutBody, markColor, standingColor } from "./pr-view"
 import {
   ACTIONS_PRIMED,
   canCompare,
@@ -223,6 +227,8 @@ const logLatest = atom({ plugin: "gh-inbox", key: "logLatest" } as const, {} as 
 const pickUnfolded = atom({ plugin: "gh-inbox", key: "pickUnfolded" } as const, [] as string[])
 /** The pull request the pane of `/inbox pr` shows; null while it shows the list. */
 const prDetail = atom({ plugin: "gh-inbox", key: "prDetail" } as const, null as GhPrDetail | null)
+// Which screen of the pull request it shows: where it stands to read, what to hand to Claude, what can be done to it.
+const prScreen = atom({ plugin: "gh-inbox", key: "prScreen" } as const, "status" as GhPrScreen)
 /** What the list of `/inbox pr` looked for as it opened. */
 const prFound = atom({ plugin: "gh-inbox", key: "prFound" } as const, null as GhPrFound | null)
 /** What GitHub says of the pull requests the list of `/inbox pr` shows that nothing else tells of, by `host/owner/repo#number`. */
@@ -1553,6 +1559,9 @@ async function hereRepo($: EngineInterface) {
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
+/** A Text's `color`, where there is one: none leaves the text's own. */
+const colorOf = (color: string | undefined) => (color === undefined ? {} : { color })
+
 /**
  * What a prompt tells Claude of the branch's pull request's CI, unasked: a result it was not told of in
  * this session, `key` saying how CI stood and `at` when GitHub was asked. Not while the rest still run with
@@ -1651,7 +1660,8 @@ async function toggleItem($: EngineInterface, id: string) {
 async function stageChosen($: EngineInterface, ctx: Context) {
   const held = await read($, pick)
   if (held?.stage !== "items") return
-  const items = held.items.filter(item => held.chosen.includes(item.id))
+  // What the pane drew to read is not what Claude reads: it is not kept with what goes with the prompt.
+  const items = held.items.filter(item => held.chosen.includes(item.id)).map(({ card: _, ...item }) => item)
   await update($, staged, list => [
     ...list.filter(one => one.pull !== held.pull),
     ...(items.length === 0 ? [] : [{ pull: held.pull, title: held.title, url: held.url, head: held.head, items, language: ctx.language, at: held.at }]),
@@ -1868,9 +1878,12 @@ async function runAct($: EngineInterface, ctx: Context) {
       else if (!isBranchPull(ctx, held.pull) && findWatched(await readWatched($), held.pull) === undefined)
         $.ui.toast(ctx.t.actDone(held.kind, name), { timeoutMs: TOAST_MS })
     } else $.ui.toast(ctx.t.actDone(held.kind, name), { timeoutMs: TOAST_MS })
-    // The pull request `/inbox pr` shows says what was done to it.
+    // The pull request `/inbox pr` shows says what was done to it, back on the screen to read it.
     const shown = await read($, prDetail)
-    if (ref !== null && shown?.pull.toLowerCase() === held.pull.toLowerCase()) await loadHeader($, ctx, ref)
+    if (ref !== null && shown?.pull.toLowerCase() === held.pull.toLowerCase()) {
+      await update($, prScreen, (): GhPrScreen => "status")
+      await loadHeader($, ctx, ref)
+    }
     void check($, ctx, true)
   } finally {
     ctx.isActing = false
@@ -1930,14 +1943,16 @@ async function loadHeader($: EngineInterface, ctx: Context, ref: PullRef, isFres
   if (showing === ctx.prShowings) await update($, prDetail, () => shown)
 }
 
-/** Shows the pull request `ref` in the pane of `/inbox pr`: where it stands, and what it holds to hand to Claude. */
+/** Shows the pull request `ref` in the pane of `/inbox pr`, on the screen to read it: where it stands, and what it holds. */
 async function showPull($: EngineInterface, ctx: Context, ref: PullRef, isFresh = false) {
+  await update($, prScreen, (): GhPrScreen => "status")
   await Promise.all([loadHeader($, ctx, ref, isFresh), loadItems($, ctx, ref)])
 }
 
 /** Opens the pane of `/inbox pr` on the pull request `ref`; whether it opened. */
 async function openPull($: EngineInterface, ctx: Context, ref: PullRef) {
   await update($, prDetail, (): GhPrDetail => ({ stage: "loading", pull: pullKey(ref), message: ctx.t.loadingPull(pullLabel(pullKey(ref))) }))
+  await update($, prScreen, (): GhPrScreen => "status")
   if (!(await $.ui.open({ id: PR_PANE, title: ctx.t.prTitle, focus: true })).isPlaced) return false
   await showPull($, ctx, ref)
 
@@ -2598,16 +2613,29 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // The pane of `/inbox pr`: the list of pull requests, a group each, a row each that opens it; or one of them, where it
-  // stands, what can be done to it, and what it holds to hand to Claude.
+  // The pane of `/inbox pr`: the list of pull requests, a group each, a row each that opens it; or one of them, on one of
+  // three screens: where it stands and what it holds, to read alone; what of it to hand to Claude; what can be done to it.
   on("ui.render", { component: "Pane", requestId: PR_PANE }, async ($, e) => {
-    const { Box, Text, Button, Link } = $.ui.resolve(e)
+    const { Box, Text, Button, Link, Markdown } = $.ui.resolve(e)
     const detail = await read($, prDetail)
     const now = await $.clock.now()
     const sinceAt = (at: string) => {
       const ms = Date.parse(at)
       return Number.isNaN(ms) ? undefined : ago(t, now - ms)
     }
+    /** A section's title on a rule across the pane, `indent` cells in. */
+    const rule = (key: string, title: string, indent = 0) => (
+      <Text key={key} dimColor>
+        {`── ${title} ${"─".repeat(Math.max(0, e.props.bodyColumns - indent - cells(title) - 4))}`}
+      </Text>
+    )
+    /** The parts of where a pull request stands, each in its mark's color, two cells apart. */
+    const markRuns = (key: string, marks: readonly string[], isFirst = true) =>
+      marks.map((part, index) => (
+        <Text key={`${key}:${index}`} {...colorOf(markColor(part))}>
+          {`${isFirst && index === 0 ? "" : "  "}${plain(part)}`}
+        </Text>
+      ))
     const close = <Button key="close" hotkey="q" label={t.close} onPress={() => void $.ui.close({ id: PR_PANE })} />
     const toList = (
       <Button
@@ -2643,22 +2671,20 @@ export const register: Register = (on, options) => {
           {groups.length === 0 && found?.stage !== "searching" && <Text>{t.prNone}</Text>}
           {groups.map(({ group, rows, more }) => (
             <Box key={`group:${group}`} flexDirection="column">
-              <Text dimColor>{t.prGroup(group, rows.length, rows.length + more)}</Text>
+              {rule(`heading:${group}`, t.prGroup(group, rows.length, rows.length + more))}
               {rows.map(row => {
                 const at = index
                 index += 1
                 const isEnded = row.state === "MERGED" || row.state === "CLOSED"
-                const marks =
-                  isEnded || row.status === null
-                    ? ""
-                    : statusText({ head: "", marks: statusMarks(t, row.status, { awaiting: group === "requested" ? "none" : "any" }), latest: undefined }, false)
+                const marks = isEnded || row.status === null ? [] : statusMarks(t, row.status, { awaiting: group === "requested" ? "none" : "any" })
+                const marked = statusText({ head: "", marks, latest: undefined }, false)
                 const flag = isEnded ? t.paren(t.pullState(row.state)) : row.status?.isDraft === true ? t.paren(t.draft) : ""
                 const author = row.author === undefined ? "" : `  ${t.who(plain(row.author))}`
                 const when = row.noticed === undefined ? "" : `  ${t.prNoticed(row.noticed.count, sinceAt(row.noticed.at) ?? "")}`
                 const head = `${plain(row.label)}${flag}`
                 // A title not known yet (asked of GitHub, or none to be had) leaves no gap.
                 const title = row.title === "" ? "" : `  ${plain(row.title)}`
-                const stands = `${head}${author}${marks === "" ? "" : `  ${marks}`}`
+                const stands = `${head}${author}${marked === "" ? "" : `  ${marked}`}`
                 const hotkey = at < 9 ? String(at + 1) : undefined
                 // A row keeps to one line: where the pane is too narrow, the title gives way, what it says around it kept.
                 const room = e.props.bodyColumns - PR_ROW_INDENT - (hotkey === undefined ? 0 : cells(`${hotkey}: `)) - cells(stands) - cells(when)
@@ -2679,7 +2705,8 @@ export const register: Register = (on, options) => {
                     >
                       <Text color={LABEL_COLOR}>{head}</Text>
                       {author}
-                      {marks === "" ? "" : `  ${marks}`}
+                      {marks.length === 0 ? "" : "  "}
+                      {markRuns(`marks:${row.key}`, marks)}
                       <Text dimColor>{`${shownTitle}${when}`}</Text>
                     </Button>
                   </Box>
@@ -2693,9 +2720,12 @@ export const register: Register = (on, options) => {
       )
     }
 
+    const screen = await read($, prScreen)
     const ref = refOfPullKey(detail.pull)
     const repos = await readRepos($)
     const isWatched = findWatched(await readWatched($), detail.pull) !== undefined
+    const shownPull = detail.stage === "pull" ? detail : undefined
+    const isOpen = shownPull?.state === "OPEN"
     /** Says on the pane what the last button pressed came to: that GitHub is asked, or why it could not be done; else nothing. */
     const say = (said: { asking?: string; note?: string }) =>
       update($, prDetail, held => {
@@ -2703,6 +2733,11 @@ export const register: Register = (on, options) => {
         const { note: _, asking: __, ...rest } = held
         return { ...rest, ...(said.asking === undefined ? {} : { asking: said.asking }), ...(said.note === undefined ? {} : { note: said.note }) }
       })
+    /** Goes to another screen of the pull request shown, what the last button pressed came to left behind. */
+    const toScreen = (next: GhPrScreen) => async () => {
+      await say({})
+      await update($, prScreen, () => next)
+    }
     /**
      * Runs what a button asks, one press at a time, the pane saying so while GitHub is asked; `run` answers why it could
      * not be done, if it could not. Where `isReread`, a refusal reads the pull request again (as GitHub just answered),
@@ -2732,123 +2767,319 @@ export const register: Register = (on, options) => {
     // holds shows even where where it stands could not be read, and a failure the same as that one's is said once.
     const isItems = items?.stage === "items" && items.pull.toLowerCase() === detail.pull.toLowerCase()
     const itemsFailed = items?.stage === "error" && !(detail.stage === "error" && detail.message === items.message) ? items.message : undefined
-
-    /** Where the pull request stands, and the buttons that do something to it. */
-    const head = (shown: Extract<GhPrDetail, { stage: "pull" }>) => {
-      const isOpen = shown.state === "OPEN"
-      const said = shown.status.latest
-      const latestSaid = said === null ? undefined : t.latestComment(t.who(plain(said.name)), plain(said.body), sinceAt(said.at))
+    const unfold = (id: string) => () => void update($, pickUnfolded, list => (list.includes(id) ? list.filter(one => one !== id) : [...list, id]))
+    /** Its number, a link to it, and its title. */
+    const heading = (shown: Extract<GhPrDetail, { stage: "pull" }>) => {
       const shownRef = refOfPullKey(shown.pull)
-      const about = [
-        // Its repository in full: the heading names it as the list does, by its short name.
-        pullLabel(shown.pull).replace(/#\d+$/, ""),
-        ...(shown.author === null ? [] : [t.prBy(t.who(plain(shown.author)))]),
-        ...(isOpen ? (shown.status.isDraft === true ? [t.draft] : []) : [t.pullState(shown.state)]),
-        ...(isWatched ? [t.prWatchedNow] : []),
-        ...(isBranchPull(ctx, shown.pull) ? [t.prIsBranch] : []),
-      ]
+      return (
+        <Text bold>
+          <Text color={LABEL_COLOR}>
+            <Link href={plain(shown.url)}>{plain(shownRef === null ? pullLabel(shown.pull) : watchLabel(repos, shownRef))}</Link>
+          </Text>{" "}
+          {plain(shown.title)}
+        </Text>
+      )
+    }
+    /** Where it stands, led by its head commit, each part in its mark's color; nothing where only the commit would show. */
+    const standing = (shown: Extract<GhPrDetail, { stage: "pull" }>) => {
       const marks = statusMarks(t, shown.status, { withNames: true })
+      if (shown.state !== "OPEN" || marks.length === 0) return null
+      return (
+        <Text key="standing">
+          {shown.head === "" ? "" : <Text dimColor>{shown.head.slice(0, 7)}</Text>}
+          {markRuns("mark", marks, shown.head === "")}
+        </Text>
+      )
+    }
+    /** What it is waiting on GitHub for, or why what was pressed could not be done; what the pull request could not be read for. */
+    const said = (
+      <Box key="said" flexDirection="column">
+        {shownPull?.asking !== undefined && <Text dimColor>{shownPull.asking}</Text>}
+        {shownPull?.note !== undefined && <Text color="warning">{plain(shownPull.note)}</Text>}
+        {detail.stage === "error" ? <Text>{plain(detail.message)}</Text> : detail.stage === "loading" ? <Text dimColor>{detail.message}</Text> : null}
+      </Box>
+    )
+    const back = <Button key="back" hotkey="b" label={t.prBack} onPress={() => void toScreen("status")()} />
+    /** What the items could not be read for, or that they are still read; null once they are. */
+    const itemsWaiting = isItems ? null : itemsFailed !== undefined ? (
+      <Text key="items:failed">{plain(itemsFailed)}</Text>
+    ) : items?.stage === "error" ? null : (
+      <Text key="items:loading" dimColor>
+        {items?.stage === "loading" ? items.message : t.loading}
+      </Text>
+    )
+
+    if (screen === "actions") {
       // A draft is marked ready before it is merged, by its own button: one with auto-merge on can still have it turned off.
-      const canMerge = isOpen && (shown.status.isDraft !== true || shown.status.autoMerge === true)
+      const canMerge = shownPull !== undefined && isOpen && (shownPull.status.isDraft !== true || shownPull.status.autoMerge === true)
       return (
         <Box flexDirection="column">
-          <Text bold>
-            <Text color={LABEL_COLOR}>
-              <Link href={plain(shown.url)}>{plain(shownRef === null ? pullLabel(shown.pull) : watchLabel(repos, shownRef))}</Link>
-            </Text>{" "}
-            {plain(shown.title)}
-          </Text>
-          <Text dimColor>{plain(about.join(t.listSeparator))}</Text>
-          {/* The head commit alone says nothing of where it stands. */}
-          {isOpen && (marks.length > 0 || latestSaid !== undefined) && <Text>{statusText({ head: shown.head.slice(0, 7), marks, latest: latestSaid })}</Text>}
-          {shown.asking !== undefined && <Text dimColor>{shown.asking}</Text>}
-          {shown.note !== undefined && <Text color="warning">{plain(shown.note)}</Text>}
-          <Box flexWrap="wrap">
-            {(isOpen || isWatched) && <Button key="pr:watch" hotkey="w" label={isWatched ? t.prUnwatch : t.prWatch} onPress={() => void toggleWatch()} />}
-            {canMerge && <Button key="pr:merge" hotkey="m" label={shown.status.autoMerge === true ? t.prDisableAuto : t.prMerge} onPress={() => void doing("merge")()} />}
-            {isOpen && <Button key="pr:draft" hotkey="d" label={shown.status.isDraft === true ? t.prReady : t.prToDraft} onPress={() => void doing("draft")()} />}
-            {isOpen && !shown.isOwn && (
-              <Button key="pr:approve" hotkey="v" label={shown.isApproved ? t.prUnapprove : t.prApprove} onPress={() => void doing(shown.isApproved ? "unapprove" : "approve")()} />
-            )}
-            {isOpen && <Button key="pr:close" hotkey="x" label={t.prClose} onPress={() => void doing("close")()} />}
+          <Text bold>{t.prActionsHeading}</Text>
+          {shownPull !== undefined && heading(shownPull)}
+          {shownPull !== undefined && standing(shownPull)}
+          {said}
+          {shownPull !== undefined && isOpen && (
+            <Box key="actions:github" flexDirection="column">
+              {rule("rule:github", t.prActionsGitHub)}
+              <Text dimColor>{t.prActionsGitHubHint}</Text>
+              {canMerge && <Button key="pr:merge" hotkey="m" label={shownPull.status.autoMerge === true ? t.prDisableAuto : t.prMerge} onPress={() => void doing("merge")()} />}
+              <Button key="pr:draft" hotkey="d" label={shownPull.status.isDraft === true ? t.prReady : t.prToDraft} onPress={() => void doing("draft")()} />
+              {!shownPull.isOwn && (
+                <Button
+                  key="pr:approve"
+                  hotkey="v"
+                  label={shownPull.isApproved ? t.prUnapprove : t.prApprove}
+                  onPress={() => void doing(shownPull.isApproved ? "unapprove" : "approve")()}
+                />
+              )}
+              <Button key="pr:close" hotkey="x" label={t.prClose} onPress={() => void doing("close")()} />
+            </Box>
+          )}
+          {shownPull !== undefined && (isOpen || isWatched) && (
+            <Box key="actions:watch" flexDirection="column">
+              {rule("rule:watch", t.prActionsWatch)}
+              <Text dimColor>{t.prActionsWatchHint}</Text>
+              <Button key="pr:watch" hotkey="w" label={isWatched ? t.prUnwatch : t.prWatch} onPress={() => void toggleWatch()} />
+            </Box>
+          )}
+          <Box flexWrap="wrap" marginTop={1}>
+            {back}
+            {close}
           </Box>
         </Box>
       )
     }
 
+    if (screen === "pick") {
+      return (
+        <Box flexDirection="column">
+          <Text bold>{t.prPickHeading}</Text>
+          {shownPull !== undefined && heading(shownPull)}
+          {said}
+          {itemsWaiting}
+          {isItems && (
+            <Box flexDirection="column">
+              {items.notes.map(note => (
+                <Text key={note} dimColor>
+                  {note}
+                </Text>
+              ))}
+              <Text dimColor>{items.items.length === 0 ? t.noItems : t.itemsHint}</Text>
+              {items.items.map((item, index) => {
+                // A review shows whether it is chosen with all its threads, in part, or not at all.
+                const ids = idsOf(items.items, item.id)
+                const count = ids.filter(id => items.chosen.includes(id)).length
+                const mark = count === ids.length ? "x" : count > 0 ? "-" : " "
+                const isUnfolded = unfolded.includes(item.id)
+                return (
+                  <Box key={`row:${item.id}`} flexDirection="column" paddingLeft={item.parent === undefined ? 0 : 4}>
+                    <Box>
+                      <Button key={`unfold:${item.id}`} plain label={isUnfolded ? "▾ " : "▸ "} onPress={unfold(item.id)} />
+                      <Button
+                        key={item.id}
+                        hotkey={index < 9 ? String(index + 1) : undefined}
+                        plain
+                        dimColor={count === 0}
+                        label={`[${mark}] ${plain(item.label)}`}
+                        onPress={() => {
+                          // Keys pressed in a row each read what the one before wrote.
+                          ctx.toggling = ctx.toggling.then(() => toggleItem($, item.id)).catch(() => undefined)
+                        }}
+                      />
+                    </Box>
+                    {isUnfolded && (
+                      <Box paddingLeft={LOG_INDENT} flexDirection="column">
+                        {shownContext(item.context).map((line, i) => (
+                          <Text key={`said:${item.id}:${i}`} dimColor={line.isMeta}>
+                            {plain(line.text) || " "}
+                          </Text>
+                        ))}
+                      </Box>
+                    )}
+                  </Box>
+                )
+              })}
+            </Box>
+          )}
+          <Box flexWrap="wrap">
+            {isItems && (
+              <Button
+                key="stage"
+                hotkey="a"
+                variant="primary"
+                label={t.attach(items.chosen.length)}
+                onPress={() => {
+                  // After the toggles pressed before it, so it stages what they chose.
+                  ctx.toggling = ctx.toggling.then(() => stageChosen($, ctx)).catch(() => undefined)
+                }}
+              />
+            )}
+            {back}
+            {close}
+          </Box>
+        </Box>
+      )
+    }
+
+    /** A card's body as GitHub shows it, its first lines while folded; the button that unfolds the rest, where there is more. */
+    const body = (item: GhPickItem, card: GhPickCard, isUnfolded: boolean) => {
+      const cut = isUnfolded ? { shown: card.body, left: 0 } : cutBody(card.body)
+      const replies = card.replies ?? []
+      const isMore = cut.left > 0 || replies.length > 0 || (card.repliesLeftOut ?? 0) > 0
+      return [
+        ...(card.body === "" ? [] : [<Markdown key={`body:${item.id}`} text={plainBlock(cut.shown)} />]),
+        ...(isUnfolded
+          ? [
+              ...((card.repliesLeftOut ?? 0) > 0 ? [<Text key={`left:${item.id}`} dimColor>{t.cardRepliesLeftOut(card.repliesLeftOut ?? 0)}</Text>] : []),
+              ...replies.map((reply, index) => (
+                <Box key={`reply:${item.id}:${index}`} flexDirection="column" marginTop={1}>
+                  <Text bold>{plain(reply.who)}</Text>
+                  {reply.body === "" ? null : <Markdown text={plainBlock(reply.body)} />}
+                </Box>
+              )),
+            ]
+          : []),
+        ...(isMore
+          ? [
+              <Button
+                key={`fold:${item.id}`}
+                plain
+                dimColor
+                label={isUnfolded ? t.cardFold : t.cardMore(cut.left, replies.length + (card.repliesLeftOut ?? 0))}
+                onPress={unfold(`card:${item.id}`)}
+              />,
+            ]
+          : []),
+      ]
+    }
+    /** When it was written, a link to it on GitHub where it has one. */
+    const writtenAt = (card: GhPickCard) => {
+      const when = sinceAt(card.at)
+      if (when === undefined) return card.url === "" ? null : <Link href={plain(card.url)}>GitHub</Link>
+      return card.url === "" ? <Text dimColor>{when}</Text> : <Link href={plain(card.url)}>{when}</Link>
+    }
+    /** A thread of line comments, as a card of its own: where it is and whether it is still open above what was said. */
+    const threadCard = (item: GhPickItem, reviewer?: string) => {
+      const card = item.card
+      if (card === undefined) return <Text key={`card:${item.id}`}>{plain(item.label)}</Text>
+      const isUnfolded = unfolded.includes(`card:${item.id}`)
+      const color = cardColor(card)
+      return (
+        <Box key={`card:${item.id}`} flexDirection="column" borderStyle="round" borderColor={color} paddingX={1}>
+          <Text>
+            <Text color={LABEL_COLOR}>{plain(card.place ?? "")}</Text>
+            {"  "}
+            <Text color={color}>{card.isResolved === true ? t.resolved : t.unresolved}</Text>
+            {card.isOutdated === true ? <Text dimColor>{`${t.listSeparator}${t.outdated}`}</Text> : ""}
+            {/* Under its review the author goes without saying. */}
+            {card.who === reviewer ? "" : <Text bold>{`  ${plain(card.who)}`}</Text>}
+          </Text>
+          {body(item, card, isUnfolded)}
+        </Box>
+      )
+    }
+    /** An item of the conversation as a card: a review with its threads in it, a comment, a thread of no review listed. */
+    const conversationCard = (item: GhPickItem, threads: readonly GhPickItem[]) => {
+      const card = item.card
+      if (card?.kind === "thread") return threadCard(item)
+      if (card === undefined)
+        return (
+          <Box key={`card:${item.id}`} borderStyle="round" borderColor="subtle" paddingX={1}>
+            <Text>{plain(item.label)}</Text>
+          </Box>
+        )
+      const color = cardColor(card)
+      const what = card.kind === "review" ? (t.reviewStates[card.state ?? ""] ?? t.reviewFallback) : card.kind === "description" ? t.cardDescription : t.cardComment
+      return (
+        <Box key={`card:${item.id}`} flexDirection="column" borderStyle="round" borderColor={color} paddingX={1}>
+          <Text>
+            <Text bold>{plain(card.who)}</Text>
+            {"  "}
+            <Text {...colorOf(card.kind === "review" && color !== "subtle" ? color : undefined)}>{what}</Text>
+            {"  "}
+            {writtenAt(card)}
+          </Text>
+          {body(item, card, unfolded.includes(`card:${item.id}`))}
+          {threads.map(thread => threadCard(thread, card.who))}
+        </Box>
+      )
+    }
+
+    const ciItemShown = isItems ? items.items.find(item => item.card?.kind === "ci" || item.id.startsWith(CI_ITEM_PREFIX)) : undefined
+    const descriptionShown = isItems ? items.items.find(item => item.card?.kind === "description") : undefined
+    const conversation = isItems ? conversationOf(items.items.filter(item => item !== ciItemShown)) : []
+    const isCiUnfolded = ciItemShown !== undefined && unfolded.includes(`card:${ciItemShown.id}`)
+
     return (
       <Box flexDirection="column">
-        {detail.stage === "pull" ? head(detail) : detail.stage === "error" ? <Text>{plain(detail.message)}</Text> : <Text dimColor>{detail.message}</Text>}
-        {!isItems ? (
-          itemsFailed !== undefined ? (
-            <Text>{plain(itemsFailed)}</Text>
-          ) : items?.stage === "error" ? null : (
-            <Text dimColor>{items?.stage === "loading" ? items.message : t.loading}</Text>
-          )
-        ) : (
+        {shownPull !== undefined && (
+          <Box
+            key="header"
+            flexDirection="column"
+            borderStyle="round"
+            borderColor={standingColor(shownPull, statusMarks(t, shownPull.status))}
+            paddingX={1}
+          >
+            {heading(shownPull)}
+            <Text dimColor>
+              {plain(
+                [
+                  // Its repository in full: the heading names it as the list does, by its short name.
+                  pullLabel(shownPull.pull).replace(/#\d+$/, ""),
+                  ...(shownPull.author === null ? [] : [t.prBy(t.who(plain(shownPull.author)))]),
+                  ...(isOpen ? (shownPull.status.isDraft === true ? [t.draft] : []) : [t.pullState(shownPull.state)]),
+                  ...(isWatched ? [t.prWatchedNow] : []),
+                  ...(isBranchPull(ctx, shownPull.pull) ? [t.prIsBranch] : []),
+                ].join(t.listSeparator),
+              )}
+            </Text>
+            {standing(shownPull)}
+          </Box>
+        )}
+        {said}
+        <Box flexWrap="wrap">
+          {isItems && <Button key="to:pick" hotkey="c" label={t.prToPick} onPress={() => void toScreen("pick")()} />}
+          {shownPull !== undefined && (isOpen || isWatched) && <Button key="to:actions" hotkey="o" label={t.prToActions} onPress={() => void toScreen("actions")()} />}
+          {ref !== null && <Button key="reload" hotkey="r" label={t.prReload} onPress={() => void showPull($, ctx, ref, true)} />}
+          {toList}
+          {close}
+        </Box>
+        {itemsWaiting}
+        {isItems && (
           <Box flexDirection="column">
             {items.notes.map(note => (
               <Text key={note} dimColor>
                 {note}
               </Text>
             ))}
-            <Text dimColor>{items.items.length === 0 ? t.noItems : t.itemsHint}</Text>
-            {items.items.map((item, index) => {
-              // A review shows whether it is chosen with all its threads, in part, or not at all.
-              const ids = idsOf(items.items, item.id)
-              const count = ids.filter(id => items.chosen.includes(id)).length
-              const mark = count === ids.length ? "x" : count > 0 ? "-" : " "
-              const isUnfolded = unfolded.includes(item.id)
-              return (
-                <Box key={`row:${item.id}`} flexDirection="column" paddingLeft={item.parent === undefined ? 0 : 4}>
-                  <Box>
-                    <Button
-                      key={`unfold:${item.id}`}
-                      plain
-                      label={isUnfolded ? "▾ " : "▸ "}
-                      onPress={() => void update($, pickUnfolded, list => (list.includes(item.id) ? list.filter(one => one !== item.id) : [...list, item.id]))}
-                    />
-                    <Button
-                      key={item.id}
-                      hotkey={index < 9 ? String(index + 1) : undefined}
-                      plain
-                      label={`[${mark}] ${plain(item.label)}`}
-                      onPress={() => {
-                        // Keys pressed in a row each read what the one before wrote.
-                        ctx.toggling = ctx.toggling.then(() => toggleItem($, item.id)).catch(() => undefined)
-                      }}
-                    />
-                  </Box>
-                  {isUnfolded && (
-                    <Box paddingLeft={LOG_INDENT} flexDirection="column">
-                      {shownContext(item.context).map((line, i) => (
-                        <Text key={`said:${item.id}:${i}`} dimColor={line.isMeta}>
+            {ciItemShown !== undefined && (
+              <Box key="section:ci" flexDirection="column">
+                {rule("rule:ci", t.prSection("ci"))}
+                <Box flexDirection="column" borderStyle="round" borderColor={cardColor(ciItemShown.card)} paddingX={1}>
+                  <Text color={cardColor(ciItemShown.card)}>{plain(ciItemShown.label)}</Text>
+                  {isCiUnfolded &&
+                    shownContext(ciItemShown.context)
+                      .slice(1)
+                      .map((line, i) => (
+                        <Text key={`ci:${i}`} dimColor={line.isMeta}>
                           {plain(line.text) || " "}
                         </Text>
                       ))}
-                    </Box>
-                  )}
+                  <Button key={`fold:${ciItemShown.id}`} plain dimColor label={isCiUnfolded ? t.cardFold : t.cardDetails} onPress={unfold(`card:${ciItemShown.id}`)} />
                 </Box>
-              )
-            })}
+              </Box>
+            )}
+            {descriptionShown?.card !== undefined && (
+              <Box key="section:description" flexDirection="column">
+                {rule("rule:description", t.prSection("description"))}
+                {conversationCard(descriptionShown, [])}
+              </Box>
+            )}
+            {rule("rule:conversation", t.prSection("conversation", conversation.length))}
+            {conversation.length === 0 && <Text dimColor>{t.noItems}</Text>}
+            {conversation.map(({ item, threads }) => conversationCard(item, threads))}
           </Box>
         )}
-        <Box flexWrap="wrap">
-          {isItems && (
-            <Button
-              key="stage"
-              hotkey="a"
-              label={t.attach(items.chosen.length)}
-              onPress={() => {
-                // After the toggles pressed before it, so it stages what they chose.
-                ctx.toggling = ctx.toggling.then(() => stageChosen($, ctx)).catch(() => undefined)
-              }}
-            />
-          )}
-          {ref !== null && <Button key="reload" hotkey="r" label={t.prReload} onPress={() => void showPull($, ctx, ref, true)} />}
-          {toList}
-          {close}
-        </Box>
       </Box>
     )
   })

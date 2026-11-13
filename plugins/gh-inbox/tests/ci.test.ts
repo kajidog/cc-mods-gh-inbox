@@ -264,6 +264,7 @@ describe("CI told with a prompt", () => {
     await $.command.run(CHECK)
     await $.command.run({ ...CHECK, args: "pr pick" })
     const pane = await $.ui.mount(PANE)
+    await pane.press({ key: "to:pick" })
     const key = `ci:${OID}:failed:run:11`
     expect((await pane.find({ key }))?.props.label).toBe("[ ] ✗ CI 1/2 0123456: CI / test")
     await pane.press({ key })
@@ -291,6 +292,7 @@ describe("CI told with a prompt", () => {
     github.contexts = [job(12, "lint", "SUCCESS"), job(13, "build", "SUCCESS")]
     await $.command.run({ ...CHECK, args: "pr pick" })
     const pane = await $.ui.mount(PANE)
+    await pane.press({ key: "to:pick" })
     await pane.press({ key: `ci:${OID}:done` })
     await pane.press({ key: "stage" })
     await $.prompt.submit({ ...PROMPT, text: "通った？" })
@@ -320,6 +322,7 @@ describe("CI told with a prompt", () => {
     await clock.advance(10_000)
     await $.command.run({ ...CHECK, args: "pr pick" })
     const pane = await $.ui.mount(PANE)
+    await pane.press({ key: "to:pick" })
     await pane.press({ key: `ci:${NEW}:done` })
     await pane.press({ key: "stage" })
     await $.prompt.submit({ ...PROMPT, text: "通った？" })
