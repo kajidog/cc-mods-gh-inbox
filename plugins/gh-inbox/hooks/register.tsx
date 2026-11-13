@@ -2923,9 +2923,11 @@ export const register: Register = (on, options) => {
 
     /** A card's body as GitHub shows it, its first lines while folded; the button that unfolds the rest, where there is more. */
     const body = (item: GhPickItem, card: GhPickCard, isUnfolded: boolean) => {
-      const cut = isUnfolded ? { shown: card.body, left: 0 } : cutBody(card.body)
+      // What folding holds back decides whether there is a button, unfolded too: it then folds it back.
+      const folded = cutBody(card.body)
+      const cut = isUnfolded ? { shown: card.body, left: 0 } : folded
       const replies = card.replies ?? []
-      const isMore = cut.left > 0 || replies.length > 0 || (card.repliesLeftOut ?? 0) > 0
+      const isMore = folded.left > 0 || replies.length > 0 || (card.repliesLeftOut ?? 0) > 0
       return [
         ...(card.body === "" ? [] : [<Markdown key={`body:${item.id}`} text={plainBlock(cut.shown)} />]),
         ...(isUnfolded
@@ -2945,7 +2947,7 @@ export const register: Register = (on, options) => {
                 key={`fold:${item.id}`}
                 plain
                 dimColor
-                label={isUnfolded ? t.cardFold : t.cardMore(cut.left, replies.length + (card.repliesLeftOut ?? 0))}
+                label={isUnfolded ? t.cardFold : t.cardMore(folded.left, replies.length + (card.repliesLeftOut ?? 0))}
                 onPress={unfold(`card:${item.id}`)}
               />,
             ]

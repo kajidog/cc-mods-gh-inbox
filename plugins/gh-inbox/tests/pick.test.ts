@@ -340,6 +340,12 @@ test("where the pull request stands is a screen to read alone: a card each, a re
   expect((await pane.find({ key: "fold:T1" }))?.props.label).toBe("▾ たたむ")
   await pane.press({ key: "fold:T1" })
   expect(await markdown()).not.toContain("Why?")
+  // A long body with no replies unfolds to all of it, and folds back.
+  await pane.press({ key: "fold:T2" })
+  expect((await markdown()).some(text => String(text).includes("after"))).toBe(true)
+  expect((await pane.find({ key: "fold:T2" }))?.props.label).toBe("▾ たたむ")
+  await pane.press({ key: "fold:T2" })
+  expect((await pane.find({ key: "fold:T2" }))?.props.label).toBe("▸ 続き17行")
 
   // What goes with a prompt is what Claude reads: what the cards draw is not kept with it.
   await pane.press({ key: "to:pick" })
